@@ -34,14 +34,14 @@ The full chain is proven working: `translate-c` over normalized CLAP 1.2.10 head
 
 ### Environment status
 
-| Tool             | Status                                                                             |
-| ------------------ | ------------------------------------------------------------------------------------ |
-| Zig 0.16.0       | Installed. Current stable, released 2026-04-13                                     |
-| CMake 4.4.0      | Installed. Hard-errors on `cmake_minimum_required` below 3.5 (see risks)           |
-| Metal toolchain  | Installed. Needed `xcrun --kill-cache` before `xcrun` would resolve it             |
-| REAPER           | Installed. Native CLAP host, so the dev loop needs neither CMake nor a standalone  |
-| Logic Pro        | Installed. AUv2 only, which is what makes clap-wrapper necessary at all            |
-| `clap-validator` | Not yet installed: `cargo install --git https://github.com/free-audio/clap-validator` |
+| Tool             | Status                                                                            |
+| ------------------ | ----------------------------------------------------------------------------------- |
+| Zig 0.16.0       | Installed. Current stable, released 2026-04-13                                    |
+| CMake 4.4.0      | Installed. The below-3.5 policy risk did not materialize                          |
+| Metal toolchain  | Installed. Needed `xcrun --kill-cache` before `xcrun` would resolve it            |
+| REAPER           | Installed. Native CLAP host, so the dev loop needs neither CMake nor a standalone |
+| Logic Pro        | Installed. AUv2 only, which is what makes clap-wrapper necessary at all           |
+| `clap-validator` | Installed, 0.4.1. Not on crates.io, and needs rustc 1.95+ (`cargo install --git`) |
 
 ## Locked decisions
 
@@ -105,36 +105,42 @@ src/
     displaylink.zig     CVDisplayLink
 ```
 
-## Phase 0: repository foundation (this PR)
+## Phase 0: repository foundation (complete)
 
-| Step | Work                                                                                                                                                                         |
-| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 0.1  | Install `clap-validator` from git. All other prerequisites are already satisfied                                                                                            |
-| 0.2  | Run `scaffold-new-repo` (Zig). Produces README, CHANGELOG, `.gitignore`, `AGENTS.md`, `CLAUDE.md` symlink, `.claude/settings.json`, `.github/copilot-instructions.md`, `docs/plans/` |
-| 0.3  | Move `plans/scope-plugin-handoff.md` to `docs/design/scope-plugin-handoff.md`, preserved verbatim as the source brainstorm                                                   |
-| 0.4  | Write ADRs 0001 through 0012 under `docs/adr/`, capturing the settled reasoning and the findings above                                                                       |
-| 0.5  | Build skeleton: `build.zig`, `build.zig.zon`, `tools/normalize-clap-headers.zig`, and a `src/main.zig` carrying the validated smoke test                                     |
-| 0.6  | `cmake/CMakeLists.txt` plus the small `cmake/entry.cpp` shim wiring `make_clapfirst_plugins` for CLAP, AUV2, and STANDALONE                                                  |
-| 0.7  | Run `set-up-ci` with `runs-on: macos-latest` and `run-cross-compile: false`. The default `ubuntu-latest` cannot link Apple frameworks                                        |
-| 0.8  | Run `set-up-linters` and `set-up-secret-scanning`. Already available locally: `actionlint`, `shellcheck`, `shfmt`, `typos`, `vale`, `gitleaks`, `trufflehog`                 |
-| 0.9  | Run `add-community-files` for `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `.github/SECURITY.md`, and a PR template                                                              |
-| 0.10 | Wire `zig build validate-shaders` into `zig build test`, piping each shader through `metal -fsyntax-only` and skipping with a warning when the toolchain is absent           |
+| Step | Work                                                                                                                                     | Status |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------ | -------- |
+| 0.1  | Install `clap-validator` from git                                                                                                        | Done   |
+| 0.2  | Scaffold README, CHANGELOG, `.gitignore`, agent config, `docs/plans/`                                                                    | Done   |
+| 0.3  | Move the source brainstorm to `docs/design/scope-plugin-handoff.md`, verbatim                                                            | Done   |
+| 0.4  | Write ADRs 0001 through 0012 under `docs/adr/`                                                                                          | Done   |
+| 0.5  | Build skeleton: `build.zig`, `build.zig.zon`, `src/main.zig`, `src/clap/c.zig`                                                          | Done   |
+| 0.6  | `cmake/CMakeLists.txt` and `cmake/entry.cpp` wiring `make_clapfirst_plugins`                                                            | Done   |
+| 0.7  | CI on `macos-latest`, cross-compilation disabled                                                                                        | Done   |
+| 0.8  | Secret scanning (gitleaks, TruffleHog) and `.gitleaks.toml`                                                                             | Done   |
+| 0.9  | Community files: CONTRIBUTING, code of conduct, security policy, PR template                                                            | Done   |
+| 0.10 | `zig build validate-shaders`                                                                                                            | Done   |
 
-Commits are grouped per step so the history reads as discrete, reviewable units.
+Two steps landed differently from how they were planned, both deliberately:
 
-**Exit criteria:** `zig build` succeeds, `zig fmt --check` is clean, CI is green on `macos-latest`, and secret scanning reports nothing.
+- **0.5 needs no header-rewriting tool.** The plan assumed `tools/normalize-clap-headers.zig` would rewrite CLAP's relative includes. Running the headers through `zig cc -E` first sidesteps the `#pragma once` bug entirely, with no tool to maintain and no mutation of a pinned dependency. The cost is that object-like macros are consumed; the ones that matter are restated and tested in `src/clap/c.zig`. ADR 0004 records this.
+- **0.10 is not wired into `zig build test`.** Doing so would make the default test path depend on an on-demand Xcode component, reintroducing exactly the non-hermetic build ADR 0009 exists to prevent. It is a separate step with its own CI job.
+
+**Exit criteria, all met:** `zig build` succeeds; `zig build test` passes; `zig fmt --check` clean; `zig build validate-shaders` passes; `actionlint` clean; gitleaks reports no leaks; and **both** the Zig-built and clap-wrapper-built `.clap` pass `clap-validator` with 3 passed, 0 failed.
+
+Phase 0 also absorbed work scheduled for Phase 1: the CMake integration builds `Fosforo.component` (AUv2) and `Fosforo.clap` end to end, retiring the "linking a Zig static archive from CMake is unproven" risk. Three undocumented clap-wrapper integration requirements were found and are recorded inline in `cmake/CMakeLists.txt`: the consumer must set `CMAKE_OSX_DEPLOYMENT_TARGET` and `CMAKE_CXX_STANDARD`, and must enable `OBJC`/`OBJCXX` in its own project.
 
 ## Phase 1: walking skeleton
 
 **Goal:** a plugin that loads and renders a dim cleared drawable. This proves the whole CLAP plus Objective-C plus wrapper chain end to end so it never needs debugging again.
 
-1. Static library exporting `fosforo_clap_init`, `fosforo_clap_deinit`, and `fosforo_clap_get_factory`.
-2. Minimal CLAP plugin: descriptor, stereo `audio-ports`, pass-through `process`, `state`, `log`.
-3. clap-wrapper integration producing the `.component` and the standalone app.
-4. CLAP GUI extension: create an `NSView` hosting a `CAMetalLayer` and graft it onto the host's parent view. The anonymous union member is `unnamed_0`, which is toolchain-generated and must be re-verified after any Zig upgrade.
-5. `CVDisplayLink` render loop clearing to a dim color, skipping the frame cleanly when the next drawable returns nil.
+Steps 1 and 3 of the original plan (the static library and the clap-wrapper integration) landed in Phase 0, so what remains is:
 
-**Exit criteria:** loads in REAPER and Logic and standalone; `clap-validator` and `auval` pass; open, close, and resize during playback are clean.
+1. Plugin factory and descriptor, currently stubbed to return null.
+2. Minimal CLAP plugin: stereo `audio-ports`, pass-through `process`, `state`, `log`.
+3. CLAP GUI extension: create an `NSView` hosting a `CAMetalLayer` and graft it onto the host's parent view. Reach the parent through `clap.cocoaView()` rather than touching `unnamed_0` directly.
+4. `CVDisplayLink` render loop clearing to a dim color, skipping the frame cleanly when the next drawable returns nil.
+
+**Exit criteria:** loads in REAPER and Logic; `clap-validator` reports more than the current 3 passing tests once a factory exists; `auval` passes; open, close, and resize during playback are clean.
 
 ## Phase 2: signal path
 
@@ -197,13 +203,15 @@ Recorded so these read as deliberate omissions rather than oversights:
 
 ## Risks
 
-| Risk                                                                              | Mitigation                                                                                  |
-| ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| CMake 4.4 rejects dependencies declaring `cmake_minimum_required` below 3.5      | clap-wrapper declares 3.21 and AudioUnitSDK 1.1.0 is modern. Escape hatch: `-DCMAKE_POLICY_VERSION_MINIMUM=3.5` |
-| Zig `translate-c` `#pragma once` bug                                             | Normalization step in `tools/`. Worth reporting upstream, though `ziglang/zig` is not your repository |
-| Toolchain-generated names such as `unnamed_0` shift across Zig versions          | Comptime `@sizeOf` and `@offsetOf` assertions on every struct crossing the ABI               |
-| Zig 0.16 is recent and most third-party audio code predates it                   | Minimal dependency surface: only CLAP headers and `zig-objc`, both verified on 0.16          |
-| Linking a Zig static archive from CMake is unproven here                         | Validate in Phase 1 step 3, before any renderer work depends on it                           |
+| Risk                                                                     | Status and mitigation                                                                                    |
+| -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Linking a Zig static archive from CMake was unproven                   | **Retired.** Both AUv2 and CLAP build through clap-wrapper and pass `clap-validator`                     |
+| CMake 4.4 rejects `cmake_minimum_required` below 3.5                   | **Did not materialize.** Escape hatch if a future dependency trips it: `-DCMAKE_POLICY_VERSION_MINIMUM=3.5` |
+| Zig `translate-c` `#pragma once` bug                                   | **Worked around** by preprocessing with `zig cc -E`. Worth reporting upstream, though `ziglang/zig` is not your repository |
+| Toolchain-generated names such as `unnamed_0` shift across Zig versions | Comptime `@sizeOf` and `@offsetOf` assertions on every struct crossing the ABI. These already caught one wrong field count |
+| Zig 0.16 is recent and most third-party audio code predates it          | Minimal dependency surface: only CLAP headers and `zig-objc`, both verified on 0.16                      |
+| clap-wrapper is pinned to an untagged commit                            | `make_clapfirst_plugins` postdates v0.9.1. Move to a tag once one ships containing it                    |
+| Three deployment targets must stay in step                              | `build.zig`, `cmake/CMakeLists.txt`, and `macos/Info.plist` all say macOS 11.0. A mismatch shows as a linker warning |
 
 ## Verification
 
@@ -220,6 +228,7 @@ Recorded so these read as deliberate omissions rather than oversights:
 
 ## Items to confirm during execution
 
-- **Product name rendering.** Repository and binary stay ASCII `fosforo`; the display name should be **Fósforo**, which is both the correct AO90 spelling and a direct nod to the phosphor renderer.
-- **AUv2 four-character codes.** Manufacturer and subtype codes plus manufacturer name, or implement the CLAP AUv2 extension and let clap-wrapper probe the plugin for them.
+- **Product name rendering.** Applied: repository and binary stay ASCII `fosforo`, display name is **Fósforo** in `macos/Info.plist`. Change it there if you disagree.
+- **AUv2 four-character codes.** Provisionally `Cbne` (manufacturer) and `Fsfr` (subtype), with manufacturer name "Christopher Boone", set in `cmake/CMakeLists.txt`. Worth confirming before anything ships, since changing them after release orphans users' saved projects. The alternative is implementing the CLAP AUv2 extension and letting clap-wrapper probe for them.
 - **Repository visibility.** The plan assumes public. Confirm before the first push, since it also determines whether GitHub Actions minutes are free (they are, for public repositories on standard runners).
+- **CI is unverified.** The workflows are lint-clean via `actionlint` but have never executed. Expect the first push to need a fixup, particularly around whether the `macos-latest` runner image already carries the Metal toolchain.
