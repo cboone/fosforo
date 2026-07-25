@@ -5,7 +5,15 @@ const std = @import("std");
 const frameworks = [_][]const u8{ "Foundation", "Cocoa", "Metal", "QuartzCore", "CoreVideo" };
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    // Pin the minimum macOS version rather than inheriting the build machine's.
+    // Without this, Zig stamps the host version onto the object and the linker
+    // warns when clap-wrapper links it at its own deployment target. Keep in
+    // step with macos/Info.plist and cmake/CMakeLists.txt.
+    const target = b.standardTargetOptions(.{
+        .default_target = .{
+            .os_version_min = .{ .semver = .{ .major = 11, .minor = 0, .patch = 0 } },
+        },
+    });
     const optimize = b.standardOptimizeOption(.{});
 
     const clap_c = translateClap(b, target, optimize);
