@@ -1,0 +1,30 @@
+.{
+    .name = .fosforo,
+    .version = "0.0.0",
+    .fingerprint = 0xaf18c24e5d25ad8e, // Changing this has security and trust implications.
+
+    // CI reads this as the single source of truth for the toolchain version.
+    // See docs/adr/0002-zig-pinned-to-0-16-0.md before changing it.
+    .minimum_zig_version = "0.16.0",
+
+    .dependencies = .{
+        .clap = .{
+            .url = "https://github.com/free-audio/clap/archive/refs/tags/1.2.10.tar.gz",
+            .hash = "N-V-__8AAB-JOwBFtOGup87WSc2jjAlPh8eIMTZnpkjysvO1",
+        },
+        .objc = .{
+            .url = "https://github.com/mitchellh/zig-objc/archive/refs/heads/main.tar.gz",
+            .hash = "zig_objc-0.0.0-Ir_Sp9gsAQCPAJc0oF5xoWePHWP6Y6tCphDeyNUThJoi",
+        },
+    },
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "shaders",
+        "cmake",
+        "LICENSE",
+        "README.md",
+    },
+}
