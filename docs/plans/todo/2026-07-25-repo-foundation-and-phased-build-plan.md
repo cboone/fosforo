@@ -23,7 +23,7 @@ Everything below was verified empirically (Zig 0.16.0, Apple M5 Max, macOS 26.5.
 | `clap-zig-bindings` is **LGPLv3**, covers CLAP **1.2.2**, and **fails to compile on Zig 0.16**         | Cloned; `zig build test` fails on the removed `std.testing.refAllDeclsRecursive` | Rejected. The handoff called it "the cleanest binding path"     |
 | Zig 0.16 **removed `@Type`**                                                                           | `@Type` reports `invalid builtin function`                                    | The classic comptime `objc_msgSend` cast pattern no longer works |
 | `zig-objc` migrated to the replacement `@Fn`/`@Tuple` builtins, is **MIT**, and passes on 0.16          | Cloned; `zig build test` exits 0                                             | Viable dependency, contrary to the handoff's "hand-roll it"     |
-| Zig `translate-c` mishandles `#pragma once` under path aliasing                                         | `clap/factory/../version.h` against `clap/version.h` yields 161 redefinition errors; plain clang is clean | Requires a mechanical header-normalization build step           |
+| Zig `translate-c` mishandles `#pragma once` under path aliasing                                         | `clap/factory/../version.h` against `clap/version.h` yields 161 redefinition errors; plain clang is clean | Preprocess with `zig cc -E` before translating                  |
 | `clap-wrapper` consumes a **static library**, not a `.clap` dylib                                       | `make_clapfirst_plugins` takes `IMPL_TARGET` plus `ENTRY_SOURCE`             | Inverts the build shape the handoff assumed                     |
 | CLAP is at **1.2.10**, MIT licensed                                                                    | `version.h` in `free-audio/clap`                                             | Vendor current rather than 1.2.2                                |
 | **Visage is C++-only with no C API**                                                                    | Repository survey                                                            | Prior art only, never a dependency. Question closed             |
@@ -139,8 +139,9 @@ Steps 1 and 3 of the original plan (the static library and the clap-wrapper inte
 2. Minimal CLAP plugin: stereo `audio-ports`, pass-through `process`, `state`, `log`.
 3. CLAP GUI extension: create an `NSView` hosting a `CAMetalLayer` and graft it onto the host's parent view. Reach the parent through `clap.cocoaView()` rather than touching `unnamed_0` directly.
 4. `CVDisplayLink` render loop clearing to a dim color, skipping the frame cleanly when the next drawable returns nil.
+5. **Narrow the AU sandbox claims.** clap-wrapper's default `resourceUsage` in the generated `AudioComponents` entry claims `network.client` and `temporary-exception.files.all.read-write`. An analyzer needs neither, and overclaiming contradicts the threat model in `.github/SECURITY.md`. It matters for sandboxed hosts and for any future App Store path. Tracked as [issue #1](https://github.com/cboone/fosforo/issues/1).
 
-**Exit criteria:** loads in REAPER and Logic; `clap-validator` reports more than the current 3 passing tests once a factory exists; `auval` passes; open, close, and resize during playback are clean.
+**Exit criteria:** loads in REAPER and Logic; `clap-validator` reports more than the current 3 passing tests once a factory exists; `auval -v aufx Fsfr Ctmn` passes; open, close, and resize during playback are clean.
 
 ## Phase 2: signal path
 
@@ -229,7 +230,6 @@ Recorded so these read as deliberate omissions rather than oversights:
 ## Items to confirm during execution
 
 - **Product name rendering.** Applied: repository and binary stay ASCII `fosforo`, display name is **Fósforo** in `macos/Info.plist`. Change it there if you disagree.
-- **AUv2 four-character codes.** Settled as `Cbne` (manufacturer) and `Fsfr` (subtype), manufacturer name "Christopher Boone", in `cmake/CMakeLists.txt`. These follow Apple's convention that a manufacturer code must not be all-lowercase, which is reserved (compare Voxengo's `Vxng` and Tokyo Dawn's `Tdrl` against Apple's own `appl`). Treat them as permanent: Logic stores the type/subtype/manufacturer triple in project files, so changing either code after release orphans saved projects. If a second plugin ever ships, move them into the CLAP AUv2 extension so the manufacturer code comes from one shared place.
+- **AUv2 four-character codes.** Settled as `Ctmn` (manufacturer) and `Fsfr` (subtype), manufacturer name "Christopher Boone", in `cmake/CMakeLists.txt`. These follow Apple's convention that a manufacturer code must not be all-lowercase, which is reserved (compare Voxengo's `Vxng` and Tokyo Dawn's `Tdrl` against Apple's own `appl`). Treat them as permanent: Logic stores the type/subtype/manufacturer triple in project files, so changing either code after release orphans saved projects. If a second plugin ever ships, move them into the CLAP AUv2 extension so the manufacturer code comes from one shared place.
 - **Repository visibility.** Resolved: public. Actions minutes are therefore free on standard runners, macOS included.
-- **Tighten the AU sandbox claims.** clap-wrapper's default `resourceUsage` claims `network.client` and `temporary-exception.files.all.read-write`. An analyzer needs neither. Narrow these in Phase 1: they matter for sandboxed hosts and for any future App Store path, and overclaiming contradicts the threat model in `.github/SECURITY.md`.
 - **CI is unverified.** The workflows are lint-clean via `actionlint` but have never executed. Expect the first push to need a fixup, particularly around whether the `macos-latest` runner image already carries the Metal toolchain.

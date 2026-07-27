@@ -112,8 +112,12 @@ make_clapfirst_plugins(
 
     ASSET_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/assets
 
+    # Effectively permanent. Logic stores the type/subtype/manufacturer triple
+    # in project files, so changing either code after release makes the plugin
+    # read as missing in every project that used it. The manufacturer code must
+    # not be all-lowercase; those are reserved by Apple.
     AUV2_MANUFACTURER_NAME "Christopher Boone"
-    AUV2_MANUFACTURER_CODE "Cbne"
+    AUV2_MANUFACTURER_CODE "Ctmn"
     AUV2_SUBTYPE_CODE "Fsfr"
     AUV2_INSTRUMENT_TYPE "aufx"
 )
