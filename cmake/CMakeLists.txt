@@ -121,3 +121,32 @@ make_clapfirst_plugins(
     AUV2_SUBTYPE_CODE "Fsfr"
     AUV2_INSTRUMENT_TYPE "aufx"
 )
+
+# ---------------------------------------------------------------------------
+# Narrow the sandbox claims clap-wrapper writes into the Audio Unit.
+# ---------------------------------------------------------------------------
+
+# clap-wrapper's AUv2 build helper hardcodes a resourceUsage dictionary claiming
+# network.client and temporary-exception.files.all.read-write, and emits it next to
+# sandboxSafe = true. Apple's AudioComponent.h treats those as mutually exclusive:
+# resourceUsage describes a component that is *not* sandbox safe, and "if the
+# sandboxSafe key is true, this dictionary should not be included". fosforo reads no
+# files and opens no sockets, so the claims are false as well as contradictory.
+#
+# make_clapfirst_plugins exposes no override and the plist is written at build time
+# by a generated helper executable, so the only seam is the copy that landed in the
+# bundle. Registering this after make_clapfirst_plugins() returns puts it behind
+# clap-wrapper's own POST_BUILD commands. Nothing signs the .component on this path,
+# so there is no signature to invalidate.
+#
+# Upstream already agrees, just not here: clap-wrapper's AUv3 build helper omits the
+# dictionary and says why. Only the AUv2 helper still emits it. Re-check when the
+# clap-wrapper pin moves; the script no-ops once upstream drops it.
+if(APPLE AND TARGET ${PROJECT_NAME}_auv2)
+    add_custom_command(TARGET ${PROJECT_NAME}_auv2 POST_BUILD
+        COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/narrow-au-resource-usage"
+                "$<TARGET_FILE_DIR:${PROJECT_NAME}_auv2>/../Info.plist"
+        COMMENT "Narrowing the AU sandbox resourceUsage claims"
+        VERBATIM
+    )
+endif()
