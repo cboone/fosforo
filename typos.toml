@@ -1,0 +1,11 @@
+[default.extend-words]
+# "precessing" is correct: a phase-space loop that slowly rotates exhibits
+# precession. Not a misspelling of "processing", despite the audio context.
+precessing = "precessing"
+
+[files]
+extend-exclude = [
+  "zig-out/",
+  "zig-pkg/",
+  "build/",
+]
