@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+# narrow-au-resource-usage — drop clap-wrapper's default AU sandbox resourceUsage claims
+# Author: Christopher Boone
+# Date: 2026-07-27
+#
+# clap-wrapper's AUv2 build helper hardcodes a resourceUsage dictionary claiming
+# network.client and temporary-exception.files.all.read-write into every component
+# it generates, and emits it alongside sandboxSafe = true. Apple's AudioComponent.h
+# says those two are mutually exclusive:
+#
+#   "The 'resourceUsage' key describes the system resources used by an
+#    AudioComponent that is not sandbox safe. [...] If the 'sandboxSafe' key is
+#    true, this dictionary should not be included."
+#
+# fosforo is an analyzer. It reads no files and opens no sockets, so the claims are
+# false as well as self-contradictory. make_clapfirst_plugins exposes no way to
+# override them, so cmake/CMakeLists.txt runs this over the plist that clap-wrapper
+# copied into the built bundle.
+#
+# Removing a key that is already absent is not an error. If a future clap-wrapper
+# stops emitting the dictionary, this quietly becomes a no-op instead of a broken
+# build. That is also why --check exists: stripping and then asserting cannot detect
+# the POST_BUILD step having been dropped altogether, so CI asserts separately.
+#
+# Usage:
+#   narrow-au-resource-usage [--check] <path/to/Info.plist>
+#
+#   --check   Assert without modifying anything.
+#
+# Exit codes:
+#   0  - Every AudioComponents entry is sandboxSafe and claims no resourceUsage
+#  64  - Invalid arguments
+#  65  - The plist has no usable AudioComponents array, or the assertion failed
+#  66  - The plist does not exist or cannot be read
+
+set -euo pipefail
+
+if [[ -n "${TRACE:-}" ]]; then
+  set -x
+fi
+
+readonly E_USAGE=64
+readonly E_DATAERR=65
+readonly E_NOINPUT=66
+
+readonly PROGRAM_NAME="${0##*/}"
+
+# Write a message to stderr, prefixed with the program name.
+# Arguments:
+#   $@ - message parts
+function warn() {
+  echo "${PROGRAM_NAME}: ${*}" >&2
+}
+
+function usage() {
+  echo "Usage: ${PROGRAM_NAME} [--check] <path/to/Info.plist>" >&2
+}
+
+# Count the entries in the plist's AudioComponents array.
+# Arguments:
+#   $1 - path to the Info.plist
+# Outputs:
+#   The entry count on stdout
+# Returns:
+#   0 on success, non-zero when AudioComponents is absent
+function audio_component_count() {
+  local plist_path="${1}"
+
+  plutil -extract AudioComponents raw -o - -- "${plist_path}" 2> /dev/null
+}
+
+# Test whether an AudioComponents entry declares a resourceUsage dictionary.
+# Arguments:
+#   $1 - path to the Info.plist
+#   $2 - entry index
+# Returns:
+#   0 when the key is present, non-zero when it is absent
+function has_resource_usage() {
+  local plist_path="${1}"
+  local -i index="${2}"
+
+  plutil -extract "AudioComponents.${index}.resourceUsage" raw -o - -- "${plist_path}" > /dev/null 2>&1
+}
+
+# Test whether an AudioComponents entry declares sandboxSafe as true.
+# Arguments:
+#   $1 - path to the Info.plist
+#   $2 - entry index
+# Returns:
+#   0 when sandboxSafe is true, non-zero when it is false, absent, or unreadable
+function is_sandbox_safe() {
+  local plist_path="${1}"
+  local -i index="${2}"
+  local declared
+
+  declared=$(plutil -extract "AudioComponents.${index}.sandboxSafe" raw -o - -- "${plist_path}" 2> /dev/null) || return 1
+  [[ "${declared}" == "true" ]]
+}
+
+# Remove the resourceUsage dictionary from every entry that carries one.
+# Arguments:
+#   $1 - path to the Info.plist
+#   $2 - number of AudioComponents entries
+# Outputs:
+#   One line per entry stripped, to stderr
+function strip_resource_usage() {
+  local plist_path="${1}"
+  local -i count="${2}"
+  local -i index
+
+  for ((index = 0; index < count; index++)); do
+    if has_resource_usage "${plist_path}" "${index}"; then
+      plutil -remove "AudioComponents.${index}.resourceUsage" -- "${plist_path}"
+      warn "removed resourceUsage from AudioComponents.${index}"
+    fi
+  done
+}
+
+# Assert that no entry claims resourceUsage and every entry declares sandboxSafe.
+# Arguments:
+#   $1 - path to the Info.plist
+#   $2 - number of AudioComponents entries
+# Outputs:
+#   One line per violation, to stderr
+# Returns:
+#   0 when every entry is clean, non-zero otherwise
+function assert_narrowed() {
+  local plist_path="${1}"
+  local -i count="${2}"
+  local -i index
+  local -i violations=0
+
+  for ((index = 0; index < count; index++)); do
+    if has_resource_usage "${plist_path}" "${index}"; then
+      warn "AudioComponents.${index} still claims resourceUsage"
+      ((violations++)) || true
+    fi
+
+    if ! is_sandbox_safe "${plist_path}" "${index}"; then
+      warn "AudioComponents.${index} does not declare sandboxSafe = true"
+      ((violations++)) || true
+    fi
+  done
+
+  ((violations == 0))
+}
+
+function main() {
+  local check_only=false
+  local plist_path=""
+  local -i count
+
+  while [[ ${#} -gt 0 ]]; do
+    case "${1}" in
+      --check)
+        check_only=true
+        ;;
+      -*)
+        warn "unknown option '${1}'"
+        usage
+        return "${E_USAGE}"
+        ;;
+      *)
+        if [[ -n "${plist_path}" ]]; then
+          warn "expected exactly one plist path"
+          usage
+          return "${E_USAGE}"
+        fi
+        plist_path="${1}"
+        ;;
+    esac
+    shift
+  done
+
+  if [[ -z "${plist_path}" ]]; then
+    usage
+    return "${E_USAGE}"
+  fi
+
+  if [[ ! -r "${plist_path}" ]]; then
+    warn "cannot read '${plist_path}'"
+    return "${E_NOINPUT}"
+  fi
+
+  # An empty or malformed AudioComponents array means the plist is not the one this
+  # was pointed at, which is worth failing on rather than reporting a vacuous pass.
+  if ! count=$(audio_component_count "${plist_path}"); then
+    warn "'${plist_path}' has no AudioComponents array"
+    return "${E_DATAERR}"
+  fi
+
+  if ((count == 0)); then
+    warn "'${plist_path}' declares no AudioComponents"
+    return "${E_DATAERR}"
+  fi
+
+  if [[ "${check_only}" == false ]]; then
+    strip_resource_usage "${plist_path}" "${count}"
+  fi
+
+  if ! assert_narrowed "${plist_path}" "${count}"; then
+    return "${E_DATAERR}"
+  fi
+}
+
+main "${@}"

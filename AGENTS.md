@@ -20,21 +20,22 @@ These are settled decisions recorded in [`docs/adr/`](docs/adr/). Do not relitig
 ## Structure
 
 ```text
-build.zig              two artifacts from one core: static lib + .clap bundle
-build.zig.zon          pins Zig 0.16.0, CLAP 1.2.10, zig-objc by content hash
-cmake/                 clap-wrapper integration, used only for the AUv2 build
+build.zig                   two artifacts from one core: static lib + .clap bundle
+build.zig.zon               pins Zig 0.16.0, CLAP 1.2.10, zig-objc by content hash
+cmake/                      clap-wrapper integration, used only for the AUv2 build
   CMakeLists.txt
-  entry.cpp            the only C++ in the project; builds the clap_entry symbol
-macos/Info.plist       the .clap bundle's plist
-shaders/scope.metal    compiled at runtime from embedded source, not linked
+  entry.cpp                 the only C++ in the project; builds the clap_entry symbol
+  narrow-au-resource-usage  drops clap-wrapper's default AU sandbox claims
+macos/Info.plist            the .clap bundle's plist
+shaders/scope.metal         compiled at runtime from embedded source, not linked
 src/
-  main.zig             the host-facing boundary and exported entry points
-  clap/c.zig           translated CLAP ABI plus comptime layout assertions
+  main.zig                  the host-facing boundary and exported entry points
+  clap/c.zig                translated CLAP ABI plus comptime layout assertions
 docs/
-  adr/                 settled architecture decisions
-  design/              the source brainstorm this project came from
-  plans/todo/          active plans
-  plans/done/          completed plans, kept as historical records
+  adr/                      settled architecture decisions
+  design/                   the source brainstorm this project came from
+  plans/todo/               active plans
+  plans/done/               completed plans, kept as historical records
 ```
 
 ## Development
@@ -64,5 +65,6 @@ Validate with `clap-validator validate zig-out/Fosforo.clap`, and Audio Units wi
 - **CLAP bindings come from preprocessed headers.** Zig 0.16's `translate-c` mishandles `#pragma once` under path aliasing, so `build.zig` runs the headers through `zig cc -E` first. Object-like macros do not survive that; the ones that matter are restated and tested in `src/clap/c.zig` (ADR 0004).
 - **`unnamed_0` is toolchain-generated.** The anonymous union in `clap_window` is reached only through `clap.cocoaView()`. Re-verify after any Zig upgrade.
 - **Keep three deployment targets in step:** `build.zig`, `cmake/CMakeLists.txt`, and `macos/Info.plist` all specify macOS 11.0.
+- **The AUv2 build rewrites its own `Info.plist`.** clap-wrapper hardcodes a `resourceUsage` dictionary claiming network and whole-filesystem access, and emits it next to the `sandboxSafe` flag that Apple documents as mutually exclusive with it. `cmake/narrow-au-resource-usage` strips it as a POST_BUILD step, and the `audio-unit-sandbox` CI job asserts the result independently. Both no-op safely if clap-wrapper stops emitting it, so re-check when the pin moves.
 - **Some identifiers are permanent.** The AU triple (`aufx`/`Fsfr`/`Ctmn`) and the CLAP plugin `id` are stored in users' project files; changing either makes the plugin read as missing. The manufacturer name and display name are free metadata. See the plan's identifiers section before touching any of them.
 - **Shader validation is deliberately not part of `zig build test`,** so the build stays hermetic (ADR 0009).
