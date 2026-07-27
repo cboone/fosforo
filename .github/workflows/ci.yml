@@ -71,3 +71,29 @@ jobs:
 
       - name: Type-check shaders
         run: zig build validate-shaders
+
+  # The AUv2 component is the only artifact carrying a clap-wrapper-generated
+  # Info.plist, and clap-wrapper hardcodes sandbox claims this plugin does not want.
+  # `cmake/narrow-au-resource-usage` strips them as a POST_BUILD step, but a
+  # stripping step cannot detect its own absence, so this asserts independently
+  # against a from-scratch build. It is the slowest job here because CMake fetches
+  # the AudioUnit SDK, which is also why it builds only the AUv2 target.
+  audio-unit-sandbox:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version-file: build.zig.zon
+
+      - name: Build the Audio Unit
+        run: |
+          cmake -B build cmake/
+          cmake --build build --target fosforo_auv2
+
+      - name: Assert the component claims no sandbox resources
+        run: |
+          ./cmake/narrow-au-resource-usage --check \
+            build/assets/Fosforo.component/Contents/Info.plist
