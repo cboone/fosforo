@@ -246,14 +246,16 @@ Worth stating explicitly, because these look interchangeable and are not. Some a
 
 **Permanent once released.** Changing any of these makes the plugin read as missing in projects that used it, orphaning automation and settings. There is no redirect mechanism.
 
-| Identifier           | Value              | Where                  | Who persists it                |
-| -------------------- | ------------------ | ---------------------- | ------------------------------ |
-| AU type              | `aufx`             | `cmake/CMakeLists.txt` | Every AU host, including Logic |
-| AU subtype           | `Fsfr`             | `cmake/CMakeLists.txt` | Every AU host, including Logic |
-| AU manufacturer code | `Ctmn`             | `cmake/CMakeLists.txt` | Every AU host, including Logic |
-| **CLAP plugin `id`** | **not yet chosen** | plugin descriptor      | Every CLAP host, e.g. REAPER   |
+| Identifier           | Value                   | Where                  | Who persists it                |
+| -------------------- | ----------------------- | ---------------------- | ------------------------------ |
+| AU type              | `aufx`                  | `cmake/CMakeLists.txt` | Every AU host, including Logic |
+| AU subtype           | `Fsfr`                  | `cmake/CMakeLists.txt` | Every AU host, including Logic |
+| AU manufacturer code | `Ctmn`                  | `cmake/CMakeLists.txt` | Every AU host, including Logic |
+| **CLAP plugin `id`** | `com.catamount.fosforo` | `src/clap/plugin.zig`  | Every CLAP host, e.g. REAPER   |
 
-The CLAP `id` is the CLAP-side equivalent of the AU triple and carries exactly the same permanence. It gets defined in phase 1 along with the descriptor, so **decide it deliberately rather than incidentally**. Convention is reverse-DNS; `com.cboone.fosforo` matches the bundle identifier.
+The CLAP `id` is the CLAP-side equivalent of the AU triple and carries exactly the same permanence. It was settled in phase 1 along with the descriptor, and deliberately rather than incidentally.
+
+Convention is reverse-DNS, which leaves the choice of authority. The value tracks the **Catamount vendor identity** rather than `CFBundleIdentifier` (`com.cboone.fosforo`), because the two answer different questions: the bundle identifier is a code-signing and preferences identity, while the CLAP `id` is product identity as a host records it. Keying the latter to the vendor keeps it stable if the signing identity ever moves, at the cost that the two strings no longer match on sight. Anything comparing them is wrong by construction.
 
 **Sticky, but not project-breaking.** `CFBundleIdentifier` (`com.cboone.fosforo`, in `macos/Info.plist`) is the code-signing and notarization identity and the preferences domain. Changing it after release orphans user preferences and complicates signing, but does not break project reload.
 
