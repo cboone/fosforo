@@ -1,5 +1,9 @@
 const std = @import("std");
 
+/// The plugin descriptor reports a version string to the host, and the manifest
+/// already declares one. Reading it here keeps them from drifting apart.
+const zon = @import("build.zig.zon");
+
 /// Frameworks the plugin links against. Cocoa for the view, QuartzCore for the
 /// Metal layer, CoreVideo for the display link.
 const frameworks = [_][]const u8{ "Foundation", "Cocoa", "Metal", "QuartzCore", "CoreVideo" };
@@ -83,6 +87,8 @@ fn coreModule(
 ) *std.Build.Module {
     const options = b.addOptions();
     options.addOption(bool, "export_entry", export_entry);
+    // Sentinel-terminated because it crosses the ABI as a C string.
+    options.addOption([:0]const u8, "version", zon.version);
 
     const mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),

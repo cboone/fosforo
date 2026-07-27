@@ -11,6 +11,7 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const clap = @import("clap/c.zig");
+const plugin = @import("clap/plugin.zig");
 
 const c = clap.c;
 
@@ -28,11 +29,10 @@ export fn fosforo_clap_deinit() callconv(.c) void {}
 /// is required rather than merely polite.
 export fn fosforo_clap_get_factory(factory_id: [*c]const u8) callconv(.c) ?*const anyopaque {
     if (factory_id == null) return null;
-    if (!std.mem.eql(u8, std.mem.span(factory_id), std.mem.span(@as([*:0]const u8, @ptrCast(&c.CLAP_PLUGIN_FACTORY_ID))))) {
-        return null;
-    }
-    // The factory itself arrives with the walking skeleton (plan phase 1).
-    return null;
+    // The id survives preprocessing as a `static const` array rather than a
+    // macro, so it compares directly against the vendored header's own value.
+    if (!std.mem.eql(u8, std.mem.span(factory_id), &c.CLAP_PLUGIN_FACTORY_ID)) return null;
+    return &plugin.factory;
 }
 
 /// The one symbol a CLAP host looks up by name.
@@ -56,4 +56,13 @@ comptime {
 test {
     std.testing.refAllDecls(@This());
     _ = clap;
+    _ = plugin;
+}
+
+test "the entry hands back the plugin factory, and only for its own id" {
+    const got = fosforo_clap_get_factory(&c.CLAP_PLUGIN_FACTORY_ID);
+    try std.testing.expect(got == @as(?*const anyopaque, &plugin.factory));
+
+    try std.testing.expect(fosforo_clap_get_factory("clap.preset-discovery-factory") == null);
+    try std.testing.expect(fosforo_clap_get_factory(null) == null);
 }
