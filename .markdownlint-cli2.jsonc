@@ -1,0 +1,32 @@
+{
+  "config": {
+    // Prose paragraphs are single long lines; the editor handles visual
+    // wrapping. Hard-wrapping at a column makes diffs noisy when a sentence
+    // in the middle of a paragraph changes.
+    "MD013": false,
+
+    // Duplicate headings are fine under different parents. ADRs reuse
+    // "Context", "Decision", and "Consequences" across files, and sections
+    // like "Verification" recur legitimately.
+    "MD024": { "siblings_only": true },
+
+    // Inline HTML is used sparingly where Markdown has no equivalent.
+    "MD033": false,
+
+    // Pin the table style rather than letting it be inferred per table,
+    // which otherwise reports contradictory "compact" and "aligned"
+    // expectations within the same document.
+    "MD060": { "style": "aligned" }
+  },
+  "globs": ["**/*.md"],
+  "ignores": [
+    "build/**",
+    "zig-out/**",
+    "zig-pkg/**",
+    ".zig-cache/**",
+
+    // Preserved verbatim as the source brainstorm this project came from.
+    // Reformatting it would edit a historical record.
+    "docs/design/scope-plugin-handoff.md"
+  ]
+}

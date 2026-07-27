@@ -18,24 +18,24 @@ The product thesis is that analysis tools are a market failure rather than a har
 
 Everything below was verified empirically (Zig 0.16.0, Apple M5 Max, macOS 26.5.2, Xcode 26.6) rather than taken from the handoff on faith. Several findings contradict it.
 
-| Finding                                                                                                | Evidence                                                                     | Consequence                                                     |
-| -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ----------------------------------------------------------------- |
-| `clap-zig-bindings` is **LGPLv3**, covers CLAP **1.2.2**, and **fails to compile on Zig 0.16**         | Cloned; `zig build test` fails on the removed `std.testing.refAllDeclsRecursive` | Rejected. The handoff called it "the cleanest binding path"     |
-| Zig 0.16 **removed `@Type`**                                                                           | `@Type` reports `invalid builtin function`                                    | The classic comptime `objc_msgSend` cast pattern no longer works |
-| `zig-objc` migrated to the replacement `@Fn`/`@Tuple` builtins, is **MIT**, and passes on 0.16          | Cloned; `zig build test` exits 0                                             | Viable dependency, contrary to the handoff's "hand-roll it"     |
-| Zig `translate-c` mishandles `#pragma once` under path aliasing                                         | `clap/factory/../version.h` against `clap/version.h` yields 161 redefinition errors; plain clang is clean | Preprocess with `zig cc -E` before translating                  |
-| `clap-wrapper` consumes a **static library**, not a `.clap` dylib                                       | `make_clapfirst_plugins` takes `IMPL_TARGET` plus `ENTRY_SOURCE`             | Inverts the build shape the handoff assumed                     |
-| CLAP is at **1.2.10**, MIT licensed                                                                    | `version.h` in `free-audio/clap`                                             | Vendor current rather than 1.2.2                                |
-| **Visage is C++-only with no C API**                                                                    | Repository survey                                                            | Prior art only, never a dependency. Question closed             |
-| Runtime MSL compilation works from Zig                                                                 | `newLibraryWithSource:` resolved a fragment function                         | Runtime compilation is the single runtime path                  |
-| `clap-validator` is **not on crates.io**                                                               | `cargo install clap-validator` fails                                         | Install with `cargo install --git`                              |
+| Finding                                                                                        | Evidence                                                                                                  | Consequence                                                      |
+| ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `clap-zig-bindings` is **LGPLv3**, covers CLAP **1.2.2**, and **fails to compile on Zig 0.16** | Cloned; `zig build test` fails on the removed `std.testing.refAllDeclsRecursive`                          | Rejected. The handoff called it "the cleanest binding path"      |
+| Zig 0.16 **removed `@Type`**                                                                   | `@Type` reports `invalid builtin function`                                                                | The classic comptime `objc_msgSend` cast pattern no longer works |
+| `zig-objc` migrated to the replacement `@Fn`/`@Tuple` builtins, is **MIT**, and passes on 0.16 | Cloned; `zig build test` exits 0                                                                          | Viable dependency, contrary to the handoff's "hand-roll it"      |
+| Zig `translate-c` mishandles `#pragma once` under path aliasing                                | `clap/factory/../version.h` against `clap/version.h` yields 161 redefinition errors; plain clang is clean | Preprocess with `zig cc -E` before translating                   |
+| `clap-wrapper` consumes a **static library**, not a `.clap` dylib                              | `make_clapfirst_plugins` takes `IMPL_TARGET` plus `ENTRY_SOURCE`                                          | Inverts the build shape the handoff assumed                      |
+| CLAP is at **1.2.10**, MIT licensed                                                            | `version.h` in `free-audio/clap`                                                                          | Vendor current rather than 1.2.2                                 |
+| **Visage is C++-only with no C API**                                                           | Repository survey                                                                                         | Prior art only, never a dependency. Question closed              |
+| Runtime MSL compilation works from Zig                                                         | `newLibraryWithSource:` resolved a fragment function                                                      | Runtime compilation is the single runtime path                   |
+| `clap-validator` is **not on crates.io**                                                       | `cargo install clap-validator` fails                                                                      | Install with `cargo install --git`                               |
 
 The full chain is proven working: `translate-c` over normalized CLAP 1.2.10 headers, `export const clap_entry` emitting `_clap_entry`, Cocoa/Metal/QuartzCore/CoreVideo linking, `objc_msgSend` from Zig including float returns, Metal device acquisition reporting `hasUnifiedMemory: true`, runtime shader compilation, and `metal -fsyntax-only` correctly rejecting a bad shader.
 
 ### Environment status
 
 | Tool             | Status                                                                            |
-| ------------------ | ----------------------------------------------------------------------------------- |
+| ---------------- | --------------------------------------------------------------------------------- |
 | Zig 0.16.0       | Installed. Current stable, released 2026-04-13                                    |
 | CMake 4.4.0      | Installed. The below-3.5 policy risk did not materialize                          |
 | Metal toolchain  | Installed. Needed `xcrun --kill-cache` before `xcrun` would resolve it            |
@@ -47,20 +47,20 @@ The full chain is proven working: `translate-c` over normalized CLAP 1.2.10 head
 
 Each becomes an ADR under `docs/adr/`.
 
-| ADR  | Decision                                                                                                                       |
-| ------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| 0001 | Mac-first, Apple Silicon primary. One audio-thread contract, one SIMD target, unified memory                                   |
-| 0002 | Zig, pinned to 0.16.0 via `minimum_zig_version`. Compiler bumps are scheduled work, never incidental                           |
-| 0003 | Author CLAP once; project outward with `clap-wrapper`. Never author AU or VST3 directly                                        |
-| 0004 | CLAP bindings via `translate-c` over vendored, normalized headers. Reject `clap-zig-bindings` as copyleft, stale, and broken   |
-| 0005 | Metal directly, behind a small internal renderer interface. Build one backend; forbid Metal types leaking above the seam       |
-| 0006 | Reject a WebView UI. The serializing bridge and borrowed compositor schedule are disqualifying for a measurement instrument    |
-| 0007 | Render as a simulation of a physical device: persistent floating-point accumulation, decay, additive trace, tonemap            |
-| 0008 | Objective-C glue via `zig-objc`, with the project-local per-arity fallback already proven as a contingency                     |
-| 0009 | Runtime MSL compilation is the single runtime path. The Metal toolchain is a validation tool, never a build dependency         |
-| 0010 | Lock-free circular history buffer with one monotonic write cursor. Not a queue                                                 |
-| 0011 | AUv2 first. AUv3, VST3, AAX, and iPad remain later toggles with no bearing on output quality                                   |
-| 0012 | First deliverable is the phosphor oscilloscope only. Alignment and Family B lenses are deferred                                |
+| ADR  | Decision                                                                                                                     |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------- |
+| 0001 | Mac-first, Apple Silicon primary. One audio-thread contract, one SIMD target, unified memory                                 |
+| 0002 | Zig, pinned to 0.16.0 via `minimum_zig_version`. Compiler bumps are scheduled work, never incidental                         |
+| 0003 | Author CLAP once; project outward with `clap-wrapper`. Never author AU or VST3 directly                                      |
+| 0004 | CLAP bindings via `translate-c` over vendored, normalized headers. Reject `clap-zig-bindings` as copyleft, stale, and broken |
+| 0005 | Metal directly, behind a small internal renderer interface. Build one backend; forbid Metal types leaking above the seam     |
+| 0006 | Reject a WebView UI. The serializing bridge and borrowed compositor schedule are disqualifying for a measurement instrument  |
+| 0007 | Render as a simulation of a physical device: persistent floating-point accumulation, decay, additive trace, tonemap          |
+| 0008 | Objective-C glue via `zig-objc`, with the project-local per-arity fallback already proven as a contingency                   |
+| 0009 | Runtime MSL compilation is the single runtime path. The Metal toolchain is a validation tool, never a build dependency       |
+| 0010 | Lock-free circular history buffer with one monotonic write cursor. Not a queue                                               |
+| 0011 | AUv2 first. AUv3, VST3, AAX, and iPad remain later toggles with no bearing on output quality                                 |
+| 0012 | First deliverable is the phosphor oscilloscope only. Alignment and Family B lenses are deferred                              |
 
 ## Build architecture
 
@@ -107,18 +107,18 @@ src/
 
 ## Phase 0: repository foundation (complete)
 
-| Step | Work                                                                                                                                     | Status |
-| ------ | ------------------------------------------------------------------------------------------------------------------------------------------ | -------- |
-| 0.1  | Install `clap-validator` from git                                                                                                        | Done   |
-| 0.2  | Scaffold README, CHANGELOG, `.gitignore`, agent config, `docs/plans/`                                                                    | Done   |
-| 0.3  | Move the source brainstorm to `docs/design/scope-plugin-handoff.md`, verbatim                                                            | Done   |
-| 0.4  | Write ADRs 0001 through 0012 under `docs/adr/`                                                                                          | Done   |
-| 0.5  | Build skeleton: `build.zig`, `build.zig.zon`, `src/main.zig`, `src/clap/c.zig`                                                          | Done   |
-| 0.6  | `cmake/CMakeLists.txt` and `cmake/entry.cpp` wiring `make_clapfirst_plugins`                                                            | Done   |
-| 0.7  | CI on `macos-latest`, cross-compilation disabled                                                                                        | Done   |
-| 0.8  | Secret scanning (gitleaks, TruffleHog) and `.gitleaks.toml`                                                                             | Done   |
-| 0.9  | Community files: CONTRIBUTING, code of conduct, security policy, PR template                                                            | Done   |
-| 0.10 | `zig build validate-shaders`                                                                                                            | Done   |
+| Step | Work                                                                           | Status |
+| ---- | ------------------------------------------------------------------------------ | ------ |
+| 0.1  | Install `clap-validator` from git                                              | Done   |
+| 0.2  | Scaffold README, CHANGELOG, `.gitignore`, agent config, `docs/plans/`          | Done   |
+| 0.3  | Move the source brainstorm to `docs/design/scope-plugin-handoff.md`, verbatim  | Done   |
+| 0.4  | Write ADRs 0001 through 0012 under `docs/adr/`                                 | Done   |
+| 0.5  | Build skeleton: `build.zig`, `build.zig.zon`, `src/main.zig`, `src/clap/c.zig` | Done   |
+| 0.6  | `cmake/CMakeLists.txt` and `cmake/entry.cpp` wiring `make_clapfirst_plugins`   | Done   |
+| 0.7  | CI on `macos-latest`, cross-compilation disabled                               | Done   |
+| 0.8  | Secret scanning (gitleaks, TruffleHog) and `.gitleaks.toml`                    | Done   |
+| 0.9  | Community files: CONTRIBUTING, code of conduct, security policy, PR template   | Done   |
+| 0.10 | `zig build validate-shaders`                                                   | Done   |
 
 Two steps landed differently from how they were planned, both deliberately:
 
@@ -135,13 +135,13 @@ Phase 0 also absorbed work scheduled for Phase 1: the CMake integration builds `
 
 Steps 1 and 3 of the original plan (the static library and the clap-wrapper integration) landed in Phase 0, so what remains is tracked as issues under the [Phase 1 milestone](https://github.com/cboone/fosforo/milestone/1):
 
-| Issue                                                  | Work                                                                     |
-| -------------------------------------------------------- | -------------------------------------------------------------------------- |
-| [#2](https://github.com/cboone/fosforo/issues/2)       | Plugin factory and descriptor. **Chooses the permanent CLAP plugin `id`** |
-| [#3](https://github.com/cboone/fosforo/issues/3)       | Stereo `audio-ports`, pass-through `process`, `state`, `log`              |
-| [#4](https://github.com/cboone/fosforo/issues/4)       | CLAP GUI extension: `NSView` hosting a `CAMetalLayer`                    |
-| [#5](https://github.com/cboone/fosforo/issues/5)       | `CVDisplayLink` render loop and the resize seam                          |
-| [#1](https://github.com/cboone/fosforo/issues/1)       | Narrow the over-broad AU sandbox `resourceUsage` claims                  |
+| Issue                                            | Work                                                                      |
+| ------------------------------------------------ | ------------------------------------------------------------------------- |
+| [#2](https://github.com/cboone/fosforo/issues/2) | Plugin factory and descriptor. **Chooses the permanent CLAP plugin `id`** |
+| [#3](https://github.com/cboone/fosforo/issues/3) | Stereo `audio-ports`, pass-through `process`, `state`, `log`              |
+| [#4](https://github.com/cboone/fosforo/issues/4) | CLAP GUI extension: `NSView` hosting a `CAMetalLayer`                     |
+| [#5](https://github.com/cboone/fosforo/issues/5) | `CVDisplayLink` render loop and the resize seam                           |
+| [#1](https://github.com/cboone/fosforo/issues/1) | Narrow the over-broad AU sandbox `resourceUsage` claims                   |
 
 **Exit criteria:** loads in REAPER and Logic; `clap-validator` reports more than the current 3 passing tests once a factory exists; `auval -v aufx Fsfr Ctmn` passes; open, close, and resize during playback are clean.
 
@@ -212,28 +212,28 @@ Recorded so these read as deliberate omissions rather than oversights:
 
 ## Risks
 
-| Risk                                                                     | Status and mitigation                                                                                    |
-| -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| Linking a Zig static archive from CMake was unproven                   | **Retired.** Both AUv2 and CLAP build through clap-wrapper and pass `clap-validator`                     |
-| CMake 4.4 rejects `cmake_minimum_required` below 3.5                   | **Did not materialize.** Escape hatch if a future dependency trips it: `-DCMAKE_POLICY_VERSION_MINIMUM=3.5` |
-| Zig `translate-c` `#pragma once` bug                                   | **Worked around** by preprocessing with `zig cc -E`. Worth reporting upstream, though `ziglang/zig` is not your repository |
+| Risk                                                                    | Status and mitigation                                                                                                      |
+| ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Linking a Zig static archive from CMake was unproven                    | **Retired.** Both AUv2 and CLAP build through clap-wrapper and pass `clap-validator`                                       |
+| CMake 4.4 rejects `cmake_minimum_required` below 3.5                    | **Did not materialize.** Escape hatch if a future dependency trips it: `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`                |
+| Zig `translate-c` `#pragma once` bug                                    | **Worked around** by preprocessing with `zig cc -E`. Worth reporting upstream, though `ziglang/zig` is not your repository |
 | Toolchain-generated names such as `unnamed_0` shift across Zig versions | Comptime `@sizeOf` and `@offsetOf` assertions on every struct crossing the ABI. These already caught one wrong field count |
-| Zig 0.16 is recent and most third-party audio code predates it          | Minimal dependency surface: only CLAP headers and `zig-objc`, both verified on 0.16                      |
-| clap-wrapper is pinned to an untagged commit                            | `make_clapfirst_plugins` postdates v0.9.1. Move to a tag once one ships containing it                    |
-| Three deployment targets must stay in step                              | `build.zig`, `cmake/CMakeLists.txt`, and `macos/Info.plist` all say macOS 11.0. A mismatch shows as a linker warning |
+| Zig 0.16 is recent and most third-party audio code predates it          | Minimal dependency surface: only CLAP headers and `zig-objc`, both verified on 0.16                                        |
+| clap-wrapper is pinned to an untagged commit                            | `make_clapfirst_plugins` postdates v0.9.1. Move to a tag once one ships containing it                                      |
+| Three deployment targets must stay in step                              | `build.zig`, `cmake/CMakeLists.txt`, and `macos/Info.plist` all say macOS 11.0. A mismatch shows as a linker warning       |
 
 ## Verification
 
 | Layer      | Check                                                                                |
-| ------------ | -------------------------------------------------------------------------------------- |
-| Build      | `zig build` produces `Fosforo.clap`; `zig fmt --check` clean                          |
-| Bindings   | Comptime `@sizeOf` and `@offsetOf` assertions for every CLAP struct crossing the ABI  |
-| Shaders    | `zig build validate-shaders` pipes each shader through `metal -fsyntax-only`          |
-| Plugin     | `clap-validator validate` passes                                                      |
-| Audio Unit | `auval -v aufx <subtype> <manufacturer>` passes                                       |
-| Hosts      | Loads in REAPER, Logic Pro, and standalone; open, close, resize during playback       |
-| Real-time  | Debug-build assertion that `process` performs no allocation                            |
-| CI         | Green on `macos-latest`; gitleaks and TruffleHog clean                                |
+| ---------- | ------------------------------------------------------------------------------------ |
+| Build      | `zig build` produces `Fosforo.clap`; `zig fmt --check` clean                         |
+| Bindings   | Comptime `@sizeOf` and `@offsetOf` assertions for every CLAP struct crossing the ABI |
+| Shaders    | `zig build validate-shaders` pipes each shader through `metal -fsyntax-only`         |
+| Plugin     | `clap-validator validate` passes                                                     |
+| Audio Unit | `auval -v aufx <subtype> <manufacturer>` passes                                      |
+| Hosts      | Loads in REAPER, Logic Pro, and standalone; open, close, resize during playback      |
+| Real-time  | Debug-build assertion that `process` performs no allocation                          |
+| CI         | Green on `macos-latest`; gitleaks and TruffleHog clean                               |
 
 ## Items to confirm during execution
 
@@ -246,16 +246,17 @@ Worth stating explicitly, because these look interchangeable and are not. Some a
 
 **Permanent once released.** Changing any of these makes the plugin read as missing in projects that used it, orphaning automation and settings. There is no redirect mechanism.
 
-| Identifier                | Value                    | Where                  | Who persists it              |
-| --------------------------- | -------------------------- | ------------------------ | ------------------------------ |
-| AU type                   | `aufx`                   | `cmake/CMakeLists.txt` | Every AU host, including Logic |
-| AU subtype                | `Fsfr`                   | `cmake/CMakeLists.txt` | Every AU host, including Logic |
-| AU manufacturer code      | `Ctmn`                   | `cmake/CMakeLists.txt` | Every AU host, including Logic |
-| **CLAP plugin `id`**      | **not yet chosen**       | plugin descriptor      | Every CLAP host, e.g. REAPER   |
+| Identifier           | Value              | Where                  | Who persists it                |
+| -------------------- | ------------------ | ---------------------- | ------------------------------ |
+| AU type              | `aufx`             | `cmake/CMakeLists.txt` | Every AU host, including Logic |
+| AU subtype           | `Fsfr`             | `cmake/CMakeLists.txt` | Every AU host, including Logic |
+| AU manufacturer code | `Ctmn`             | `cmake/CMakeLists.txt` | Every AU host, including Logic |
+| **CLAP plugin `id`** | **not yet chosen** | plugin descriptor      | Every CLAP host, e.g. REAPER   |
 
 The CLAP `id` is the CLAP-side equivalent of the AU triple and carries exactly the same permanence. It gets defined in phase 1 along with the descriptor, so **decide it deliberately rather than incidentally**. Convention is reverse-DNS; `com.cboone.fosforo` matches the bundle identifier.
 
 **Sticky, but not project-breaking.** `CFBundleIdentifier` (`com.cboone.fosforo`, in `macos/Info.plist`) is the code-signing and notarization identity and the preferences domain. Changing it after release orphans user preferences and complicates signing, but does not break project reload.
 
 **Free to change.** The AU manufacturer *name* ("Catamount") and the display name ("Fósforo") are metadata. No host keys off them. One caveat: the manufacturer name must keep the `"Vendor: Product"` shape, because hosts split on the colon to group plugins by vendor in their browsers. Every AU surveyed follows this without exception. Hosts may also show a stale name until `~/Library/Caches/AudioUnitCache` is cleared.
+
 - **CI is unverified.** The workflows are lint-clean via `actionlint` but have never executed. Expect the first push to need a fixup, particularly around whether the `macos-latest` runner image already carries the Metal toolchain.
