@@ -133,15 +133,23 @@ Phase 0 also absorbed work scheduled for Phase 1: the CMake integration builds `
 
 **Goal:** a plugin that loads and renders a dim cleared drawable. This proves the whole CLAP plus Objective-C plus wrapper chain end to end so it never needs debugging again.
 
-Steps 1 and 3 of the original plan (the static library and the clap-wrapper integration) landed in Phase 0, so what remains is:
+Steps 1 and 3 of the original plan (the static library and the clap-wrapper integration) landed in Phase 0, so what remains is tracked as issues under the [Phase 1 milestone](https://github.com/cboone/fosforo/milestone/1):
 
-1. Plugin factory and descriptor, currently stubbed to return null.
-2. Minimal CLAP plugin: stereo `audio-ports`, pass-through `process`, `state`, `log`.
-3. CLAP GUI extension: create an `NSView` hosting a `CAMetalLayer` and graft it onto the host's parent view. Reach the parent through `clap.cocoaView()` rather than touching `unnamed_0` directly.
-4. `CVDisplayLink` render loop clearing to a dim color, skipping the frame cleanly when the next drawable returns nil.
-5. **Narrow the AU sandbox claims.** clap-wrapper's default `resourceUsage` in the generated `AudioComponents` entry claims `network.client` and `temporary-exception.files.all.read-write`. An analyzer needs neither, and overclaiming contradicts the threat model in `.github/SECURITY.md`. It matters for sandboxed hosts and for any future App Store path. Tracked as [issue #1](https://github.com/cboone/fosforo/issues/1).
+| Issue                                                  | Work                                                                     |
+| -------------------------------------------------------- | -------------------------------------------------------------------------- |
+| [#2](https://github.com/cboone/fosforo/issues/2)       | Plugin factory and descriptor. **Chooses the permanent CLAP plugin `id`** |
+| [#3](https://github.com/cboone/fosforo/issues/3)       | Stereo `audio-ports`, pass-through `process`, `state`, `log`              |
+| [#4](https://github.com/cboone/fosforo/issues/4)       | CLAP GUI extension: `NSView` hosting a `CAMetalLayer`                    |
+| [#5](https://github.com/cboone/fosforo/issues/5)       | `CVDisplayLink` render loop and the resize seam                          |
+| [#1](https://github.com/cboone/fosforo/issues/1)       | Narrow the over-broad AU sandbox `resourceUsage` claims                  |
 
 **Exit criteria:** loads in REAPER and Logic; `clap-validator` reports more than the current 3 passing tests once a factory exists; `auval -v aufx Fsfr Ctmn` passes; open, close, and resize during playback are clean.
+
+### How work is tracked
+
+This document holds the reasoning, architecture, and sequencing. GitHub issues hold actionable units, one milestone per phase.
+
+Issues are filed **just in time**, for whichever phase is next, rather than up front for all six. Phases 2 onward deliberately have no issues yet: ADR 0012 defers those decisions until the phosphor scope ships and gets reassessed, and filing them now would manufacture a backlog of choices that have not been made. File a phase's issues when it becomes the next phase, and link them back here.
 
 ## Phase 2: signal path
 
