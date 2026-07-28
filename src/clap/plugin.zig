@@ -257,15 +257,79 @@ fn process(
 }
 
 /// [thread-safe] Returning null for an unrecognised id is required rather than
-/// merely polite. Every extension this plugin will support is still unwritten,
-/// so for now that is all of them.
+/// merely polite. `clap.gui` arrives with issue #4.
 fn getExtension(
     plugin: [*c]const c.clap_plugin_t,
     extension_id: [*c]const u8,
 ) callconv(.c) ?*const anyopaque {
     _ = plugin;
-    _ = extension_id;
+    if (extension_id == null) return null;
+
+    const wanted = std.mem.span(extension_id);
+    if (std.mem.eql(u8, wanted, &c.CLAP_EXT_AUDIO_PORTS)) return &audio_ports;
     return null;
+}
+
+// ---------------------------------------------------------------------------
+// clap.audio-ports
+//
+// One stereo input and one stereo output, which is the whole shape of an
+// analyzer that sits on a track. The host may only scan these while the plugin
+// is deactivated, so nothing here has to be safe against a concurrent change.
+// ---------------------------------------------------------------------------
+
+const audio_ports: c.clap_plugin_audio_ports_t = .{
+    .count = audioPortsCount,
+    .get = audioPortsGet,
+};
+
+/// The one port id this plugin uses. CLAP allows input and output ids to
+/// overlap, and using the same value on both sides is what makes `in_place_pair`
+/// below unambiguous.
+const main_port_id: c.clap_id = 0;
+
+/// [main-thread]
+fn audioPortsCount(plugin: [*c]const c.clap_plugin_t, is_input: bool) callconv(.c) u32 {
+    _ = plugin;
+    _ = is_input;
+    return 1;
+}
+
+/// [main-thread]
+fn audioPortsGet(
+    plugin: [*c]const c.clap_plugin_t,
+    index: u32,
+    is_input: bool,
+    info: [*c]c.clap_audio_port_info_t,
+) callconv(.c) bool {
+    _ = plugin;
+    if (index != 0 or info == null) return false;
+
+    // Built locally and assigned once, so the host never sees a partially
+    // filled struct and the zeroing covers any field a CLAP bump adds.
+    var port = std.mem.zeroes(c.clap_audio_port_info_t);
+    port.id = main_port_id;
+    port.flags = @intCast(c.CLAP_AUDIO_PORT_IS_MAIN);
+    port.channel_count = 2;
+    port.port_type = &c.CLAP_PORT_STEREO;
+
+    // Declares in-place processing: the host may hand us one buffer serving as
+    // both sides. A pass-through wants exactly that, and `process` detects the
+    // case by pointer identity rather than trusting the offer was taken up.
+    port.in_place_pair = main_port_id;
+
+    setPortName(&port.name, if (is_input) "Main In" else "Main Out");
+
+    info.* = port;
+    return true;
+}
+
+/// `clap_audio_port_info.name` is a fixed `CLAP_NAME_SIZE` array the host reads
+/// as a C string, so the terminator matters more than the content.
+fn setPortName(dst: []u8, name: []const u8) void {
+    const len = @min(name.len, dst.len - 1);
+    @memcpy(dst[0..len], name[0..len]);
+    @memset(dst[len..], 0);
 }
 
 /// [main-thread] Only ever reached after the plugin asks the host for it.
@@ -446,10 +510,58 @@ test "activate refuses a malformed sample rate or frame range" {
     plugin.deactivate.?(plugin);
 }
 
-test "get_extension returns null until the extensions are written" {
+test "get_extension answers for what is implemented and nothing else" {
     const self = try create(testing.allocator, &test_host);
     defer self.plugin.destroy.?(&self.plugin);
 
+    const got = self.plugin.get_extension.?(&self.plugin, &c.CLAP_EXT_AUDIO_PORTS);
+    try testing.expect(got == @as(?*const anyopaque, &audio_ports));
+
+    // Arrives with issue #4.
     try testing.expect(self.plugin.get_extension.?(&self.plugin, "clap.gui") == null);
-    try testing.expect(self.plugin.get_extension.?(&self.plugin, "clap.audio-ports") == null);
+    try testing.expect(self.plugin.get_extension.?(&self.plugin, "clap.params") == null);
+}
+
+test "the plugin declares one stereo port on each side" {
+    const self = try create(testing.allocator, &test_host);
+    defer self.plugin.destroy.?(&self.plugin);
+    const plugin = &self.plugin;
+
+    try testing.expectEqual(@as(u32, 1), audio_ports.count.?(plugin, true));
+    try testing.expectEqual(@as(u32, 1), audio_ports.count.?(plugin, false));
+
+    for ([_]bool{ true, false }) |is_input| {
+        var info: c.clap_audio_port_info_t = undefined;
+        try testing.expect(audio_ports.get.?(plugin, 0, is_input, &info));
+
+        try testing.expectEqual(main_port_id, info.id);
+        try testing.expectEqual(@as(u32, 2), info.channel_count);
+        try testing.expectEqualStrings("stereo", std.mem.span(info.port_type));
+        try testing.expect(info.flags & @as(u32, @intCast(c.CLAP_AUDIO_PORT_IS_MAIN)) != 0);
+
+        // Not CLAP_INVALID_ID: the plugin is offering the host the option of
+        // handing it one buffer for both sides.
+        try testing.expectEqual(main_port_id, info.in_place_pair);
+        try testing.expect(info.in_place_pair != c.CLAP_INVALID_ID);
+
+        const name = std.mem.sliceTo(&info.name, 0);
+        try testing.expectEqualStrings(if (is_input) "Main In" else "Main Out", name);
+    }
+}
+
+test "audio_ports.get rejects an index that does not exist" {
+    const self = try create(testing.allocator, &test_host);
+    defer self.plugin.destroy.?(&self.plugin);
+
+    var info: c.clap_audio_port_info_t = undefined;
+    try testing.expect(!audio_ports.get.?(&self.plugin, 1, true, &info));
+    try testing.expect(!audio_ports.get.?(&self.plugin, 1, false, &info));
+}
+
+test "a port name longer than the field is truncated with room for the terminator" {
+    var name: [c.CLAP_NAME_SIZE]u8 = undefined;
+    setPortName(&name, "x" ** (c.CLAP_NAME_SIZE * 2));
+
+    try testing.expectEqual(@as(usize, c.CLAP_NAME_SIZE - 1), std.mem.sliceTo(&name, 0).len);
+    try testing.expectEqual(@as(u8, 0), name[name.len - 1]);
 }
