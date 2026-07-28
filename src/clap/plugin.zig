@@ -170,9 +170,26 @@ fn activate(
     min_frames_count: u32,
     max_frames_count: u32,
 ) callconv(.c) bool {
-    _ = min_frames_count;
     const self = Instance.from(plugin);
     std.debug.assert(!self.active);
+
+    // The contract says the host guarantees a positive sample rate and a frame
+    // range within [1, INT32_MAX]. This is still a trust boundary, and unlike
+    // most of them `activate` has a documented way to refuse. Everything
+    // downstream divides by `sample_rate` and sizes its buffers from
+    // `max_frames_count`, so a bad value accepted here does not fail here: it
+    // surfaces later as a division by zero or an undersized buffer on the audio
+    // thread, which is the one place with no way to report anything.
+    //
+    // Rejecting is deliberately narrower than the spec's stated bounds. A
+    // `min_frames_count` of 0 is out of spec but harmless, because nothing
+    // reads the minimum directly, and refusing to load over it would break a
+    // working host for no gain. The inversion check is the one that matters:
+    // a maximum below the minimum means `process` could be handed more frames
+    // than anything sized from `max_frames` allocated for.
+    if (!std.math.isFinite(sample_rate) or sample_rate <= 0) return false;
+    if (max_frames_count == 0 or max_frames_count > std.math.maxInt(i32)) return false;
+    if (max_frames_count < min_frames_count) return false;
 
     self.sample_rate = sample_rate;
     self.max_frames = max_frames_count;
@@ -380,6 +397,29 @@ test "an instance runs the whole lifecycle and frees itself" {
 
     // testing.allocator fails the test if this does not actually free.
     plugin.destroy.?(plugin);
+}
+
+test "activate refuses a malformed sample rate or frame range" {
+    const self = try create(testing.allocator, &test_host);
+    const plugin = &self.plugin;
+    defer plugin.destroy.?(plugin);
+
+    try testing.expect(!plugin.activate.?(plugin, 0, 1, 512));
+    try testing.expect(!plugin.activate.?(plugin, -48_000, 1, 512));
+    try testing.expect(!plugin.activate.?(plugin, std.math.nan(f64), 1, 512));
+    try testing.expect(!plugin.activate.?(plugin, std.math.inf(f64), 1, 512));
+    try testing.expect(!plugin.activate.?(plugin, 48_000, 1, 0));
+    try testing.expect(!plugin.activate.?(plugin, 48_000, 512, 256));
+
+    // Every refusal must leave the instance deactivated. Otherwise `destroy`
+    // trips its own assertion, and a host that reacted correctly to the false
+    // return would still be tearing down a plugin that believes it is live.
+    try testing.expect(!self.active);
+
+    // Out of spec but harmless, so it still has to load: nothing reads the
+    // minimum, and refusing here would break a working host for no gain.
+    try testing.expect(plugin.activate.?(plugin, 48_000, 0, 512));
+    plugin.deactivate.?(plugin);
 }
 
 test "get_extension returns null until the extensions are written" {
