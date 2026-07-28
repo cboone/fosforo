@@ -31,7 +31,9 @@ shaders/scope.metal         compiled at runtime from embedded source, not linked
 src/
   main.zig                  the host-facing boundary and exported entry points
   clap/c.zig                translated CLAP ABI plus comptime layout assertions
-  clap/plugin.zig           factory, descriptor, and instance lifecycle
+  clap/plugin.zig           factory, descriptor, lifecycle, audio ports, process
+  clap/state.zig            the versioned save/load format and its stream loops
+  clap/log.zig              diagnostics routed through the host's clap.log
 docs/
   adr/                      settled architecture decisions
   design/                   the source brainstorm this project came from
