@@ -58,7 +58,7 @@ cmake -B build cmake/
 cmake --build build --target fosforo_all
 ```
 
-Validate with `clap-validator validate zig-out/Fosforo.clap`, and Audio Units with `auval`.
+Validate with `clap-validator validate zig-out/Fosforo.clap`, and Audio Units with `auval`. CI runs the first of those on every push, so it is no longer only a local step; `auval` still is.
 
 ## Gotchas
 
@@ -69,3 +69,4 @@ Validate with `clap-validator validate zig-out/Fosforo.clap`, and Audio Units wi
 - **The AUv2 build rewrites its own `Info.plist`.** clap-wrapper hardcodes a `resourceUsage` dictionary claiming network and whole-filesystem access, and emits it next to the `sandboxSafe` flag that Apple documents as mutually exclusive with it. `cmake/narrow-au-resource-usage` strips it as a POST_BUILD step, and the `audio-unit-sandbox` CI job asserts the result independently. Both no-op safely if clap-wrapper stops emitting it, so re-check when the pin moves.
 - **Some identifiers are permanent.** The AU triple (`aufx`/`Fsfr`/`Ctmn`) and the CLAP plugin `id` are stored in users' project files; changing either makes the plugin read as missing. The manufacturer name and display name are free metadata. See the plan's identifiers section before touching any of them.
 - **Shader validation is deliberately not part of `zig build test`,** so the build stays hermetic (ADR 0009).
+- **The `clap-validator` CI job pins two things,** both in `.github/workflows/ci.yml`: the validator commit, because it is installed from git rather than a registry and a tag can move, and the Rust toolchain that builds it, because the crate declares an MSRV the runner image may stop satisfying. Bump them together and the cache key follows automatically. Warnings do not fail that job: `clap-validator` exits non-zero on failed and crashed tests only, so a `WARNING` line is visible in the log without breaking the build.
