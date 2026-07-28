@@ -8,6 +8,7 @@ const std = @import("std");
 const build_options = @import("build_options");
 const clap = @import("c.zig");
 const log = @import("log.zig");
+const state = @import("state.zig");
 
 const c = clap.c;
 
@@ -368,7 +369,52 @@ fn getExtension(
 
     const wanted = std.mem.span(extension_id);
     if (std.mem.eql(u8, wanted, &c.CLAP_EXT_AUDIO_PORTS)) return &audio_ports;
+    if (std.mem.eql(u8, wanted, &c.CLAP_EXT_STATE)) return &plugin_state;
     return null;
+}
+
+// ---------------------------------------------------------------------------
+// clap.state
+//
+// Two callbacks over src/clap/state.zig, which owns the format. Both run on the
+// main thread, so neither is subject to ADR 0010.
+// ---------------------------------------------------------------------------
+
+const plugin_state: c.clap_plugin_state_t = .{
+    .save = stateSave,
+    .load = stateLoad,
+};
+
+/// [main-thread]
+fn stateSave(
+    plugin: [*c]const c.clap_plugin_t,
+    stream: [*c]const c.clap_ostream_t,
+) callconv(.c) bool {
+    const self = Instance.from(plugin);
+    if (stream == null) return false;
+
+    if (!state.save(stream)) {
+        self.log.message(c.CLAP_LOG_ERROR, "state save failed: the host's stream rejected the write");
+        return false;
+    }
+    return true;
+}
+
+/// [main-thread] A failed load leaves the instance as it was. There is nothing
+/// to restore yet, so that is trivially true here, and it is the behaviour to
+/// preserve once there is: a half-applied state is worse than a refused one.
+fn stateLoad(
+    plugin: [*c]const c.clap_plugin_t,
+    stream: [*c]const c.clap_istream_t,
+) callconv(.c) bool {
+    const self = Instance.from(plugin);
+    if (stream == null) return false;
+
+    state.load(stream) catch |err| {
+        self.log.print(c.CLAP_LOG_WARNING, "state load failed: {s}", .{@errorName(err)});
+        return false;
+    };
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -695,12 +741,45 @@ test "get_extension answers for what is implemented and nothing else" {
     const self = try create(testing.allocator, &test_host);
     defer self.plugin.destroy.?(&self.plugin);
 
-    const got = self.plugin.get_extension.?(&self.plugin, &c.CLAP_EXT_AUDIO_PORTS);
-    try testing.expect(got == @as(?*const anyopaque, &audio_ports));
+    const ports = self.plugin.get_extension.?(&self.plugin, &c.CLAP_EXT_AUDIO_PORTS);
+    try testing.expect(ports == @as(?*const anyopaque, &audio_ports));
+
+    const persisted = self.plugin.get_extension.?(&self.plugin, &c.CLAP_EXT_STATE);
+    try testing.expect(persisted == @as(?*const anyopaque, &plugin_state));
 
     // Arrives with issue #4.
     try testing.expect(self.plugin.get_extension.?(&self.plugin, "clap.gui") == null);
     try testing.expect(self.plugin.get_extension.?(&self.plugin, "clap.params") == null);
+}
+
+test "state round trips through the extension the host actually calls" {
+    const self = try create(testing.allocator, &test_host);
+    defer self.plugin.destroy.?(&self.plugin);
+    _ = self.plugin.init.?(&self.plugin);
+
+    var stream: state.TestStream = .{};
+    try testing.expect(plugin_state.save.?(&self.plugin, stream.writer()));
+    try testing.expect(plugin_state.load.?(&self.plugin, stream.reader()));
+}
+
+test "state reports failure rather than dereferencing a null stream" {
+    const self = try create(testing.allocator, &test_host);
+    defer self.plugin.destroy.?(&self.plugin);
+    _ = self.plugin.init.?(&self.plugin);
+
+    try testing.expect(!plugin_state.save.?(&self.plugin, null));
+    try testing.expect(!plugin_state.load.?(&self.plugin, null));
+}
+
+test "state load refuses a blob this build cannot read" {
+    const self = try create(testing.allocator, &test_host);
+    defer self.plugin.destroy.?(&self.plugin);
+    _ = self.plugin.init.?(&self.plugin);
+
+    var stream: state.TestStream = .{};
+    stream.seed("not fosforo state");
+
+    try testing.expect(!plugin_state.load.?(&self.plugin, stream.reader()));
 }
 
 test "the plugin declares one stereo port on each side" {
