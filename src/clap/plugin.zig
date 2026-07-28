@@ -7,6 +7,7 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const clap = @import("c.zig");
+const log = @import("log.zig");
 
 const c = clap.c;
 
@@ -61,6 +62,11 @@ const Instance = struct {
     plugin: c.clap_plugin_t,
     allocator: std.mem.Allocator,
     host: *const c.clap_host_t,
+
+    /// Resolved in `init`, which is the first callback where host extensions
+    /// exist. Until then it is the inert value, which discards rather than
+    /// dereferences.
+    log: log.Log = .{},
 
     /// The two axes CLAP writes its threading contracts against, as in
     /// `[audio-thread & active & !processing]`. Tracked so a debug build traps
@@ -150,7 +156,14 @@ fn createPlugin(
 /// [main-thread] Host extensions are reachable from here, unlike in
 /// `create_plugin`, so anything needing them belongs here.
 fn init(plugin: [*c]const c.clap_plugin_t) callconv(.c) bool {
-    _ = plugin;
+    const self = Instance.from(plugin);
+
+    self.log = log.Log.init(self.host);
+    self.log.print(c.CLAP_LOG_DEBUG, "initialised against host {s} {s}", .{
+        if (self.host.name) |name| std.mem.span(name) else "(unnamed)",
+        if (self.host.version) |v| std.mem.span(v) else "(no version)",
+    });
+
     return true;
 }
 
@@ -266,9 +279,11 @@ fn onMainThread(plugin: [*c]const c.clap_plugin_t) callconv(.c) void {
 
 const testing = std.testing;
 
-/// `create_plugin` is forbidden from calling host callbacks and nothing below
-/// it calls them yet, so leaving the function pointers null is not a shortcut:
-/// a test that starts failing here is reporting a real contract violation.
+/// A host offering no extensions at all, which is the shape every callback here
+/// has to survive. `get_extension` is populated because `init` calls it; the
+/// remaining pointers stay null because nothing in this file reaches them, so a
+/// test that starts failing on a null call is reporting a real contract
+/// violation rather than a gap in the fixture.
 const test_host: c.clap_host_t = .{
     .clap_version = clap.version,
     .host_data = null,
@@ -276,11 +291,20 @@ const test_host: c.clap_host_t = .{
     .vendor = "Catamount",
     .url = "",
     .version = "0.0.0",
-    .get_extension = null,
+    .get_extension = testNoExtensions,
     .request_restart = null,
     .request_process = null,
     .request_callback = null,
 };
+
+fn testNoExtensions(
+    host: [*c]const c.clap_host_t,
+    extension_id: [*c]const u8,
+) callconv(.c) ?*const anyopaque {
+    _ = host;
+    _ = extension_id;
+    return null;
+}
 
 // Event list stubs. A host always supplies both lists, so the fixture below
 // does too rather than leaving them null.
