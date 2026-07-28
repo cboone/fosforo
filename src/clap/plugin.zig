@@ -265,6 +265,65 @@ const test_host: c.clap_host_t = .{
     .request_callback = null,
 };
 
+// Event list stubs. A host always supplies both lists, so the fixture below
+// does too rather than leaving them null.
+
+fn testEventCount(list: [*c]const c.clap_input_events_t) callconv(.c) u32 {
+    _ = list;
+    return 0;
+}
+
+fn testEventGet(
+    list: [*c]const c.clap_input_events_t,
+    index: u32,
+) callconv(.c) [*c]const c.clap_event_header_t {
+    _ = list;
+    _ = index;
+    return null;
+}
+
+fn testEventPush(
+    list: [*c]const c.clap_output_events_t,
+    event: [*c]const c.clap_event_header_t,
+) callconv(.c) bool {
+    _ = list;
+    _ = event;
+    return true;
+}
+
+const test_in_events: c.clap_input_events_t = .{
+    .ctx = null,
+    .size = testEventCount,
+    .get = testEventGet,
+};
+
+const test_out_events: c.clap_output_events_t = .{
+    .ctx = null,
+    .try_push = testEventPush,
+};
+
+/// Shaped like what a host actually passes, rather than the minimum that
+/// compiles. `process` currently ignores all of it, which is exactly why the
+/// fixture has to be honest now: a null context would exercise a call no host
+/// makes, and would quietly stop testing anything the moment the signal tap in
+/// issue #3 starts reading these fields.
+///
+/// Zero audio buses is not a simplification, it is the current truth: the
+/// plugin declares no audio ports yet. A null `transport` is legal and means
+/// free-running, which is the case `clap-validator`'s `transport-null` test
+/// covers.
+const test_process: c.clap_process_t = .{
+    .steady_time = 0,
+    .frames_count = 512,
+    .transport = null,
+    .audio_inputs = null,
+    .audio_outputs = null,
+    .audio_inputs_count = 0,
+    .audio_outputs_count = 0,
+    .in_events = &test_in_events,
+    .out_events = &test_out_events,
+};
+
 test "the factory exposes exactly one plugin" {
     try testing.expectEqual(@as(u32, 1), factory.get_plugin_count.?(&factory));
     try testing.expect(factory.get_plugin_descriptor.?(&factory, 0) == &descriptor);
@@ -310,7 +369,7 @@ test "an instance runs the whole lifecycle and frees itself" {
 
     try testing.expect(plugin.start_processing.?(plugin));
     try testing.expect(self.processing);
-    try testing.expectEqual(c.CLAP_PROCESS_CONTINUE, plugin.process.?(plugin, null));
+    try testing.expectEqual(c.CLAP_PROCESS_CONTINUE, plugin.process.?(plugin, &test_process));
 
     plugin.reset.?(plugin);
     plugin.stop_processing.?(plugin);
