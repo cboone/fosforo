@@ -51,7 +51,11 @@ test "restated version macros match the vendored headers" {
     try std.testing.expectEqual(c.CLAP_VERSION.revision, version_revision);
 }
 
-test "restated feature strings match plugin-features.h" {
+// Deliberately not named after the header, unlike the version test above. That
+// one reads `CLAP_VERSION` and genuinely proves agreement with the vendored
+// headers. Preprocessing leaves nothing here to compare against, so this only
+// restates the literals a second time and catches a one-sided edit.
+test "restated feature strings are pinned against a careless edit" {
     try std.testing.expectEqualStrings("analyzer", feature.analyzer);
     try std.testing.expectEqualStrings("audio-effect", feature.audio_effect);
     try std.testing.expectEqualStrings("stereo", feature.stereo);
