@@ -125,6 +125,12 @@ Local, all run against a from-scratch `cmake -B build cmake/`:
 
 The duplicated-feature run is the one that matters most. It compiles, `zig build test` passes, and only the validator catches it, which proves the new gate reaches the descriptor through `cmake/entry.cpp` rather than merely asserting a file exists.
 
+Re-run after merging `main`, which brought in [#3](https://github.com/cboone/fosforo/issues/3)'s audio ports, state, and log extensions: both bundles report 44 run, **21** passed, 0 failed, 0 warnings, 23 skipped. The absolute number moves whenever an extension lands; what this job guards is that the two bundles keep agreeing, and they do.
+
+## Note on the PR that carried this
+
+The pull request opened with no CI at all, which was a real signal rather than a fluke. `main` had moved while the branch was open, the branch conflicted, and so `refs/pull/16/merge` never existed. GitHub does not start `pull_request` workflow runs until it can compute that ref, so all three workflows stayed silent while `workflow_dispatch` on the same branch ran fine. A conflicting PR looks exactly like a PR whose checks have not started yet. `gh pr view --json mergeable` distinguishes them: `mergeable: false`, `mergeable_state: dirty`.
+
 On the pull request:
 
 | Check                   | Expectation                                                                                                                   |
