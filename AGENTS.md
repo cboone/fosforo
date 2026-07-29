@@ -32,8 +32,13 @@ src/
   main.zig                  the host-facing boundary and exported entry points
   clap/c.zig                translated CLAP ABI plus comptime layout assertions
   clap/plugin.zig           factory, descriptor, lifecycle, audio ports, process
+  clap/gui.zig              the editor's lifecycle, with no AppKit or Metal in it
   clap/state.zig            the versioned save/load format and its stream loops
   clap/log.zig              diagnostics routed through the host's clap.log
+  gpu/iface.zig             THE SEAM. No Metal type may be named above this file
+  gpu/metal/renderer.zig    the one backend: device, pipeline, layer, one frame
+  platform/objc.zig         Core Graphics types and the main-thread assertion
+  platform/view.zig         the NSView the host embeds, and nothing about Metal
 docs/
   adr/                      settled architecture decisions
   design/                   the source brainstorm this project came from
@@ -69,6 +74,8 @@ Validate with `clap-validator validate zig-out/Fosforo.clap`, and Audio Units wi
 - **`xcrun` caches tool lookups.** If `xcrun metal` reports the Metal toolchain missing right after installing it, run `xcrun --kill-cache`.
 - **CLAP bindings come from preprocessed headers.** Zig 0.16's `translate-c` mishandles `#pragma once` under path aliasing, so `build.zig` runs the headers through `zig cc -E` first. Object-like macros do not survive that; the ones that matter are restated and tested in `src/clap/c.zig` (ADR 0004).
 - **`unnamed_0` is toolchain-generated.** The anonymous union in `clap_window` is reached only through `clap.cocoaView()`. Re-verify after any Zig upgrade.
+- **Metal's and AppKit's constants are hand-restated.** Their headers are Objective-C, so `translate-c` cannot read them the way it reads CLAP's. `MTLPixelFormat`, `MTLLoadAction`, `MTLStoreAction`, and `MTLPrimitiveType` live in `src/gpu/metal/renderer.zig`; `NSView.autoresizingMask` lives in `src/platform/objc.zig`. Unlike the restated CLAP macros in `src/clap/c.zig`, there is no surviving header symbol to test them against. They are ABI values Apple cannot renumber, and a wrong one shows as a black or garbled drawable rather than as anything subtle.
+- **`@embedFile` reaches `shaders/` through the import table.** It resolves relative to the importing file and cannot escape the module root, which is `src/`. `build.zig` adds the shader with `addAnonymousImport`, which is why `@embedFile("scope.metal")` works from `src/gpu/metal/`. Keeping shaders outside `src/` is deliberate: `zig build validate-shaders` treats that directory as shaders rather than as Zig.
 - **Keep three deployment targets in step:** `build.zig`, `cmake/CMakeLists.txt`, and `macos/Info.plist` all specify macOS 11.0.
 - **The AUv2 build rewrites its own `Info.plist`.** clap-wrapper hardcodes a `resourceUsage` dictionary claiming network and whole-filesystem access, and emits it next to the `sandboxSafe` flag that Apple documents as mutually exclusive with it. `cmake/narrow-au-resource-usage` strips it as a POST_BUILD step, and the `clap-wrapper` CI job asserts the result independently. Both no-op safely if clap-wrapper stops emitting it, so re-check when the pin moves.
 - **Some identifiers are permanent.** The AU triple (`aufx`/`Fsfr`/`Ctmn`) and the CLAP plugin `id` are stored in users' project files; changing either makes the plugin read as missing. The manufacturer name and display name are free metadata. See the plan's identifiers section before touching any of them.
