@@ -99,6 +99,14 @@ fn coreModule(
     mod.addImport("clap_c", clap_c);
     mod.addImport("objc", objc);
     mod.addImport("build_options", options.createModule());
+
+    // Shaders are compiled at runtime from source embedded in the binary
+    // (ADR 0009). `@embedFile` resolves relative to the importing file and
+    // cannot escape the module root, which is src/, so the file is reached
+    // through the import table instead. Keeping shaders/ outside src/ is what
+    // lets `zig build validate-shaders` treat it as a directory of shaders
+    // rather than of Zig.
+    mod.addAnonymousImport("scope.metal", .{ .root_source_file = b.path("shaders/scope.metal") });
     for (frameworks) |fw| mod.linkFramework(fw, .{});
     return mod;
 }
