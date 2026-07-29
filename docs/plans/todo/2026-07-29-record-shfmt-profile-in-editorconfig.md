@@ -15,21 +15,21 @@ Two decisions extend the issue's minimum. The `.editorconfig` also carries verif
 Everything below was confirmed empirically against the working tree with `shfmt` 3.13.1 and `shellcheck` 0.11.0, not assumed.
 
 <!-- prettier-ignore -->
-| Claim                                                    | Result                                                        |
-| -------------------------------------------------------- | ------------------------------------------------------------- |
-| Bare `shfmt -d` diffs the script                          | Yes, 7 hunks: redirects and `case` indentation                 |
-| `shfmt -i 2 -ci -sr -d` is silent                         | Yes, exit 0                                                    |
-| `shellcheck` is silent                                    | Yes, exit 0                                                    |
-| `[*.sh]` reaches the extensionless script                 | **No.** Confirms the issue's third task                        |
-| `[{*.sh,narrow-au-resource-usage}]` reaches it            | Yes, clean under bare `shfmt -d`                               |
-| `.editorconfig` is found from any cwd and via `shfmt -d .`| Yes, including an absolute path from `/`                       |
-| **Any formatting flag suppresses `.editorconfig`**        | **Yes.** `shfmt -i 2 -d` still diffs, and `-ln bash -d` does   |
-| `shfmt -f .` finds the script by shebang                  | Yes, and it is the only shell file in the repository           |
-| Repository is all LF, all ASCII/UTF-8                     | Yes, every tracked file                                        |
-| Every file ends with a newline                            | Yes, none missing                                              |
-| Trailing whitespace anywhere                              | None, including in Markdown                                    |
-| Tab indentation anywhere                                  | None                                                           |
-| Indent widths                                             | 4 for `.zig`/`.zon`/C/C++/Metal/CMake, 2 for YAML/JSON/TOML    |
+| Claim                                                      | Result                                                       |
+| ---------------------------------------------------------- | ------------------------------------------------------------ |
+| Bare `shfmt -d` diffs the script                           | Yes, 7 hunks: redirects and `case` indentation               |
+| `shfmt -i 2 -ci -sr -d` is silent                          | Yes, exit 0                                                  |
+| `shellcheck` is silent                                     | Yes, exit 0                                                  |
+| `[*.sh]` reaches the extensionless script                  | **No.** Confirms the issue's third task                      |
+| `[{*.sh,narrow-au-resource-usage}]` reaches it             | Yes, clean under bare `shfmt -d`                             |
+| `.editorconfig` is found from any cwd and via `shfmt -d .` | Yes, including an absolute path from `/`                     |
+| **Any formatting flag suppresses `.editorconfig`**         | **Yes.** `shfmt -i 2 -d` still diffs, and `-ln bash -d` does |
+| `shfmt -f .` finds the script by shebang                   | Yes, and it is the only shell file in the repository         |
+| Repository is all LF, all ASCII/UTF-8                      | Yes, every tracked file                                      |
+| Every file ends with a newline                             | Yes, none missing                                            |
+| Trailing whitespace anywhere                               | None, including in Markdown                                  |
+| Tab indentation anywhere                                   | None                                                         |
+| Indent widths                                              | 4 for `.zig`/`.zon`/C/C++/Metal/CMake, 2 for YAML/JSON/TOML  |
 
 The flag-suppression finding is the load-bearing one: it means `shfmt -d` is correct and `shfmt -i 2 -d` silently is not, which is counterintuitive enough to document in three places.
 
@@ -165,12 +165,12 @@ Add to `## Pull Request Process` after the existing formatting step: `shfmt -d .
 ## Files touched
 
 <!-- prettier-ignore -->
-| File                        | Change                                                        |
-| --------------------------- | ------------------------------------------------------------- |
-| `.editorconfig`             | New. The profile plus verified whole-repository defaults       |
-| `.github/workflows/ci.yml`  | New `shell` job; `.editorconfig` removed from both ignore lists|
-| `AGENTS.md`                 | Development commands and one Gotchas bullet                    |
-| `CONTRIBUTING.md`           | Requirements, Code Style, Pull Request Process                 |
+| File                       | Change                                                          |
+| -------------------------- | --------------------------------------------------------------- |
+| `.editorconfig`            | New. The profile plus verified whole-repository defaults        |
+| `.github/workflows/ci.yml` | New `shell` job; `.editorconfig` removed from both ignore lists |
+| `AGENTS.md`                | Development commands and one Gotchas bullet                     |
+| `CONTRIBUTING.md`          | Requirements, Code Style, Pull Request Process                  |
 
 `cmake/narrow-au-resource-usage` is **not** modified. Its behavior must not change; the whole point is that the file was already correct.
 
