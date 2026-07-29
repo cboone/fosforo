@@ -7,7 +7,6 @@ on:
       - "*.md"
       - "docs/**"
       - "LICENSE"
-      - ".editorconfig"
       - ".claude/**"
       - "**/CLAUDE.md"
       - "**/AGENTS.md"
@@ -17,7 +16,6 @@ on:
       - "*.md"
       - "docs/**"
       - "LICENSE"
-      - ".editorconfig"
       - ".claude/**"
       - "**/CLAUDE.md"
       - "**/AGENTS.md"
@@ -71,6 +69,47 @@ jobs:
 
       - name: Type-check shaders
         run: zig build validate-shaders
+
+  # The reusable workflow's `format` job runs `zig fmt --check` and nothing
+  # else, so no shell tooling ran anywhere in this repository. That left the
+  # `.editorconfig` profile resting on someone remembering to run the tool.
+  #
+  # Ubuntu rather than macOS: both tools are platform-independent static
+  # analysis, and the macOS runner bills at ten times the rate.
+  #
+  # Both versions are pinned for the same reason the validator below is. The
+  # runner image ships shellcheck 0.9.0, which would move under this on the next
+  # image refresh; these are the versions the profile was verified against.
+  # Release binaries rather than a setup action keeps the pin explicit and adds
+  # no third-party action to audit.
+  shell:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SHFMT_VERSION: "3.13.1"
+      SHELLCHECK_VERSION: "0.11.0"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install shfmt and shellcheck
+        run: |
+          curl -sSfL -o shfmt \
+            "https://github.com/mvdan/sh/releases/download/v${SHFMT_VERSION}/shfmt_v${SHFMT_VERSION}_linux_amd64"
+          sudo install shfmt /usr/local/bin/shfmt
+          curl -sSfL \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
+            | tar -xJf -
+          sudo install "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+
+      # No flags, deliberately. shfmt discards .editorconfig wholesale if any
+      # formatting flag is passed, and that file is the only place the profile
+      # is recorded. `-f .` finds the extensionless script by its shebang, so
+      # neither step hardcodes a path that has to be maintained by hand.
+      - name: Check shell formatting
+        run: shfmt -d .
+
+      - name: Lint shell scripts
+        run: shfmt -f . | xargs -r shellcheck
 
   # ADR 0003, AGENTS.md, and the plan's verification table all name
   # `clap-validator` as required verification, but nothing ran it except someone
