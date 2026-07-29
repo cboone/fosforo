@@ -107,6 +107,8 @@ The `--json --only-failed` output from that same broken build was captured and t
 
 The clap-wrapper-built `.clap` is not validated. A follow-up issue records this rather than leaving it implicit: `make_clapfirst_plugins` already declares a `fosforo_clap` target emitting into `build/assets/`, so the work is a `--target fosforo_clap` build plus one validate step, most naturally inside `audio-unit-sandbox` where the CMake cost is already paid.
 
+**Closed.** [#12](https://github.com/cboone/fosforo/issues/12) did exactly that, and folded in [#7](https://github.com/cboone/fosforo/issues/7); `audio-unit-sandbox` is now `clap-wrapper`. See `docs/plans/done/2026-07-29-validate-the-clap-wrapper-built-clap.md`.
+
 ## Files
 
 | File                                                                  | Change                                             |

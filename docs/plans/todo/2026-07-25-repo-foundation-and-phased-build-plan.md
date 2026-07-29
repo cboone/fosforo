@@ -229,7 +229,7 @@ Recorded so these read as deliberate omissions rather than oversights:
 | Build      | `zig build` produces `Fosforo.clap`; `zig fmt --check` clean                         |
 | Bindings   | Comptime `@sizeOf` and `@offsetOf` assertions for every CLAP struct crossing the ABI |
 | Shaders    | `zig build validate-shaders` pipes each shader through `metal -fsyntax-only`         |
-| Plugin     | `clap-validator validate` passes, enforced by the `clap-validator` CI job            |
+| Plugin     | `clap-validator validate` passes for **both** `.clap` bundles, enforced in CI        |
 | Audio Unit | `auval -v aufx <subtype> <manufacturer>` passes. Still manual                        |
 | Hosts      | Loads in REAPER, Logic Pro, and standalone; open, close, resize during playback      |
 | Real-time  | Debug-build assertion that `process` performs no allocation                          |

@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - CI now runs `clap-validator` against the built `.clap` on every push, so the validation that ADR 0003 and `AGENTS.md` both call for is enforced rather than left to whoever remembers to run it locally. The validator is pinned to a commit and built with a pinned Rust toolchain, then cached, so upstream cannot turn CI red without a change here ([#10](https://github.com/cboone/fosforo/issues/10)).
+- CI now covers the clap-wrapper-built `.clap` too, not just the Zig-built one. The two share an implementation but not an entry point, so a defect in the clap-wrapper seam used to pass CI silently, and ADR 0003 makes that seam load-bearing. The job that asserted the AU sandbox claims now builds both wrapper artifacts and validates the CLAP, and is renamed from `audio-unit-sandbox` to `clap-wrapper` to match ([#12](https://github.com/cboone/fosforo/issues/12), [#7](https://github.com/cboone/fosforo/issues/7)).
 
 ### Fixed
 
