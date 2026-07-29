@@ -215,3 +215,32 @@ Three, each self-contained and reviewable:
 1. `chore: record the shfmt profile in .editorconfig (#15)` — the new file alone
 1. `ci: check shell formatting and lint shell scripts (#15)` — the `shell` job and the `paths-ignore` removal
 1. `docs: document the shfmt profile and its no-flags constraint (#15)` — `AGENTS.md` and `CONTRIBUTING.md`
+
+## Addendum: `shfmt -d .` was wrong, and the plan did not catch it
+
+Everything above specifies `shfmt -d .` and `shfmt -f .`. Both are defective, and the defect was found only during the final lint pass, after the AUv2 verification step had run.
+
+`shfmt` does not read `.gitignore`. Walking the tree from `.` therefore reaches five vendored shell scripts that CMake writes under `build/`, four from the AudioUnit SDK and one from clap-wrapper:
+
+```text
+build/_deps/clap-wrapper-src/cmake/ios_embed_appex.sh
+build/cpm/AudioUnitSDK/Tools/FindUB.sh
+build/cpm/AudioUnitSDK/Tools/build.sh
+build/cpm/AudioUnitSDK/hooks/install.sh
+build/cpm/AudioUnitSDK/hooks/pre-commit
+```
+
+`shellcheck` reports six findings across them, none of which are this project's to fix, and one is a hard `SC1071` error because a vendored hook is `zsh`. Worse, `shfmt -w .` **reformats them in place**, which was confirmed to have happened during the lint pass.
+
+The failure mode is precisely the one this plan set out to eliminate. A fresh CI checkout has no `build/`, so `shfmt -d .` passes in CI and fails on any machine where the AU has been built. That is a local-versus-CI divergence introduced by the job meant to prevent divergence.
+
+The fix selects files from the index instead of the filesystem, so `.gitignore` is respected by construction and no path is hardcoded:
+
+```bash
+git ls-files -z | xargs -0 shfmt -f | xargs -r shfmt -d
+git ls-files -z | xargs -0 shfmt -f | xargs -r shellcheck
+```
+
+`shfmt -f` filters an explicit file list to shell files by shebang, so the extensionless script is still found and future scripts still are too. Verified to return exactly `cmake/narrow-au-resource-usage`, to stay silent, and to exit non-zero when a spaced redirect in that script is deliberately collapsed. `xargs -r` is supported by both BSD `xargs` on macOS and GNU `xargs` on the runner.
+
+The lesson worth keeping: the plan's verification section tested the tools against a tree that happened to have no `build/` directory, then a later step in the same plan created one. Verification that runs before a plan's own side effects is not verification of the end state.

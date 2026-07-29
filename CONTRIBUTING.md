@@ -70,8 +70,8 @@ run `xcrun --kill-cache`.
 ## Code Style
 
 - Run `zig fmt build.zig src/` before committing
-- Run `shfmt -w .` before committing, and pass it no flags. The shell profile lives in `.editorconfig`, and `shfmt` ignores that file entirely if any formatting flag is given
-- Keep `shellcheck` clean: `shfmt -f . | xargs shellcheck`
+- Format shell scripts before committing with `git ls-files -z | xargs -0 shfmt -f | xargs shfmt -w`, and pass `shfmt` no formatting flags. The profile lives in `.editorconfig`, and `shfmt` ignores that file entirely if any formatting flag is given. Select files through `git ls-files` rather than running `shfmt -w .`, which reaches vendored scripts under `build/` and reformats them
+- Keep `shellcheck` clean: `git ls-files -z | xargs -0 shfmt -f | xargs shellcheck`
 - Keep Metal types out of anything above `src/gpu/iface.zig`. That seam is load-bearing; see [ADR 0005](docs/adr/0005-metal-behind-a-renderer-seam.md)
 - Anything reachable from the audio thread must not allocate, lock, or make a syscall
 
@@ -110,7 +110,7 @@ build: bump pinned Zig to 0.17.0
 1. Make your changes
 1. Ensure tests pass: `zig build test`
 1. Ensure formatting passes: `zig fmt --check build.zig src/`
-1. If you touched a shell script, ensure `shfmt -d .` and `shfmt -f . | xargs shellcheck` are both silent
+1. If you touched a shell script, ensure `git ls-files -z | xargs -0 shfmt -f | xargs shfmt -d` and the same pipeline ending in `xargs shellcheck` are both silent
 1. Submit a pull request
 
 ### Branch Naming

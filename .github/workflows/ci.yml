@@ -103,13 +103,21 @@ jobs:
 
       # No flags, deliberately. shfmt discards .editorconfig wholesale if any
       # formatting flag is passed, and that file is the only place the profile
-      # is recorded. `-f .` finds the extensionless script by its shebang, so
-      # neither step hardcodes a path that has to be maintained by hand.
+      # is recorded.
+      #
+      # `git ls-files` rather than `shfmt -d .`, so the set of files is exactly
+      # what the repository tracks. shfmt does not read .gitignore, and walking
+      # the tree reaches vendored shell scripts under build/ once anyone has run
+      # the CMake build: five of them ship with the AudioUnit SDK and clap-wrapper
+      # and are not this project's to format. A fresh CI checkout has no build/,
+      # so `-d .` would pass here and fail locally, which is the exact
+      # local-versus-CI divergence this job exists to prevent. `shfmt -f` then
+      # filters to shell files by shebang, so nothing hardcodes a path.
       - name: Check shell formatting
-        run: shfmt -d .
+        run: git ls-files -z | xargs -0 shfmt -f | xargs -r shfmt -d
 
       - name: Lint shell scripts
-        run: shfmt -f . | xargs -r shellcheck
+        run: git ls-files -z | xargs -0 shfmt -f | xargs -r shellcheck
 
   # ADR 0003, AGENTS.md, and the plan's verification table all name
   # `clap-validator` as required verification, but nothing ran it except someone
