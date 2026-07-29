@@ -31,7 +31,9 @@ shaders/scope.metal         compiled at runtime from embedded source, not linked
 src/
   main.zig                  the host-facing boundary and exported entry points
   clap/c.zig                translated CLAP ABI plus comptime layout assertions
-  clap/plugin.zig           factory, descriptor, and instance lifecycle
+  clap/plugin.zig           factory, descriptor, lifecycle, audio ports, process
+  clap/state.zig            the versioned save/load format and its stream loops
+  clap/log.zig              diagnostics routed through the host's clap.log
 docs/
   adr/                      settled architecture decisions
   design/                   the source brainstorm this project came from
@@ -70,3 +72,4 @@ Validate with `clap-validator validate zig-out/Fosforo.clap`, and Audio Units wi
 - **Some identifiers are permanent.** The AU triple (`aufx`/`Fsfr`/`Ctmn`) and the CLAP plugin `id` are stored in users' project files; changing either makes the plugin read as missing. The manufacturer name and display name are free metadata. See the plan's identifiers section before touching any of them.
 - **Shader validation is deliberately not part of `zig build test`,** so the build stays hermetic (ADR 0009).
 - **The `clap-validator` CI job pins two things,** both in `.github/workflows/ci.yml`: the validator commit, because it is installed from git rather than a registry and a tag can move, and the Rust toolchain that builds it, because the crate declares an MSRV the runner image may stop satisfying. Bump them together and the cache key follows automatically. Warnings do not fail that job: `clap-validator` exits non-zero on failed and crashed tests only, so a `WARNING` line is visible in the log without breaking the build.
+- **REAPER accepts `clap.log` messages and discards them.** It implements the extension, so `Log.init` finds it and a host-only design would send every diagnostic into a hole with no visible destination. That is why debug builds mirror to `stderr` as well as calling the host, rather than treating `stderr` as a fallback for hosts that offer nothing. Launch REAPER from a terminal to read them.

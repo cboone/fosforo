@@ -57,6 +57,10 @@ test {
     std.testing.refAllDecls(@This());
     _ = clap;
     _ = plugin;
+
+    // Reached only through `plugin`, so named here to get their tests collected.
+    _ = @import("clap/log.zig");
+    _ = @import("clap/state.zig");
 }
 
 test "the entry hands back the plugin factory, and only for its own id" {
