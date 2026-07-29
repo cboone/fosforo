@@ -18,7 +18,13 @@ cmake_minimum_required(VERSION 3.21)
 # "required internal CMake variable not set" errors during generation.
 project(fosforo VERSION 0.0.0 LANGUAGES C CXX OBJC OBJCXX)
 
+# Two names, deliberately different. PRODUCT_NAME is the ASCII one: it feeds
+# OUTPUT_NAME below, which names the bundle files (Fosforo.clap, Fosforo.component)
+# and the binaries inside them. DISPLAY_NAME is what a human reads, and matches the
+# CLAP descriptor in src/clap/plugin.zig. make_clapfirst_plugins offers only the
+# first, so the second is applied afterwards. See cmake/set-au-display-name.
 set(PRODUCT_NAME "Fosforo")
+set(DISPLAY_NAME "Fósforo")
 set(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 
 # Must be set before clap-wrapper is pulled in. Its shared_prologue.cmake
@@ -122,31 +128,59 @@ make_clapfirst_plugins(
     AUV2_INSTRUMENT_TYPE "aufx"
 )
 
+# The CLAP built here gets CMake's default bundle plist, where CFBundleName comes
+# from this property, which target_add_clap_configuration set to OUTPUT_NAME. The
+# Zig-built bundle uses macos/Info.plist and already reads Fósforo, so this is what
+# keeps the two agreeing. LIBRARY_OUTPUT_NAME is untouched: the file stays
+# Fosforo.clap. Finder-only polish, since CLAP hosts read the descriptor, not the
+# plist.
+if(TARGET ${PROJECT_NAME}_clap)
+    set_target_properties(${PROJECT_NAME}_clap PROPERTIES
+        MACOSX_BUNDLE_BUNDLE_NAME "${DISPLAY_NAME}"
+    )
+endif()
+
 # ---------------------------------------------------------------------------
-# Narrow the sandbox claims clap-wrapper writes into the Audio Unit.
+# Correct the Info.plist clap-wrapper generates for the Audio Unit.
 # ---------------------------------------------------------------------------
 
-# clap-wrapper's AUv2 build helper hardcodes a resourceUsage dictionary claiming
-# network.client and temporary-exception.files.all.read-write, and emits it next to
-# sandboxSafe = true. Apple's AudioComponent.h treats those as mutually exclusive:
-# resourceUsage describes a component that is *not* sandbox safe, and "if the
-# sandboxSafe key is true, this dictionary should not be included". fosforo reads no
-# files and opens no sockets, so the claims are false as well as contradictory.
+# Two passes over the same file, kept as separate scripts because they have
+# different lifetimes: one is a workaround for an upstream bug that should someday
+# no-op away, the other is permanent product metadata. They touch disjoint keys, so
+# their order does not matter.
 #
-# make_clapfirst_plugins exposes no override and the plist is written at build time
-# by a generated helper executable, so the only seam is the copy that landed in the
-# bundle. Registering this after make_clapfirst_plugins() returns puts it behind
-# clap-wrapper's own POST_BUILD commands. Nothing signs the .component on this path,
-# so there is no signature to invalidate.
-#
-# Upstream already agrees, just not here: clap-wrapper's AUv3 build helper omits the
-# dictionary and says why. Only the AUv2 helper still emits it. Re-check when the
-# clap-wrapper pin moves; the script no-ops once upstream drops it.
+# make_clapfirst_plugins exposes no override for either, and the plist is written at
+# build time by a generated helper executable, so the only seam is the copy that
+# landed in the bundle. Registering these after make_clapfirst_plugins() returns puts
+# them behind clap-wrapper's own POST_BUILD commands. Nothing signs the .component on
+# this path, so there is no signature to invalidate.
 if(APPLE AND TARGET ${PROJECT_NAME}_auv2)
+    # clap-wrapper's AUv2 build helper hardcodes a resourceUsage dictionary claiming
+    # network.client and temporary-exception.files.all.read-write, and emits it next to
+    # sandboxSafe = true. Apple's AudioComponent.h treats those as mutually exclusive:
+    # resourceUsage describes a component that is *not* sandbox safe, and "if the
+    # sandboxSafe key is true, this dictionary should not be included". fosforo reads no
+    # files and opens no sockets, so the claims are false as well as contradictory.
+    #
+    # Upstream already agrees, just not here: clap-wrapper's AUv3 build helper omits the
+    # dictionary and says why. Only the AUv2 helper still emits it. Re-check when the
+    # clap-wrapper pin moves; the script no-ops once upstream drops it.
     add_custom_command(TARGET ${PROJECT_NAME}_auv2 POST_BUILD
         COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/narrow-au-resource-usage"
                 "$<TARGET_FILE_DIR:${PROJECT_NAME}_auv2>/../Info.plist"
         COMMENT "Narrowing the AU sandbox resourceUsage claims"
+        VERBATIM
+    )
+
+    # The helper composes the AudioComponents name from OUTPUT_NAME, which has to stay
+    # ASCII because it also names the bundle file, and describes every plugin it wraps
+    # as "<name> CLAP to AU Wrapper". Neither is a string to show a user. The script
+    # carries the replacements; see its header for why they are restated there rather
+    # than passed from here.
+    add_custom_command(TARGET ${PROJECT_NAME}_auv2 POST_BUILD
+        COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/set-au-display-name"
+                "$<TARGET_FILE_DIR:${PROJECT_NAME}_auv2>/../Info.plist"
+        COMMENT "Writing the display name and description into the AU"
         VERBATIM
     )
 endif()
