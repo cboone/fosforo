@@ -143,7 +143,15 @@ pub const TestStream = struct {
         return self.buffer[0..self.len];
     }
 
+    /// Overflowing here is a bug in the calling test, not a stream condition, so
+    /// it fails immediately and says so. `@panic` rather than
+    /// `std.debug.assert`: the assert is compiled out under `-Doptimize=
+    /// ReleaseFast`, which this project runs its tests under, and that is the
+    /// build where the bounds check is also gone and the copy would quietly
+    /// corrupt the test runner.
     pub fn seed(self: *TestStream, bytes: []const u8) void {
+        if (bytes.len > self.buffer.len) @panic("TestStream.seed: input larger than the fixture buffer");
+
         @memcpy(self.buffer[0..bytes.len], bytes);
         self.len = bytes.len;
         self.cursor = 0;
@@ -165,6 +173,11 @@ fn testWrite(
 ) callconv(.c) i64 {
     const self: *TestStream = @ptrCast(@alignCast(stream.*.ctx.?));
     const n = self.step(@intCast(size)) orelse return -1;
+
+    // A full stream is a real condition a host can present, not a bug in the
+    // fixture, so report it the way the CLAP stream contract says to. That is
+    // also the branch `writeAll` exists to survive.
+    if (n > self.buffer.len - self.len) return -1;
 
     const src: [*]const u8 = @ptrCast(buffer.?);
     @memcpy(self.buffer[self.len..][0..n], src[0..n]);
@@ -255,6 +268,16 @@ test "load reports a stream that fails mid-header" {
 
 test "save reports a stream that fails mid-header" {
     var stream: TestStream = .{ .chunk = 1, .fail_after = 2 };
+    try testing.expect(!save(stream.writer()));
+}
+
+test "save reports a stream with no room left" {
+    // The fixture is bounded, so filling it makes the next write fail the way a
+    // host out of space would. This covers the `writeAll` branch that a stream
+    // returning a hard error takes, without needing the fail_after counter.
+    var stream: TestStream = .{};
+    stream.len = stream.buffer.len;
+
     try testing.expect(!save(stream.writer()));
 }
 
