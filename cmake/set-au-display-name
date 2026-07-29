@@ -97,16 +97,26 @@ function audio_component_count() {
 }
 
 # Read a string value from the plist.
+#
+# Always succeeds, so an absent key reads as empty rather than as a failure. That
+# keeps the assertions below reporting a violation and returning E_DATAERR instead of
+# `set -e` ending the script on the read. Every caller today runs inside an `if !`
+# condition, where bash suppresses errexit for the whole function body, so this is
+# not load-bearing yet; it makes the contract above intrinsic to the function rather
+# than a property of where it happens to be called from.
+#
 # Arguments:
 #   $1 - path to the Info.plist
 #   $2 - plutil keypath
 # Outputs:
 #   The value on stdout, empty when the key is absent
+# Returns:
+#   0 always
 function plist_value() {
   local plist_path="${1}"
   local keypath="${2}"
 
-  plutil -extract "${keypath}" raw -o - -- "${plist_path}" 2> /dev/null
+  plutil -extract "${keypath}" raw -o - -- "${plist_path}" 2> /dev/null || true
 }
 
 # Overwrite a string value in the plist, creating the key when it is absent.
@@ -128,6 +138,9 @@ function set_plist_value() {
 # VENDOR_NAME following, which would otherwise be overwritten silently. An entry this
 # script has already rewritten still matches, so the rewrite stays idempotent.
 #
+# An absent name reads as empty, which fails the prefix test, so a missing key is
+# refused by the same path as a wrong vendor rather than needing its own branch.
+#
 # Arguments:
 #   $1 - path to the Info.plist
 #   $2 - entry index
@@ -138,7 +151,7 @@ function vendor_prefix_matches() {
   local -i index="${2}"
   local declared
 
-  declared=$(plist_value "${plist_path}" "AudioComponents.${index}.name") || return 1
+  declared=$(plist_value "${plist_path}" "AudioComponents.${index}.name")
   [[ "${declared}" == "${VENDOR_NAME}: "* ]]
 }
 
