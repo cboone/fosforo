@@ -1,0 +1,294 @@
+#!/usr/bin/env bash
+# set-au-display-name — write the human-readable name and description into the AU
+# Author: Christopher Boone
+# Date: 2026-07-29
+#
+# The display name is Fósforo. The repository, the binary, and every bundle filename
+# stay ASCII fosforo. Those two facts collide inside make_clapfirst_plugins, which
+# takes a single OUTPUT_NAME and threads it to both concerns: it names the bundle
+# file (Fosforo.component) *and* supplies the string clap-wrapper composes the
+# AudioComponents name from. Setting it to "Fósforo" would put a non-ASCII character
+# in a build artifact path, which is exactly what the ASCII rule exists to prevent.
+#
+# clap-wrapper offers no separate display name, so the two concerns are separated
+# here instead. In the --explicit mode this project builds under, a generated
+# build-helper writes the plist at build time with:
+#
+#   name        = "<manufacturer name>: <OUTPUT_NAME>"   -> "Catamount: Fosforo"
+#   description = "<OUTPUT_NAME> CLAP to AU Wrapper"     -> wrapper boilerplate
+#
+# Neither is a string this plugin should show a user. cmake/CMakeLists.txt runs this
+# over the plist clap-wrapper copied into the built bundle, the same seam
+# cmake/narrow-au-resource-usage uses. That script is a workaround that should no-op
+# away once clap-wrapper is fixed upstream; this one is permanent project metadata,
+# which is why they are separate files.
+#
+# CFBundleExecutable is deliberately untouched: it names the actual binary inside the
+# bundle and has to keep matching the file on disk.
+#
+# Rewriting and then asserting cannot detect the POST_BUILD step having been dropped
+# altogether, so --check exists for CI to assert independently. Running this twice is
+# not an error; the rewrite is idempotent.
+#
+# Usage:
+#   set-au-display-name [--check] <path/to/Info.plist>
+#
+#   --check   Assert without modifying anything.
+#
+# Exit codes:
+#   0  - Every AudioComponents entry carries the display name and description
+#  64  - Invalid arguments
+#  65  - The plist has no usable AudioComponents array, or the assertion failed
+#  66  - The plist does not exist or cannot be read
+
+set -euo pipefail
+
+if [[ -n "${TRACE:-}" ]]; then
+  set -x
+fi
+
+readonly E_USAGE=64
+readonly E_DATAERR=65
+readonly E_NOINPUT=66
+
+readonly PROGRAM_NAME="${0##*/}"
+
+# Keep in step with AUV2_MANUFACTURER_NAME in cmake/CMakeLists.txt. Hosts split the
+# AudioComponents name on the colon to group plugins by vendor, so the "Vendor: Product"
+# shape is load-bearing rather than cosmetic.
+readonly VENDOR_NAME="Catamount"
+
+# Keep both in step with the CLAP descriptor in src/clap/plugin.zig, which is the
+# source of truth for what this plugin calls itself. They are restated rather than
+# derived because the AU plist is produced by CMake and the descriptor by Zig, with
+# no build-time path between them.
+readonly DISPLAY_NAME="Fósforo"
+readonly DESCRIPTION="A GPU-rendered phosphor oscilloscope."
+
+# Keep in step with PRODUCT_NAME in cmake/CMakeLists.txt. This is the ASCII half of
+# the split: it names the binary inside the bundle, so it is asserted rather than
+# rewritten. Nothing here should ever make it non-ASCII.
+readonly EXECUTABLE_NAME="Fosforo"
+
+readonly COMPONENT_NAME="${VENDOR_NAME}: ${DISPLAY_NAME}"
+
+# Write a message to stderr, prefixed with the program name.
+# Arguments:
+#   $@ - message parts
+function warn() {
+  echo "${PROGRAM_NAME}: ${*}" >&2
+}
+
+function usage() {
+  echo "Usage: ${PROGRAM_NAME} [--check] <path/to/Info.plist>" >&2
+}
+
+# Count the entries in the plist's AudioComponents array.
+# Arguments:
+#   $1 - path to the Info.plist
+# Outputs:
+#   The entry count on stdout
+# Returns:
+#   0 on success, non-zero when AudioComponents is absent
+function audio_component_count() {
+  local plist_path="${1}"
+
+  plutil -extract AudioComponents raw -o - -- "${plist_path}" 2> /dev/null
+}
+
+# Read a string value from the plist.
+#
+# Always succeeds, so an absent key reads as empty rather than as a failure. That
+# keeps the assertions below reporting a violation and returning E_DATAERR instead of
+# `set -e` ending the script on the read. Every caller today runs inside an `if !`
+# condition, where bash suppresses errexit for the whole function body, so this is
+# not load-bearing yet; it makes the contract above intrinsic to the function rather
+# than a property of where it happens to be called from.
+#
+# Arguments:
+#   $1 - path to the Info.plist
+#   $2 - plutil keypath
+# Outputs:
+#   The value on stdout, empty when the key is absent
+# Returns:
+#   0 always
+function plist_value() {
+  local plist_path="${1}"
+  local keypath="${2}"
+
+  plutil -extract "${keypath}" raw -o - -- "${plist_path}" 2> /dev/null || true
+}
+
+# Overwrite a string value in the plist, creating the key when it is absent.
+# Arguments:
+#   $1 - path to the Info.plist
+#   $2 - plutil keypath
+#   $3 - value to write
+function set_plist_value() {
+  local plist_path="${1}"
+  local keypath="${2}"
+  local value="${3}"
+
+  plutil -replace "${keypath}" -string "${value}" -- "${plist_path}"
+}
+
+# Test whether an entry's name still carries the manufacturer name this script expects.
+#
+# A mismatch means AUV2_MANUFACTURER_NAME moved in cmake/CMakeLists.txt without
+# VENDOR_NAME following, which would otherwise be overwritten silently. An entry this
+# script has already rewritten still matches, so the rewrite stays idempotent.
+#
+# An absent name reads as empty, which fails the prefix test, so a missing key is
+# refused by the same path as a wrong vendor rather than needing its own branch.
+#
+# Arguments:
+#   $1 - path to the Info.plist
+#   $2 - entry index
+# Returns:
+#   0 when the prefix matches, non-zero otherwise
+function vendor_prefix_matches() {
+  local plist_path="${1}"
+  local -i index="${2}"
+  local declared
+
+  declared=$(plist_value "${plist_path}" "AudioComponents.${index}.name")
+  [[ "${declared}" == "${VENDOR_NAME}: "* ]]
+}
+
+# Write the display name and description into every AudioComponents entry, and the
+# display name into the bundle's own CFBundleName.
+# Arguments:
+#   $1 - path to the Info.plist
+#   $2 - number of AudioComponents entries
+# Outputs:
+#   One line per entry rewritten, to stderr
+# Returns:
+#   0 on success, non-zero when an entry names an unexpected manufacturer
+function apply_display_name() {
+  local plist_path="${1}"
+  local -i count="${2}"
+  local -i index
+
+  for ((index = 0; index < count; index++)); do
+    if ! vendor_prefix_matches "${plist_path}" "${index}"; then
+      warn "AudioComponents.${index} is not named '${VENDOR_NAME}: ...'; refusing to overwrite it"
+      warn "check that VENDOR_NAME here still matches AUV2_MANUFACTURER_NAME in cmake/CMakeLists.txt"
+      return 1
+    fi
+
+    set_plist_value "${plist_path}" "AudioComponents.${index}.name" "${COMPONENT_NAME}"
+    set_plist_value "${plist_path}" "AudioComponents.${index}.description" "${DESCRIPTION}"
+    warn "named AudioComponents.${index} '${COMPONENT_NAME}'"
+  done
+
+  set_plist_value "${plist_path}" CFBundleName "${DISPLAY_NAME}"
+}
+
+# Assert that every entry carries the display name and description, and that the
+# bundle name and executable name are each what they should be.
+# Arguments:
+#   $1 - path to the Info.plist
+#   $2 - number of AudioComponents entries
+# Outputs:
+#   One line per violation, to stderr
+# Returns:
+#   0 when everything matches, non-zero otherwise
+function assert_display_name() {
+  local plist_path="${1}"
+  local -i count="${2}"
+  local -i index
+  local -i violations=0
+  local declared
+
+  for ((index = 0; index < count; index++)); do
+    declared=$(plist_value "${plist_path}" "AudioComponents.${index}.name")
+    if [[ "${declared}" != "${COMPONENT_NAME}" ]]; then
+      warn "AudioComponents.${index} is named '${declared}', expected '${COMPONENT_NAME}'"
+      ((violations++)) || true
+    fi
+
+    declared=$(plist_value "${plist_path}" "AudioComponents.${index}.description")
+    if [[ "${declared}" != "${DESCRIPTION}" ]]; then
+      warn "AudioComponents.${index} describes itself as '${declared}', expected '${DESCRIPTION}'"
+      ((violations++)) || true
+    fi
+  done
+
+  declared=$(plist_value "${plist_path}" CFBundleName)
+  if [[ "${declared}" != "${DISPLAY_NAME}" ]]; then
+    warn "CFBundleName is '${declared}', expected '${DISPLAY_NAME}'"
+    ((violations++)) || true
+  fi
+
+  # Not rewritten by this script, but asserted here because it is the name that must
+  # not follow the others: it has to keep matching the binary's filename in the bundle.
+  declared=$(plist_value "${plist_path}" CFBundleExecutable)
+  if [[ "${declared}" != "${EXECUTABLE_NAME}" ]]; then
+    warn "CFBundleExecutable is '${declared}', expected '${EXECUTABLE_NAME}'"
+    ((violations++)) || true
+  fi
+
+  ((violations == 0))
+}
+
+function main() {
+  local check_only=false
+  local plist_path=""
+  local -i count
+
+  while [[ ${#} -gt 0 ]]; do
+    case "${1}" in
+      --check)
+        check_only=true
+        ;;
+      -*)
+        warn "unknown option '${1}'"
+        usage
+        return "${E_USAGE}"
+        ;;
+      *)
+        if [[ -n "${plist_path}" ]]; then
+          warn "expected exactly one plist path"
+          usage
+          return "${E_USAGE}"
+        fi
+        plist_path="${1}"
+        ;;
+    esac
+    shift
+  done
+
+  if [[ -z "${plist_path}" ]]; then
+    usage
+    return "${E_USAGE}"
+  fi
+
+  if [[ ! -r "${plist_path}" ]]; then
+    warn "cannot read '${plist_path}'"
+    return "${E_NOINPUT}"
+  fi
+
+  # An empty or malformed AudioComponents array means the plist is not the one this
+  # was pointed at, which is worth failing on rather than reporting a vacuous pass.
+  if ! count=$(audio_component_count "${plist_path}"); then
+    warn "'${plist_path}' has no AudioComponents array"
+    return "${E_DATAERR}"
+  fi
+
+  if ((count == 0)); then
+    warn "'${plist_path}' declares no AudioComponents"
+    return "${E_DATAERR}"
+  fi
+
+  if [[ "${check_only}" == false ]]; then
+    if ! apply_display_name "${plist_path}" "${count}"; then
+      return "${E_DATAERR}"
+    fi
+  fi
+
+  if ! assert_display_name "${plist_path}" "${count}"; then
+    return "${E_DATAERR}"
+  fi
+}
+
+main "${@}"

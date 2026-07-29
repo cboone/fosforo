@@ -236,14 +236,16 @@ jobs:
   # add_dependencies() between the two.
   #
   # The AUv2 component is the only artifact carrying a clap-wrapper-generated
-  # Info.plist, and clap-wrapper hardcodes sandbox claims this plugin does not want.
-  # `cmake/narrow-au-resource-usage` strips them as a POST_BUILD step, but a
-  # stripping step cannot detect its own absence, so this asserts independently
-  # against a from-scratch build.
+  # Info.plist, and two things about it are wrong out of the box: it claims sandbox
+  # resources this plugin does not use, and it names the plugin after the ASCII
+  # OUTPUT_NAME while describing it as a wrapper. `cmake/narrow-au-resource-usage`
+  # and `cmake/set-au-display-name` correct them as POST_BUILD steps, but a rewriting
+  # step cannot detect its own absence, so both are asserted independently against a
+  # from-scratch build.
   #
   # The slowest job here, because CMake fetches the AudioUnit SDK. That cost is why
   # the CLAP validation lives here rather than in a fourth job that would pay it
-  # again. The build and the plist assertion come before the validator install
+  # again. The build and the plist assertions come before the validator install
   # deliberately: on a warm cache the install is nearly free either way, and on a
   # cold one the build result should not wait behind a Rust compile.
   clap-wrapper:
@@ -264,6 +266,14 @@ jobs:
       - name: Assert the component claims no sandbox resources
         run: |
           ./cmake/narrow-au-resource-usage --check \
+            build/assets/Fosforo.component/Contents/Info.plist
+
+      # Also asserts CFBundleExecutable is still ASCII `Fosforo`. The display name
+      # and the filename are deliberately different strings, and the failure mode
+      # worth catching is them being made the same again in either direction.
+      - name: Assert the component carries the display name
+        run: |
+          ./cmake/set-au-display-name --check \
             build/assets/Fosforo.component/Contents/Info.plist
 
       - uses: ./.github/actions/clap-validator
