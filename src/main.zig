@@ -64,6 +64,7 @@ test {
     _ = @import("gpu/iface.zig");
     _ = @import("gpu/metal/renderer.zig");
     _ = @import("platform/objc.zig");
+    _ = @import("platform/view.zig");
 }
 
 test "the entry hands back the plugin factory, and only for its own id" {
