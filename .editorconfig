@@ -1,0 +1,46 @@
+# https://editorconfig.org
+#
+# shfmt reads this file natively, which is why the shell section carries
+# shfmt-specific keys. That support is all-or-nothing: passing any formatting
+# flag makes shfmt ignore .editorconfig entirely, so `shfmt -d` is correct here
+# and `shfmt -i 2 -d` silently is not.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# zig fmt is the authority for both. This only keeps editors from fighting it.
+[*.{zig,zon}]
+indent_style = space
+indent_size = 4
+
+[*.{c,cpp,h,metal}]
+indent_style = space
+indent_size = 4
+
+[CMakeLists.txt]
+indent_style = space
+indent_size = 4
+
+[*.{json,jsonc,toml,yml,yaml}]
+indent_style = space
+indent_size = 2
+
+# markdownlint's MD009 already governs trailing whitespace here and allows the
+# two spaces that mean a hard line break. Nothing relies on that today; this
+# keeps the editor from stripping it before markdownlint can have an opinion.
+[*.md]
+trim_trailing_whitespace = false
+
+# The script has no extension, so a bare [*.sh] section would not reach it.
+# These four keys are the file's existing style recorded, not imposed: they are
+# exactly `shfmt -i 2 -ci -sr`.
+[{*.sh,*.bash,narrow-au-resource-usage}]
+indent_style = space
+indent_size = 2
+switch_case_indent = true
+space_redirects = true
