@@ -165,6 +165,17 @@ zig fmt --check build.zig src/
 
 ### Results
 
-Everything reachable from a build passed. `cmake --build build --target fosforo_all` produced `Catamount: Fósforo`, `A GPU-rendered phosphor oscilloscope.`, `CFBundleName = Fósforo`, and `CFBundleExecutable = Fosforo`, with the AU triple still `aufx`/`Fsfr`/`Ctmn` and both bundles still named `Fosforo.component` and `Fosforo.clap` on disk. Both `--check` assertions pass, and still pass after a rebuild without cleaning, so the rewrite is idempotent and the two scripts do not interfere. `zig build test`, `zig fmt --check`, `shellcheck`, `actionlint`, and `markdownlint-cli2` are all clean.
+Everything passed, including the host check.
 
-The CoreAudio half is **outstanding**. `auval` run from an agent shell lists only Apple's built-in components, and no third-party Audio Unit at all, including established ones like TDR Nova and Vital that are installed and working. That is a limitation of the shell it ran in, not a statement about this component, so it proves nothing either way and the accent has not yet been observed surviving registration. The component is installed at `~/Library/Audio/Plug-Ins/Components/Fosforo.component`; run the `auval` and host checks above from an ordinary terminal to close it.
+At the build level, `cmake --build build --target fosforo_all` produced `Catamount: Fósforo`, `A GPU-rendered phosphor oscilloscope.`, `CFBundleName = Fósforo`, and `CFBundleExecutable = Fosforo`, with the AU triple still `aufx`/`Fsfr`/`Ctmn` and both bundles still named `Fosforo.component` and `Fosforo.clap` on disk. Both `--check` assertions pass, and still pass after a rebuild without cleaning, so the rewrite is idempotent and the two scripts do not interfere. `zig build test`, `zig fmt --check`, `shellcheck`, `actionlint`, and `markdownlint-cli2` are all clean.
+
+**Sub-task 5 is answered: yes, the AU can carry the accent.** Logic's plugin browser shows **Fósforo** under **Catamount** with the new description, rendered correctly, with the `"Vendor: Product"` split intact. Confirmed against an ASCII control bundle installed alongside it under a throwaway subtype, which ruled out the accent as a cause when neither bundle appeared during earlier attempts.
+
+Two notes for whoever verifies an Audio Unit next, both of which cost a long detour here:
+
+- **`auval -a` and `AudioComponentFindNext` both enumerate only Apple's built-in components on this macOS,** even from an ordinary terminal, while Logic sees every installed AU. A null result from either tool means nothing. Use a host.
+- **`~/Library/Caches/AudioUnitCache` is not the registration cache on this macOS** and deleting it changes nothing. AU capability data lives in `~/Library/Preferences/com.apple.audio.AudioComponentCache.plist`. Relaunching Logic is what triggers a rescan; `killall AudioComponentRegistrar` does not help, and `launchctl kickstart` is refused under SIP.
+
+### Found along the way, out of scope here
+
+The AUv2 bundle is never code-signed by the build. The linker ad-hoc signs the arm64 binary, but there is no `_CodeSignature` directory, so `codesign --verify` fails with "code has no resources but signature indicates they must be present" where a working AU reports `valid on disk`. The component above was signed by hand to test it, which is not reproducible from a clean build. Filed separately. That issue carries a constraint this plan creates: once the bundle is signed, `Info.plist` becomes sealed, so signing has to run *after* both `POST_BUILD` scripts, not before.
