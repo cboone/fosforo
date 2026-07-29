@@ -59,6 +59,7 @@ test {
     _ = plugin;
 
     // Reached only through `plugin`, so named here to get their tests collected.
+    _ = @import("clap/gui.zig");
     _ = @import("clap/log.zig");
     _ = @import("clap/state.zig");
     _ = @import("gpu/iface.zig");

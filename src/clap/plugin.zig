@@ -7,6 +7,8 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const clap = @import("c.zig");
+const gpu = @import("../gpu/iface.zig");
+const gui = @import("gui.zig");
 const log = @import("log.zig");
 const state = @import("state.zig");
 
@@ -85,6 +87,12 @@ const Instance = struct {
     /// `activate`. `process` wraps this in a fixed-buffer allocator, so the
     /// heap is not merely unused down there, it is unreachable.
     scratch: []u8 = &.{},
+
+    /// The editor, inert until the host asks for one. Lives here rather than
+    /// behind a pointer because it is small and its lifetime is exactly the
+    /// instance's, which also means a host that forgets `gui.destroy` still
+    /// cannot leak it past `destroy`.
+    editor: gui.Editor = .{},
 
     fn from(plugin: [*c]const c.clap_plugin_t) *Instance {
         return @ptrCast(@alignCast(plugin.*.plugin_data.?));
@@ -174,9 +182,15 @@ fn init(plugin: [*c]const c.clap_plugin_t) callconv(.c) bool {
 }
 
 /// [main-thread & !active]
+///
+/// Tears the editor down rather than assuming the host already did. A host is
+/// supposed to call `gui.destroy` first, and one that does not should still not
+/// leave an `NSView` and a Metal device behind. `Editor.destroy` is idempotent,
+/// so the well-behaved case costs three null checks.
 fn destroy(plugin: [*c]const c.clap_plugin_t) callconv(.c) void {
     const self = Instance.from(plugin);
     std.debug.assert(!self.active);
+    self.editor.destroy();
     self.allocator.destroy(self);
 }
 
@@ -364,7 +378,7 @@ fn bit(channel: u32) u64 {
 }
 
 /// [thread-safe] Returning null for an unrecognised id is required rather than
-/// merely polite. `clap.gui` arrives with issue #4.
+/// merely polite.
 fn getExtension(
     plugin: [*c]const c.clap_plugin_t,
     extension_id: [*c]const u8,
@@ -375,6 +389,7 @@ fn getExtension(
     const wanted = std.mem.span(extension_id);
     if (std.mem.eql(u8, wanted, &c.CLAP_EXT_AUDIO_PORTS)) return &audio_ports;
     if (std.mem.eql(u8, wanted, &c.CLAP_EXT_STATE)) return &plugin_state;
+    if (std.mem.eql(u8, wanted, &c.CLAP_EXT_GUI)) return &plugin_gui;
     return null;
 }
 
@@ -420,6 +435,186 @@ fn stateLoad(
         return false;
     };
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// clap.gui
+//
+// Fifteen callbacks over the `Editor` in src/clap/gui.zig, which owns the
+// decisions and knows nothing about `Instance`. Every one is filled in rather
+// than left null: a host is entitled to call any of them without checking, and
+// a null function pointer is a crash rather than a refusal.
+//
+// All are [main-thread]. The ones the header marks `[main-thread & floating]`
+// are answered rather than omitted, because refusing floating mode in
+// `is_api_supported` does not stop a host from asking anyway.
+// ---------------------------------------------------------------------------
+
+const plugin_gui: c.clap_plugin_gui_t = .{
+    .is_api_supported = guiIsApiSupported,
+    .get_preferred_api = guiGetPreferredApi,
+    .create = guiCreate,
+    .destroy = guiDestroy,
+    .set_scale = guiSetScale,
+    .get_size = guiGetSize,
+    .can_resize = guiCanResize,
+    .get_resize_hints = guiGetResizeHints,
+    .adjust_size = guiAdjustSize,
+    .set_size = guiSetSize,
+    .set_parent = guiSetParent,
+    .set_transient = guiSetTransient,
+    .suggest_title = guiSuggestTitle,
+    .show = guiShow,
+    .hide = guiHide,
+};
+
+fn guiIsApiSupported(
+    plugin: [*c]const c.clap_plugin_t,
+    api: [*c]const u8,
+    is_floating: bool,
+) callconv(.c) bool {
+    _ = plugin;
+    return gui.Editor.isApiSupported(api, is_floating);
+}
+
+/// The header is explicit that `api` must be assigned one of its own constants
+/// rather than a copy, since the host compares by pointer as well as by value.
+fn guiGetPreferredApi(
+    plugin: [*c]const c.clap_plugin_t,
+    api: [*c][*c]const u8,
+    is_floating: [*c]bool,
+) callconv(.c) bool {
+    _ = plugin;
+    if (api == null or is_floating == null) return false;
+
+    api.* = &c.CLAP_WINDOW_API_COCOA;
+    is_floating.* = false;
+    return true;
+}
+
+fn guiCreate(
+    plugin: [*c]const c.clap_plugin_t,
+    api: [*c]const u8,
+    is_floating: bool,
+) callconv(.c) bool {
+    const self = Instance.from(plugin);
+    return self.editor.create(api, is_floating);
+}
+
+fn guiDestroy(plugin: [*c]const c.clap_plugin_t) callconv(.c) void {
+    Instance.from(plugin).editor.destroy();
+}
+
+/// Refused, and that is the documented answer rather than a gap. The header
+/// says the cocoa API uses logical pixels and that `set_scale` should not be
+/// called for it; false means "the call was ignored", which is exactly true.
+/// The real scale comes from the view's window at `set_parent` time.
+fn guiSetScale(plugin: [*c]const c.clap_plugin_t, scale: f64) callconv(.c) bool {
+    _ = plugin;
+    _ = scale;
+    return false;
+}
+
+fn guiGetSize(
+    plugin: [*c]const c.clap_plugin_t,
+    width: [*c]u32,
+    height: [*c]u32,
+) callconv(.c) bool {
+    const self = Instance.from(plugin);
+    if (width == null or height == null) return false;
+
+    const size = self.editor.size();
+    width.* = size.width;
+    height.* = size.height;
+    return true;
+}
+
+/// False until issue #5, which adds resizing together with the mailbox that
+/// makes it safe against the render thread it also introduces. Resizing a
+/// drawable out from under a render loop is a use-after-free that only appears
+/// when someone drags the window during playback, so the two land together or
+/// not at all.
+fn guiCanResize(plugin: [*c]const c.clap_plugin_t) callconv(.c) bool {
+    _ = plugin;
+    return false;
+}
+
+fn guiGetResizeHints(
+    plugin: [*c]const c.clap_plugin_t,
+    hints: [*c]c.clap_gui_resize_hints_t,
+) callconv(.c) bool {
+    _ = plugin;
+    _ = hints;
+    return false;
+}
+
+/// The closest usable size is the only size, which is a truthful answer rather
+/// than a refusal: the host asked what it would get, and it would get this.
+fn guiAdjustSize(
+    plugin: [*c]const c.clap_plugin_t,
+    width: [*c]u32,
+    height: [*c]u32,
+) callconv(.c) bool {
+    return guiGetSize(plugin, width, height);
+}
+
+fn guiSetSize(
+    plugin: [*c]const c.clap_plugin_t,
+    width: u32,
+    height: u32,
+) callconv(.c) bool {
+    const self = Instance.from(plugin);
+    const size = self.editor.size();
+    return width == size.width and height == size.height;
+}
+
+/// The one callback that can fail for reasons outside this process, and so the
+/// one that logs. A Metal compiler error names a file, a line, and the mistake;
+/// without this line a developer sees an editor that did not open and nothing
+/// else.
+fn guiSetParent(
+    plugin: [*c]const c.clap_plugin_t,
+    window: [*c]const c.clap_window_t,
+) callconv(.c) bool {
+    const self = Instance.from(plugin);
+    if (window == null) return false;
+
+    var diags: gpu.Diagnostics = .{};
+    self.editor.setParent(window, &diags) catch |err| {
+        self.log.print(c.CLAP_LOG_ERROR, "gui set_parent failed: {s}: {s}", .{
+            @errorName(err),
+            diags.message(),
+        });
+        return false;
+    };
+
+    self.log.message(c.CLAP_LOG_DEBUG, "editor embedded in the host window");
+    return true;
+}
+
+/// Floating windows are refused in `is_api_supported`, so neither of these
+/// should ever be reached. They are implemented rather than left null because
+/// "should never" is a statement about well-behaved hosts.
+fn guiSetTransient(
+    plugin: [*c]const c.clap_plugin_t,
+    window: [*c]const c.clap_window_t,
+) callconv(.c) bool {
+    _ = plugin;
+    _ = window;
+    return false;
+}
+
+fn guiSuggestTitle(plugin: [*c]const c.clap_plugin_t, title: [*c]const u8) callconv(.c) void {
+    _ = plugin;
+    _ = title;
+}
+
+fn guiShow(plugin: [*c]const c.clap_plugin_t) callconv(.c) bool {
+    return Instance.from(plugin).editor.setHidden(false);
+}
+
+fn guiHide(plugin: [*c]const c.clap_plugin_t) callconv(.c) bool {
+    return Instance.from(plugin).editor.setHidden(true);
 }
 
 // ---------------------------------------------------------------------------
@@ -752,9 +947,129 @@ test "get_extension answers for what is implemented and nothing else" {
     const persisted = self.plugin.get_extension.?(&self.plugin, &c.CLAP_EXT_STATE);
     try testing.expect(persisted == @as(?*const anyopaque, &plugin_state));
 
-    // Arrives with issue #4.
-    try testing.expect(self.plugin.get_extension.?(&self.plugin, "clap.gui") == null);
+    const editor = self.plugin.get_extension.?(&self.plugin, &c.CLAP_EXT_GUI);
+    try testing.expect(editor == @as(?*const anyopaque, &plugin_gui));
+
     try testing.expect(self.plugin.get_extension.?(&self.plugin, "clap.params") == null);
+}
+
+test "every gui callback is filled in" {
+    // A host may call any of these without checking, so a null one is a crash
+    // rather than a refusal. Checked by walking the struct so a callback added
+    // by a CLAP bump cannot be left null by being overlooked.
+    inline for (@typeInfo(c.clap_plugin_gui_t).@"struct".fields) |field| {
+        try testing.expect(@field(plugin_gui, field.name) != null);
+    }
+}
+
+test "the gui reports the one windowing api it can embed in" {
+    const self = try create(testing.allocator, &test_host);
+    defer self.plugin.destroy.?(&self.plugin);
+    const plugin = &self.plugin;
+
+    try testing.expect(plugin_gui.is_api_supported.?(plugin, &c.CLAP_WINDOW_API_COCOA, false));
+    try testing.expect(!plugin_gui.is_api_supported.?(plugin, &c.CLAP_WINDOW_API_COCOA, true));
+    try testing.expect(!plugin_gui.is_api_supported.?(plugin, &c.CLAP_WINDOW_API_WIN32, false));
+
+    // The header requires the constant itself rather than a copy, because a
+    // host is entitled to compare the pointer.
+    var api: [*c]const u8 = null;
+    var is_floating = true;
+    try testing.expect(plugin_gui.get_preferred_api.?(plugin, &api, &is_floating));
+    try testing.expect(api == @as([*c]const u8, &c.CLAP_WINDOW_API_COCOA));
+    try testing.expect(!is_floating);
+}
+
+test "the editor is a fixed size that set_size will only confirm" {
+    const self = try create(testing.allocator, &test_host);
+    defer self.plugin.destroy.?(&self.plugin);
+    const plugin = &self.plugin;
+
+    var width: u32 = 0;
+    var height: u32 = 0;
+    try testing.expect(plugin_gui.get_size.?(plugin, &width, &height));
+    try testing.expectEqual(gui.default_size.width, width);
+    try testing.expectEqual(gui.default_size.height, height);
+
+    // Not resizable until issue #5, so the only size `set_size` accepts is the
+    // one it already is, and `adjust_size` answers with that same size.
+    try testing.expect(!plugin_gui.can_resize.?(plugin));
+    try testing.expect(plugin_gui.set_size.?(plugin, width, height));
+    try testing.expect(!plugin_gui.set_size.?(plugin, width + 1, height));
+    try testing.expect(!plugin_gui.set_size.?(plugin, width, height * 2));
+
+    var adjusted_width: u32 = 12_345;
+    var adjusted_height: u32 = 6;
+    try testing.expect(plugin_gui.adjust_size.?(plugin, &adjusted_width, &adjusted_height));
+    try testing.expectEqual(width, adjusted_width);
+    try testing.expectEqual(height, adjusted_height);
+}
+
+test "the gui callbacks refuse null out-parameters rather than writing through them" {
+    const self = try create(testing.allocator, &test_host);
+    defer self.plugin.destroy.?(&self.plugin);
+    const plugin = &self.plugin;
+
+    var value: u32 = 0;
+    try testing.expect(!plugin_gui.get_size.?(plugin, null, null));
+    try testing.expect(!plugin_gui.get_size.?(plugin, &value, null));
+    try testing.expect(!plugin_gui.get_size.?(plugin, null, &value));
+    try testing.expect(!plugin_gui.adjust_size.?(plugin, null, null));
+    try testing.expect(!plugin_gui.set_parent.?(plugin, null));
+
+    var api: [*c]const u8 = null;
+    var is_floating = false;
+    try testing.expect(!plugin_gui.get_preferred_api.?(plugin, null, &is_floating));
+    try testing.expect(!plugin_gui.get_preferred_api.?(plugin, &api, null));
+}
+
+test "the gui refuses what it does not implement" {
+    const self = try create(testing.allocator, &test_host);
+    defer self.plugin.destroy.?(&self.plugin);
+    const plugin = &self.plugin;
+
+    // Cocoa is a logical-pixel API, so ignoring the host's scale is the
+    // documented behaviour rather than a shortcut.
+    try testing.expect(!plugin_gui.set_scale.?(plugin, 2.0));
+
+    var hints: c.clap_gui_resize_hints_t = undefined;
+    try testing.expect(!plugin_gui.get_resize_hints.?(plugin, &hints));
+
+    // Floating mode is refused, so these are unreachable through a
+    // well-behaved host and must still not crash.
+    try testing.expect(!plugin_gui.set_transient.?(plugin, null));
+    plugin_gui.suggest_title.?(plugin, "Fósforo");
+}
+
+test "an editor is created and destroyed without ever being parented" {
+    const self = try create(testing.allocator, &test_host);
+    defer self.plugin.destroy.?(&self.plugin);
+    const plugin = &self.plugin;
+
+    try testing.expect(plugin_gui.create.?(plugin, &c.CLAP_WINDOW_API_COCOA, false));
+
+    // Reachable with no view behind them, which is the state a host leaves the
+    // editor in between `create` and `set_parent`.
+    try testing.expect(plugin_gui.show.?(plugin));
+    try testing.expect(plugin_gui.hide.?(plugin));
+
+    plugin_gui.destroy.?(plugin);
+
+    // Twice, because a host that calls `gui.destroy` and then `plugin.destroy`
+    // reaches the same teardown twice and neither may double-release.
+    plugin_gui.destroy.?(plugin);
+}
+
+test "destroying the plugin tears down an editor the host left open" {
+    const self = try create(testing.allocator, &test_host);
+    const plugin = &self.plugin;
+
+    try testing.expect(plugin_gui.create.?(plugin, &c.CLAP_WINDOW_API_COCOA, false));
+    try testing.expect(self.editor.created);
+
+    // No `gui.destroy`, which is the host misbehaving. `plugin.destroy` has to
+    // clean up anyway; testing.allocator fails the test if anything leaks.
+    plugin.destroy.?(plugin);
 }
 
 test "state round trips through the extension the host actually calls" {
