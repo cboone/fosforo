@@ -136,7 +136,7 @@ Release binaries rather than a third-party setup action: it keeps the pin explic
 
 The lists already name `.editorconfig` in both the `push` and `pull_request` triggers, so the file was anticipated but never added. Once the `shell` job's result depends on that file, ignoring changes to it means a profile change skips the job it governs.
 
-The tradeoff is worth stating: `paths-ignore` is workflow-level, so an `.editorconfig`-only change will now trigger every job in `ci.yml`, including the 30-minute `audio-unit-sandbox` build. Such changes should be rare, and a shell job blind to its own configuration is the worse failure.
+The tradeoff is worth stating: `paths-ignore` is workflow-level, so an `.editorconfig`-only change will now trigger every job in `ci.yml`, including the `audio-unit-sandbox` build. That job is the slowest of the four, but only in relative terms: across the last seven CI runs it ranged from 51s to 117s, since the AudioUnit SDK fetch is cached. The cost is therefore small, such changes should be rare, and a shell job blind to its own configuration is the worse failure.
 
 ### 4. Record the constraint in `AGENTS.md`
 
