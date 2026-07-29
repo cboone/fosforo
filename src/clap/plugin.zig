@@ -288,10 +288,15 @@ fn process(
     if (process_ctx == null) return c.CLAP_PROCESS_ERROR;
     const ctx = process_ctx.*;
 
-    // `max_frames_count` from `activate` is a host contract, and a debug build
-    // should trap the host that breaks it here rather than leave it to surface
-    // as a buffer overrun once phase 2 sizes anything from it.
-    std.debug.assert(ctx.frames_count <= self.max_frames);
+    // `max_frames_count` from `activate` is a host contract, and this is a trust
+    // boundary treated the same way `activate` treats its own: refuse rather
+    // than assert. An assertion is compiled out of a release build, which is
+    // precisely the build where a misbehaving host does damage.
+    //
+    // Nothing here is sized from `max_frames` yet, so today this only refuses
+    // work it could technically have done. Phase 2 sizes the history buffer
+    // from it, at which point trusting the value is a write past the end of it.
+    if (ctx.frames_count > self.max_frames) return c.CLAP_PROCESS_ERROR;
 
     var fba = std.heap.FixedBufferAllocator.init(self.scratch);
     passThrough(fba.allocator(), ctx);
@@ -963,6 +968,28 @@ test "process reports an error rather than dereferencing a null context" {
     defer testStop(self);
 
     try testing.expectEqual(c.CLAP_PROCESS_ERROR, self.plugin.process.?(&self.plugin, null));
+}
+
+test "process refuses a block larger than activate negotiated" {
+    const self = try testRunning();
+    defer testStop(self);
+
+    var buses: TestBuses = .{};
+    buses.wire(.{});
+    @memset(&buses.out_samples[0], 7);
+    @memset(&buses.out_samples[1], 7);
+
+    // A runtime check rather than an assertion, so this holds in a release
+    // build too: that is the build where a misbehaving host does damage.
+    var ctx = buses.context();
+    ctx.frames_count = self.max_frames + 1;
+
+    try testing.expectEqual(c.CLAP_PROCESS_ERROR, self.plugin.process.?(&self.plugin, &ctx));
+
+    // Refused means untouched. Nothing was read from or written to buffers
+    // whose length we have just decided we cannot trust.
+    try testing.expectEqualSlices(f32, &@as([test_frames]f32, @splat(7)), &buses.out_samples[0]);
+    try testing.expectEqualSlices(f32, &@as([test_frames]f32, @splat(7)), &buses.out_samples[1]);
 }
 
 test "the audio path is handed an allocator that cannot reach the heap" {
