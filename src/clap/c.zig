@@ -87,8 +87,8 @@ comptime {
     assertLayout(c.clap_host_log_t, 1, .{"log"});
 
     // The GUI. `clap_plugin_gui_t` is the widest vtable this plugin fills in,
-    // and a field that moved is a host calling one callback through another's
-    // pointer, which is a crash with a stack trace that names the wrong thing.
+    // so it is also the one where a callback added or removed upstream is
+    // easiest to miss: the count is what announces that.
     assertLayout(c.clap_plugin_gui_t, 15, .{
         "is_api_supported", "create", "destroy", "set_parent", "show", "hide",
     });
@@ -103,6 +103,21 @@ comptime {
     );
 }
 
+/// Assert that a struct crossing the ABI still looks the way this build expects.
+///
+/// What it proves: the type is still `extern`, so it has a guaranteed C layout;
+/// it still has exactly `want_fields` fields; and every name in `probe` is still
+/// present.
+///
+/// What it does not prove: that the fields are in the same **order**, or at the
+/// same **offsets**. A CLAP release that reordered two fields while keeping the
+/// count and the names would pass this untouched. That is a deliberate limit
+/// rather than an oversight: the upstream headers are the source of the
+/// translated struct, so a reorder there reorders both sides together and stays
+/// consistent. The case worth catching is a field appearing or disappearing
+/// under a version bump, which changes the count, and `clap_host_t.clap_version`
+/// specifically, which is checked with `@offsetOf` above because a
+/// major-version-skewed host is exactly when the two sides can disagree.
 fn assertLayout(comptime T: type, comptime want_fields: usize, comptime probe: anytype) void {
     const info = @typeInfo(T).@"struct";
     if (info.layout != .@"extern") @compileError(@typeName(T) ++ " must be extern");

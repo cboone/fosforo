@@ -150,8 +150,21 @@ pub const Renderer = struct {
         attachment.msgSend(void, "setStoreAction:", .{mtl.store_action_store});
         attachment.msgSend(void, "setClearColor:", .{background});
 
+        // Both can be nil under memory pressure or device loss, and both are
+        // skipped on the same reasoning as `nextDrawable` above.
+        //
+        // The hazard is not a crash. Messaging nil is a no-op that returns nil,
+        // so the encoding calls below would quietly do nothing. It is the two
+        // calls after them: a command buffer that exists but had nothing
+        // encoded into it still presents and commits, handing the compositor a
+        // drawable whose contents were never written. That shows as one frame
+        // of whatever the texture happened to hold, which is a worse outcome
+        // than the dropped frame skipping produces.
         const buffer = self.queue.msgSend(objc.Object, "commandBuffer", .{});
+        if (buffer.value == null) return;
+
         const encoder = buffer.msgSend(objc.Object, "renderCommandEncoderWithDescriptor:", .{pass});
+        if (encoder.value == null) return;
 
         encoder.msgSend(void, "setRenderPipelineState:", .{self.pipeline});
         // A fullscreen triangle, which is cheaper than a quad and needs no

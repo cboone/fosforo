@@ -29,8 +29,13 @@ pub const NativeView = *anyopaque;
 /// Every way starting a renderer can fail. Each is a real machine condition
 /// rather than a programming error, so each is reported rather than asserted.
 pub const Error = error{
-    /// No GPU. Reachable on a machine with no Metal support, and worth checking
-    /// first when a host that sandboxes plugins fails where another does not.
+    /// No usable GPU. Covers both a device that could not be obtained at all and
+    /// one that was obtained but would not hand out a command queue, since a
+    /// caller can do nothing different about the two. `Diagnostics` carries
+    /// which it was.
+    ///
+    /// Worth checking first when a host that sandboxes plugins fails where
+    /// another does not.
     NoDevice,
     /// The shader source did not compile. See `Diagnostics` for what went wrong.
     ShaderCompilationFailed,
