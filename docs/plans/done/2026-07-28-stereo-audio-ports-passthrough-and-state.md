@@ -17,12 +17,12 @@ The signal tap, the history buffer, and anything that draws arrive in phase 2. T
 
 ## Decisions already made
 
-| Question                      | Decision                                                                                                             |
-| ----------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| Where the new code lives      | `state.zig` and `log.zig` split out; the audio-ports vtable and `process` stay in `plugin.zig` as glue over `*Instance` |
-| The ADR 0010 allocator seam   | Built now, over a zero-length scratch slice, so any allocation fails rather than reaching the heap                    |
-| State header shape            | 4-byte magic `"FSFR"` plus a little-endian `u32` version, 8 bytes total                                              |
-| Unrecognized trailing bytes   | Tolerated on load, so a future build's payload does not make the file unreadable by this one                         |
+| Question                    | Decision                                                                                                                |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Where the new code lives    | `state.zig` and `log.zig` split out; the audio-ports vtable and `process` stay in `plugin.zig` as glue over `*Instance` |
+| The ADR 0010 allocator seam | Built now, over a zero-length scratch slice, so any allocation fails rather than reaching the heap                      |
+| State header shape          | 4-byte magic `"FSFR"` plus a little-endian `u32` version, 8 bytes total                                                 |
+| Unrecognized trailing bytes | Tolerated on load, so a future build's payload does not make the file unreadable by this one                            |
 
 ## Changes
 
@@ -120,13 +120,13 @@ Add a second host fixture whose `get_extension` returns a `clap_host_log_t` stub
 
 ### Tests to add
 
-| Area        | Cases                                                                                                                                                       |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| audio-ports | `count` is 1 on both sides; `get(0, …)` fills every field including the name and `in_place_pair`; `get(1, …)` returns false                                  |
-| process     | stereo copy; in-place (identical pointers) leaves data correct and copies nothing; null input clears the output; mismatched channel counts; `constant_mask` propagation |
+| Area        | Cases                                                                                                                                                                    |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| audio-ports | `count` is 1 on both sides; `get(0, …)` fills every field including the name and `in_place_pair`; `get(1, …)` returns false                                              |
+| process     | stereo copy; in-place (identical pointers) leaves data correct and copies nothing; null input clears the output; mismatched channel counts; `constant_mask` propagation  |
 | state       | round trip; a stream that moves one byte per call in each direction; a write error mid-header; a truncated header; wrong magic; a future version; trailing bytes ignored |
-| extensions  | `get_extension` returns the audio-ports and state vtables, and still null for `clap.gui`                                                                     |
-| log         | a host offering `clap.log` receives the message; a host without it does not crash                                                                            |
+| extensions  | `get_extension` returns the audio-ports and state vtables, and still null for `clap.gui`                                                                                 |
+| log         | a host offering `clap.log` receives the message; a host without it does not crash                                                                                        |
 
 `src/main.zig`'s test block references modules explicitly (`_ = clap; _ = plugin;`). Add `_ = @import("clap/state.zig");` and `_ = @import("clap/log.zig");` so their tests are collected.
 
