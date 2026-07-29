@@ -23,6 +23,7 @@ Two things are worth knowing before you start. First, the project is deliberatel
 - Xcode, for the Apple frameworks and SDK
 - CMake 3.21 or newer, only if you are building the Audio Unit
 - The Metal toolchain, only if you are type-checking shaders: `xcodebuild -downloadComponent MetalToolchain`
+- `shfmt` and `shellcheck`, only if you are changing shell scripts. CI pins 3.13.1 and 0.11.0
 
 ### Getting Started
 
@@ -69,6 +70,8 @@ run `xcrun --kill-cache`.
 ## Code Style
 
 - Run `zig fmt build.zig src/` before committing
+- Format shell scripts before committing with `git ls-files -z | xargs -0 shfmt -f | xargs shfmt -w`, and pass `shfmt` no parser or printer options. The profile lives in `.editorconfig`, and `shfmt` ignores that file entirely if any of those options is given (`-i`, `-ci`, `-sr`, `-ln` and the rest of the two groups in `shfmt --help`). The output-mode selectors are fine, so `-w` and `-d` above are safe. Select files through `git ls-files` rather than running `shfmt -w .`, which reaches vendored scripts under `build/` and reformats them
+- Keep `shellcheck` clean: `git ls-files -z | xargs -0 shfmt -f | xargs shellcheck`
 - Keep Metal types out of anything above `src/gpu/iface.zig`. That seam is load-bearing; see [ADR 0005](docs/adr/0005-metal-behind-a-renderer-seam.md)
 - Anything reachable from the audio thread must not allocate, lock, or make a syscall
 
@@ -107,6 +110,7 @@ build: bump pinned Zig to 0.17.0
 1. Make your changes
 1. Ensure tests pass: `zig build test`
 1. Ensure formatting passes: `zig fmt --check build.zig src/`
+1. If you touched a shell script, ensure `git ls-files -z | xargs -0 shfmt -f | xargs shfmt -d` and the same pipeline ending in `xargs shellcheck` are both silent
 1. Submit a pull request
 
 ### Branch Naming
