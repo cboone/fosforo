@@ -174,12 +174,14 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}" || true
 
   # The AUv2 component is the only artifact carrying a clap-wrapper-generated
-  # Info.plist, and clap-wrapper hardcodes sandbox claims this plugin does not want.
-  # `cmake/narrow-au-resource-usage` strips them as a POST_BUILD step, but a
-  # stripping step cannot detect its own absence, so this asserts independently
-  # against a from-scratch build. It is the slowest job here because CMake fetches
-  # the AudioUnit SDK, which is also why it builds only the AUv2 target.
-  audio-unit-sandbox:
+  # Info.plist, and two things about that plist are wrong out of the box: it claims
+  # sandbox resources this plugin does not use, and it names the plugin after the
+  # ASCII `OUTPUT_NAME` while describing it as a wrapper. Two POST_BUILD scripts fix
+  # them, but a rewriting step cannot detect its own absence, so both are asserted
+  # here independently against a from-scratch build. It is the slowest job here
+  # because CMake fetches the AudioUnit SDK, which is also why it builds only the
+  # AUv2 target.
+  audio-unit-metadata:
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
@@ -197,4 +199,12 @@ jobs:
       - name: Assert the component claims no sandbox resources
         run: |
           ./cmake/narrow-au-resource-usage --check \
+            build/assets/Fosforo.component/Contents/Info.plist
+
+      # Also asserts CFBundleExecutable is still ASCII `Fosforo`. The display name
+      # and the filename are deliberately different strings, and the failure mode
+      # worth catching is them being made the same again in either direction.
+      - name: Assert the component carries the display name
+        run: |
+          ./cmake/set-au-display-name --check \
             build/assets/Fosforo.component/Contents/Info.plist
