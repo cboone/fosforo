@@ -70,7 +70,7 @@ run `xcrun --kill-cache`.
 ## Code Style
 
 - Run `zig fmt build.zig src/` before committing
-- Format shell scripts before committing with `git ls-files -z | xargs -0 shfmt -f | xargs shfmt -w`, and pass `shfmt` no formatting flags. The profile lives in `.editorconfig`, and `shfmt` ignores that file entirely if any formatting flag is given. Select files through `git ls-files` rather than running `shfmt -w .`, which reaches vendored scripts under `build/` and reformats them
+- Format shell scripts before committing with `git ls-files -z | xargs -0 shfmt -f | xargs shfmt -w`, and pass `shfmt` no parser or printer options. The profile lives in `.editorconfig`, and `shfmt` ignores that file entirely if any of those options is given (`-i`, `-ci`, `-sr`, `-ln` and the rest of the two groups in `shfmt --help`). The output-mode selectors are fine, so `-w` and `-d` above are safe. Select files through `git ls-files` rather than running `shfmt -w .`, which reaches vendored scripts under `build/` and reformats them
 - Keep `shellcheck` clean: `git ls-files -z | xargs -0 shfmt -f | xargs shellcheck`
 - Keep Metal types out of anything above `src/gpu/iface.zig`. That seam is load-bearing; see [ADR 0005](docs/adr/0005-metal-behind-a-renderer-seam.md)
 - Anything reachable from the audio thread must not allocate, lock, or make a syscall

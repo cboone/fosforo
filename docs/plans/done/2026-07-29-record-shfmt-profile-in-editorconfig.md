@@ -244,3 +244,20 @@ git ls-files -z | xargs -0 shfmt -f | xargs -r shellcheck
 `shfmt -f` filters an explicit file list to shell files by shebang, so the extensionless script is still found and future scripts still are too. Verified to return exactly `cmake/narrow-au-resource-usage`, to stay silent, and to exit non-zero when a spaced redirect in that script is deliberately collapsed. `xargs -r` is supported by both BSD `xargs` on macOS and GNU `xargs` on the runner.
 
 The lesson worth keeping: the plan's verification section tested the tools against a tree that happened to have no `build/` directory, then a later step in the same plan created one. Verification that runs before a plan's own side effects is not verification of the end state.
+
+## Addendum: "no flags" was imprecise, and self-contradictory
+
+Everything above says `shfmt` honours `.editorconfig` only when given "no flags". Copilot flagged the contradiction on review: the same documents then instruct the reader to run `shfmt -d` and `shfmt -w`, which are flags. Either the rule was wrong or the commands were.
+
+The rule was wrong. Tested per flag against the real script:
+
+<!-- prettier-ignore -->
+| Option group                                                    | Effect on `.editorconfig` |
+| --------------------------------------------------------------- | ------------------------- |
+| Output modes: `-d`, `-w`, `-l`, `-f`                            | Honoured                  |
+| Parser options: `-ln`, `-p`, `-s`                               | Discarded                 |
+| Printer options: `-i`, `-bn`, `-ci`, `-sr`, `-kp`, `-fn`, `-mn` | Discarded                 |
+
+`shfmt --help` groups its flags exactly this way, and the footer notes only that "Formatting options can also be read from EditorConfig files". So the precise rule is that **parser and printer options** suppress the file, while the output-mode selectors do not. Every call site and all three documents now say that instead of "no flags".
+
+Worth noting for a future simplification: `shfmt` also has `--apply-ignore`, which honours `ignore = true` sections in `.editorconfig`. That is a second possible answer to the `build/` problem above, and unlike a parser or printer option it does not suppress the file. The `git ls-files` approach was kept because `.gitignore` already records what is not ours and duplicating that list into `.editorconfig` would let the two drift.
