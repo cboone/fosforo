@@ -27,6 +27,23 @@ concurrency:
 permissions:
   contents: read
 
+# Workflow-level rather than job-level because two jobs now validate a .clap and
+# share one cache entry. Duplicating these would let the two cache keys drift, and a
+# drifted key still passes; it just quietly pays a full Rust build every run.
+#
+# Both pins are deliberate. clap-validator is not on crates.io, so it is built from
+# git, where a commit is the only reference upstream cannot move; `--locked` extends
+# that to its dependency tree. Pinning Rust as well keeps a future stable release
+# that cannot build this commit from turning CI red with no change on this side.
+# Bump them together and the cache key follows. Neither pin costs anything on a hit.
+env:
+  # Tag 0.4.1, resolved to its commit: tags can move, commits cannot.
+  VALIDATOR_REV: 152b9823e992d782c5c1fd33bca0295478b919aa
+  # clap-validator 0.4.1 declares MSRV 1.95.0 and is edition 2024, which the runner
+  # image's preinstalled Rust may or may not satisfy from one refresh to the next.
+  # This is the toolchain the local install was built with.
+  RUST_VERSION: "1.97.1"
+
 jobs:
   # Must run on macOS: the plugin links Cocoa, Metal, QuartzCore and CoreVideo,
   # so it cannot build or test on the default ubuntu-latest runner.
@@ -126,63 +143,22 @@ jobs:
   # feature list all compile, pass `zig build test`, and surface only here or
   # inside someone's DAW.
   #
-  # Both pins are deliberate. The validator is not on crates.io, so it is built
-  # from git, where a commit is the only reference upstream cannot move;
-  # `--locked` extends that to its dependency tree. Pinning Rust as well keeps a
-  # future stable release that cannot build this commit from turning CI red with
-  # no change on this side. Neither pin costs anything on a cache hit.
-  #
   # Only failures and crashes fail the job. clap-validator exits non-zero on
   # `num_failed`, which counts `Failed` and `Crashed` but not `Warning`, so a
   # warning appears in the log without being able to break the build.
   #
-  # Validates the Zig-built bundle only. The clap-wrapper-built .clap under
-  # build/assets/ is not covered; that needs the full CMake build, so it belongs
-  # in `audio-unit-sandbox` below, where the SDK fetch is already paid for.
+  # Validates the Zig-built bundle. The clap-wrapper-built one is a different
+  # artifact from a different entry point, and `clap-wrapper` below covers it.
   clap-validator:
     runs-on: macos-latest
     timeout-minutes: 20
-    env:
-      # Tag 0.4.1, resolved to its commit: tags can move, commits cannot.
-      VALIDATOR_REV: 152b9823e992d782c5c1fd33bca0295478b919aa
-      # clap-validator 0.4.1 declares MSRV 1.95.0 and is edition 2024, which the
-      # runner image's preinstalled Rust may or may not satisfy from one refresh
-      # to the next. This is the toolchain the local install was built with.
-      RUST_VERSION: "1.97.1"
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      # Restore and save are split rather than using the combined action so the
-      # save is an explicit step on the success path. Installing into a directory
-      # this job owns, instead of ~/.cargo/bin, keeps the cached path to exactly
-      # what was built here. No restore-keys: a partial match would silently run
-      # a validator built from a different commit.
-      - name: Restore the cached validator
-        id: validator-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - uses: ./.github/actions/clap-validator
         with:
-          path: ${{ runner.temp }}/clap-validator
-          key: clap-validator-${{ runner.os }}-${{ runner.arch }}-${{ env.VALIDATOR_REV }}-rust${{ env.RUST_VERSION }}
-
-      - name: Build clap-validator
-        if: steps.validator-cache.outputs.cache-hit != 'true'
-        run: |
-          rustup toolchain install "${RUST_VERSION}" --profile minimal --no-self-update
-          cargo "+${RUST_VERSION}" install \
-            --git https://github.com/free-audio/clap-validator \
-            --rev "${VALIDATOR_REV}" \
-            --locked \
-            --root "${RUNNER_TEMP}/clap-validator"
-
-      - name: Cache the built validator
-        if: steps.validator-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ${{ runner.temp }}/clap-validator
-          key: ${{ steps.validator-cache.outputs.cache-primary-key }}
-
-      - name: Put the validator on PATH
-        run: printf '%s\n' "${RUNNER_TEMP}/clap-validator/bin" >> "${GITHUB_PATH}"
+          validator-rev: ${{ env.VALIDATOR_REV }}
+          rust-version: ${{ env.RUST_VERSION }}
 
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
@@ -209,7 +185,7 @@ jobs:
         run: |
           clap-validator validate --json --only-failed zig-out/Fosforo.clap > failures.json || true
           {
-            echo "### clap-validator"
+            echo "### clap-validator, Zig build"
             echo
             echo "| Test | Status | Details |"
             echo "| ---- | ------ | ------- |"
@@ -220,15 +196,34 @@ jobs:
             ' failures.json
           } >> "${GITHUB_STEP_SUMMARY}" || true
 
+  # Everything the clap-wrapper path emits, checked. ADR 0003 makes that path
+  # load-bearing: the plugin is authored once as a CLAP and projected outward, and
+  # these are the artifacts that prove the projection still works. They share the
+  # implementation with the Zig-built bundle but not the entry point, which comes
+  # from cmake/entry.cpp here and src/main.zig there, so a defect in that seam or a
+  # regression arriving with a clap-wrapper pin bump is invisible above.
+  #
+  # `--target fosforo_all` rather than naming both targets. It widens automatically
+  # if FOSFORO_FORMATS grows, which is wanted: a new format should reach CI by
+  # default, not by remembering to edit a target list here. Naming fosforo_auv2 alone
+  # does *not* build the CLAP, because setting AUV2_MANUFACTURER_CODE sends
+  # make_clapfirst_plugins down its explicit-configuration branch, which never calls
+  # add_dependencies() between the two.
+  #
   # The AUv2 component is the only artifact carrying a clap-wrapper-generated
   # Info.plist, and clap-wrapper hardcodes sandbox claims this plugin does not want.
   # `cmake/narrow-au-resource-usage` strips them as a POST_BUILD step, but a
   # stripping step cannot detect its own absence, so this asserts independently
-  # against a from-scratch build. It is the slowest job here because CMake fetches
-  # the AudioUnit SDK, which is also why it builds only the AUv2 target.
-  audio-unit-sandbox:
+  # against a from-scratch build.
+  #
+  # The slowest job here, because CMake fetches the AudioUnit SDK. That cost is why
+  # the CLAP validation lives here rather than in a fourth job that would pay it
+  # again. The build and the plist assertion come before the validator install
+  # deliberately: on a warm cache the install is nearly free either way, and on a
+  # cold one the build result should not wait behind a Rust compile.
+  clap-wrapper:
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -236,12 +231,39 @@ jobs:
         with:
           version-file: build.zig.zon
 
-      - name: Build the Audio Unit
+      - name: Build the wrapper artifacts
         run: |
           cmake -B build cmake/
-          cmake --build build --target fosforo_auv2
+          cmake --build build --target fosforo_all
 
       - name: Assert the component claims no sandbox resources
         run: |
           ./cmake/narrow-au-resource-usage --check \
             build/assets/Fosforo.component/Contents/Info.plist
+
+      - uses: ./.github/actions/clap-validator
+        with:
+          validator-rev: ${{ env.VALIDATOR_REV }}
+          rust-version: ${{ env.RUST_VERSION }}
+
+      # The other half of the gate the `clap-validator` job opened. Phase 0 required
+      # both bundles to pass and only one of them was enforced.
+      - name: Validate the wrapper-built CLAP
+        id: validate
+        run: clap-validator validate build/assets/Fosforo.clap
+
+      - name: Summarize the failures
+        if: failure() && steps.validate.outcome == 'failure'
+        run: |
+          clap-validator validate --json --only-failed build/assets/Fosforo.clap > failures.json || true
+          {
+            echo "### clap-validator, clap-wrapper build"
+            echo
+            echo "| Test | Status | Details |"
+            echo "| ---- | ------ | ------- |"
+            jq -r '
+              .results[]
+              | (.test | to_entries[0].value) as $t
+              | "| `\($t.test)` | \(.status.code) | \(.status.details // "" | gsub("\n"; " ") | gsub("\\|"; "\\|")) |"
+            ' failures.json
+          } >> "${GITHUB_STEP_SUMMARY}" || true
