@@ -72,6 +72,20 @@ comptime {
     assertLayout(c.clap_plugin_t, 12, .{ "desc", "plugin_data", "init", "destroy", "process", "get_extension" });
     assertLayout(c.clap_host_t, 10, .{ "clap_version", "host_data", "get_extension" });
 
+    // The audio path. `clap_audio_buffer_t` and `clap_process_t` are the two
+    // the host fills in and we read every callback, so a field that moved is a
+    // wrong pointer dereferenced at audio rate rather than anything diagnosable.
+    assertLayout(c.clap_plugin_audio_ports_t, 2, .{ "count", "get" });
+    assertLayout(c.clap_audio_port_info_t, 6, .{ "id", "name", "flags", "channel_count", "port_type", "in_place_pair" });
+    assertLayout(c.clap_audio_buffer_t, 5, .{ "data32", "data64", "channel_count", "constant_mask" });
+    assertLayout(c.clap_process_t, 9, .{ "frames_count", "audio_inputs", "audio_outputs", "audio_inputs_count", "audio_outputs_count" });
+
+    // State and logging.
+    assertLayout(c.clap_plugin_state_t, 2, .{ "save", "load" });
+    assertLayout(c.clap_istream_t, 2, .{ "ctx", "read" });
+    assertLayout(c.clap_ostream_t, 2, .{ "ctx", "write" });
+    assertLayout(c.clap_host_log_t, 1, .{"log"});
+
     // `clap_version` must stay first. A host built against a future major
     // version may hand over a differently shaped struct, and reading the
     // version to discover that is only safe if its offset never moves.

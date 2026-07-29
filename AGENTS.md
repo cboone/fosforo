@@ -31,7 +31,9 @@ shaders/scope.metal         compiled at runtime from embedded source, not linked
 src/
   main.zig                  the host-facing boundary and exported entry points
   clap/c.zig                translated CLAP ABI plus comptime layout assertions
-  clap/plugin.zig           factory, descriptor, and instance lifecycle
+  clap/plugin.zig           factory, descriptor, lifecycle, audio ports, process
+  clap/state.zig            the versioned save/load format and its stream loops
+  clap/log.zig              diagnostics routed through the host's clap.log
 docs/
   adr/                      settled architecture decisions
   design/                   the source brainstorm this project came from
@@ -72,3 +74,4 @@ Validate with `clap-validator validate zig-out/Fosforo.clap`, and Audio Units wi
 - **`clap-validator` is pinned twice over,** at workflow-level `env` in `.github/workflows/ci.yml`: the validator commit, because it is installed from git rather than a registry and a tag can move, and the Rust toolchain that builds it, because the crate declares an MSRV the runner image may stop satisfying. Bump them together and the cache key follows automatically. Warnings do not fail either job: `clap-validator` exits non-zero on failed and crashed tests only, so a `WARNING` line is visible in the log without breaking the build.
 - **Two jobs validate a `.clap`, and they share one cached validator.** `.github/actions/clap-validator` is a local composite action that builds and caches it; `clap-validator` and `clap-wrapper` both call it and pass the workflow-level pins. The cache key lives only in that action, because a key written twice can drift, and a drifted key still passes: it just pays a full Rust build every run. On a cold cache both jobs build concurrently and race to save, which is safe, since the loser warns rather than failing.
 - **`--target fosforo_auv2` does not build the CLAP.** Setting `AUV2_MANUFACTURER_CODE` sends `make_clapfirst_plugins` down its explicit-configuration branch, which never adds a dependency from the AUv2 target to the CLAP one. Build `fosforo_all` when both artifacts are wanted, which is what CI does.
+- **REAPER accepts `clap.log` messages and discards them.** It implements the extension, so `Log.init` finds it and a host-only design would send every diagnostic into a hole with no visible destination. That is why debug builds mirror to `stderr` as well as calling the host, rather than treating `stderr` as a fallback for hosts that offer nothing. Launch REAPER from a terminal to read them.
