@@ -5,8 +5,10 @@
 //! implement `clap.log` surface messages in a console window instead, which is
 //! the only channel that reliably works inside a DAW.
 //!
-//! The extension is optional, so every entry point here degrades to a debug
-//! build's `stderr` rather than to nothing.
+//! The extension is optional, so a host offering nothing has to be survivable.
+//! Debug builds additionally mirror every message to `stderr`, because a host
+//! accepting a message is not the same as a developer being able to read it:
+//! REAPER implements `clap.log` and discards what this plugin sends it.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -49,11 +51,8 @@ pub const Log = struct {
 
     /// Send an already null-terminated message.
     pub fn message(self: Log, severity: c.clap_log_severity, msg: [*:0]const u8) void {
-        if (self.ext) |ext| {
-            ext.log.?(self.host, severity, msg);
-            return;
-        }
-        fallback(severity, std.mem.span(msg));
+        if (self.ext) |ext| ext.log.?(self.host, severity, msg);
+        mirror(severity, std.mem.span(msg));
     }
 
     /// Format and send. Truncates rather than failing, on the grounds that a
@@ -88,16 +87,25 @@ pub const Log = struct {
 /// would compound one piece of invalid UTF-8 into two.
 const truncation_marker = "...";
 
-/// Where a message goes when the host offers no `clap.log`.
+/// A second copy of every message, on stderr.
 ///
-/// Debug builds only. This locks stderr and makes a syscall, so it is exactly
-/// the thing ADR 0010 forbids on the audio thread, and a release build should
+/// Not a fallback. It runs whether or not the host took the message, because
+/// "the host has it" and "you can read it" are different claims: REAPER
+/// implements `clap.log` and then discards what this plugin sends it, which is
+/// normal severity filtering and leaves a developer with no channel at all.
+/// Mirroring means the terminal always works while you are building.
+///
+/// Debug builds only, for two reasons. A shipped plugin has no business writing
+/// to a DAW's stderr, and this locks a mutex and makes a syscall, which is
+/// precisely what ADR 0010 forbids on the audio thread. A release build should
 /// not carry a path that tempts anyone into calling it from there.
 ///
 /// Silent under `zig build test` as well. There is no host in a test binary, so
 /// every message would take this path and interleave with the test runner's own
-/// stream, which the build runner reads as a failed step.
-fn fallback(severity: c.clap_log_severity, msg: []const u8) void {
+/// stream, which the build runner reads as a failed step. That does mean this
+/// function has no automated coverage; it is verified by running the plugin in
+/// a host, which is the only place it is meant to do anything.
+fn mirror(severity: c.clap_log_severity, msg: []const u8) void {
     if (builtin.mode != .Debug or builtin.is_test) return;
     std.debug.print("[fosforo] {s}: {s}\n", .{ severityName(severity), msg });
 }
