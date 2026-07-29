@@ -29,6 +29,23 @@ concurrency:
 permissions:
   contents: read
 
+# Workflow-level rather than job-level so more than one job can share the cached
+# validator without the cache key being written twice. A drifted key still passes;
+# it just quietly pays a full Rust build every run.
+#
+# Both pins are deliberate. clap-validator is not on crates.io, so it is built from
+# git, where a commit is the only reference upstream cannot move; `--locked` extends
+# that to its dependency tree. Pinning Rust as well keeps a future stable release
+# that cannot build this commit from turning CI red with no change on this side.
+# Bump them together and the cache key follows. Neither pin costs anything on a hit.
+env:
+  # Tag 0.4.1, resolved to its commit: tags can move, commits cannot.
+  VALIDATOR_REV: 152b9823e992d782c5c1fd33bca0295478b919aa
+  # clap-validator 0.4.1 declares MSRV 1.95.0 and is edition 2024, which the runner
+  # image's preinstalled Rust may or may not satisfy from one refresh to the next.
+  # This is the toolchain the local install was built with.
+  RUST_VERSION: "1.97.1"
+
 jobs:
   # Must run on macOS: the plugin links Cocoa, Metal, QuartzCore and CoreVideo,
   # so it cannot build or test on the default ubuntu-latest runner.
@@ -79,12 +96,6 @@ jobs:
   # feature list all compile, pass `zig build test`, and surface only here or
   # inside someone's DAW.
   #
-  # Both pins are deliberate. The validator is not on crates.io, so it is built
-  # from git, where a commit is the only reference upstream cannot move;
-  # `--locked` extends that to its dependency tree. Pinning Rust as well keeps a
-  # future stable release that cannot build this commit from turning CI red with
-  # no change on this side. Neither pin costs anything on a cache hit.
-  #
   # Only failures and crashes fail the job. clap-validator exits non-zero on
   # `num_failed`, which counts `Failed` and `Crashed` but not `Warning`, so a
   # warning appears in the log without being able to break the build.
@@ -95,47 +106,13 @@ jobs:
   clap-validator:
     runs-on: macos-latest
     timeout-minutes: 20
-    env:
-      # Tag 0.4.1, resolved to its commit: tags can move, commits cannot.
-      VALIDATOR_REV: 152b9823e992d782c5c1fd33bca0295478b919aa
-      # clap-validator 0.4.1 declares MSRV 1.95.0 and is edition 2024, which the
-      # runner image's preinstalled Rust may or may not satisfy from one refresh
-      # to the next. This is the toolchain the local install was built with.
-      RUST_VERSION: "1.97.1"
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      # Restore and save are split rather than using the combined action so the
-      # save is an explicit step on the success path. Installing into a directory
-      # this job owns, instead of ~/.cargo/bin, keeps the cached path to exactly
-      # what was built here. No restore-keys: a partial match would silently run
-      # a validator built from a different commit.
-      - name: Restore the cached validator
-        id: validator-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - uses: ./.github/actions/clap-validator
         with:
-          path: ${{ runner.temp }}/clap-validator
-          key: clap-validator-${{ runner.os }}-${{ runner.arch }}-${{ env.VALIDATOR_REV }}-rust${{ env.RUST_VERSION }}
-
-      - name: Build clap-validator
-        if: steps.validator-cache.outputs.cache-hit != 'true'
-        run: |
-          rustup toolchain install "${RUST_VERSION}" --profile minimal --no-self-update
-          cargo "+${RUST_VERSION}" install \
-            --git https://github.com/free-audio/clap-validator \
-            --rev "${VALIDATOR_REV}" \
-            --locked \
-            --root "${RUNNER_TEMP}/clap-validator"
-
-      - name: Cache the built validator
-        if: steps.validator-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ${{ runner.temp }}/clap-validator
-          key: ${{ steps.validator-cache.outputs.cache-primary-key }}
-
-      - name: Put the validator on PATH
-        run: printf '%s\n' "${RUNNER_TEMP}/clap-validator/bin" >> "${GITHUB_PATH}"
+          validator-rev: ${{ env.VALIDATOR_REV }}
+          rust-version: ${{ env.RUST_VERSION }}
 
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:

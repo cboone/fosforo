@@ -1,0 +1,73 @@
+name: Install clap-validator
+description: Builds clap-validator from a pinned commit, caches the result, and puts it on PATH.
+
+# Two jobs in ci.yml validate a .clap, and they are built by different toolchains
+# from different entry points: `zig build` produces zig-out/Fosforo.clap from
+# src/main.zig, and CMake plus clap-wrapper produce build/assets/Fosforo.clap from
+# cmake/entry.cpp. Both need the same validator, and more to the point both need the
+# same cache key. A key written twice can drift, and a drifted key still passes; it
+# just pays a full Rust build on every run instead of none. That is why this is an
+# action rather than a copied block.
+#
+# The `validate` step itself is deliberately not here. It is the gate, and the gate
+# should be readable in the job that runs it.
+
+inputs:
+  validator-rev:
+    description: The clap-validator commit to build. A tag can move; a commit cannot.
+    required: true
+  rust-version:
+    description: >-
+      The exact Rust toolchain to build it with. clap-validator 0.4.1 declares MSRV
+      1.95.0 and is edition 2024, which the runner image's preinstalled Rust may or
+      may not satisfy from one refresh to the next.
+    required: true
+
+# Neither input is defaulted. A caller that forgets one should fail loudly rather
+# than silently validate against a different validator than its sibling job.
+
+runs:
+  using: composite
+  steps:
+    # Restore and save are split rather than using the combined action so the save is
+    # an explicit step on the success path. Installing into a directory this action
+    # owns, instead of ~/.cargo/bin, keeps the cached path to exactly what was built
+    # here. No restore-keys: a partial match would silently run a validator built from
+    # a different commit.
+    - name: Restore the cached validator
+      id: cache
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ runner.temp }}/clap-validator
+        key: clap-validator-${{ runner.os }}-${{ runner.arch }}-${{ inputs.validator-rev }}-rust${{ inputs.rust-version }}
+
+    # --locked uses the committed Cargo.lock, so a new release of a transitive
+    # dependency cannot change what gets built. --root keeps the binary out of the
+    # runner's ~/.cargo/bin, so the cached path holds exactly what this built.
+    - name: Build clap-validator
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        VALIDATOR_REV: ${{ inputs.validator-rev }}
+        RUST_VERSION: ${{ inputs.rust-version }}
+      run: |
+        rustup toolchain install "${RUST_VERSION}" --profile minimal --no-self-update
+        cargo "+${RUST_VERSION}" install \
+          --git https://github.com/free-audio/clap-validator \
+          --rev "${VALIDATOR_REV}" \
+          --locked \
+          --root "${RUNNER_TEMP}/clap-validator"
+
+    # Reuses cache-primary-key so the restore and save keys cannot drift. On a cold
+    # cache both calling jobs build concurrently and race to reserve this key; the
+    # loser's save logs a warning and does not fail, so the job stays green.
+    - name: Cache the built validator
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ runner.temp }}/clap-validator
+        key: ${{ steps.cache.outputs.cache-primary-key }}
+
+    - name: Put the validator on PATH
+      shell: bash
+      run: printf '%s\n' "${RUNNER_TEMP}/clap-validator/bin" >> "${GITHUB_PATH}"
