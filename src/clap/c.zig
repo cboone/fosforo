@@ -86,6 +86,15 @@ comptime {
     assertLayout(c.clap_ostream_t, 2, .{ "ctx", "write" });
     assertLayout(c.clap_host_log_t, 1, .{"log"});
 
+    // The GUI. `clap_plugin_gui_t` is the widest vtable this plugin fills in,
+    // and a field that moved is a host calling one callback through another's
+    // pointer, which is a crash with a stack trace that names the wrong thing.
+    assertLayout(c.clap_plugin_gui_t, 15, .{
+        "is_api_supported", "create", "destroy", "set_parent", "show", "hide",
+    });
+    assertLayout(c.clap_gui_resize_hints_t, 5, .{ "can_resize_horizontally", "can_resize_vertically" });
+    assertLayout(c.clap_host_gui_t, 5, .{ "request_resize", "closed" });
+
     // `clap_version` must stay first. A host built against a future major
     // version may hand over a differently shaped struct, and reading the
     // version to discover that is only safe if its offset never moves.
