@@ -105,6 +105,18 @@ pub const Editor = struct {
         if (!self.created) return error.NotCreated;
         if (self.view != null) return error.AlreadyParented;
 
+        // Every member of `clap_window`'s union is pointer-sized, so reading the
+        // cocoa member of a window the host filled in as something else yields a
+        // plausible-looking pointer that is not an `NSView`, and the first
+        // message sent to it is the crash. Nothing about the earlier `create`
+        // call constrains what arrives here, so this is a trust boundary and
+        // gets the same treatment `activate` and `process` give theirs: refuse.
+        //
+        // Judged by the same predicate that gates `create`, so the two cannot
+        // disagree about what this plugin can embed in. `is_floating` is false
+        // because reaching `set_parent` at all means the host chose embedding.
+        if (!isApiSupported(window.api, false)) return error.WrongWindowApi;
+
         // Reached through the accessor and never through the union field
         // directly: `unnamed_0` is a name translate-c generates and nothing
         // guarantees across Zig versions.
@@ -239,9 +251,9 @@ test "show and hide track visibility and are refused before create" {
 /// Zeroed rather than built field by field, because naming the union member
 /// would mean spelling `unnamed_0` here, and the whole point of
 /// `clap.cocoaView` is that the generated name appears in exactly one place.
-fn testWindow() c.clap_window_t {
+fn testWindow(api: [*c]const u8) c.clap_window_t {
     var window = std.mem.zeroes(c.clap_window_t);
-    window.api = &c.CLAP_WINDOW_API_COCOA;
+    window.api = api;
     return window;
 }
 
@@ -251,7 +263,7 @@ test "set_parent refuses an editor that was never created" {
 
     // Refused before the window is read at all, which is what makes a fixture
     // carrying no view safe to hand over.
-    const window = testWindow();
+    const window = testWindow(&c.CLAP_WINDOW_API_COCOA);
     try testing.expectError(error.NotCreated, editor.setParent(&window, &diags));
 }
 
@@ -261,8 +273,31 @@ test "set_parent refuses a window carrying no view" {
     try testing.expect(editor.create(&c.CLAP_WINDOW_API_COCOA, false));
 
     var diags: gpu.Diagnostics = .{};
-    const window = testWindow();
+    const window = testWindow(&c.CLAP_WINDOW_API_COCOA);
 
     try testing.expectError(error.NoParentView, editor.setParent(&window, &diags));
     try testing.expect(editor.view == null);
+}
+
+test "set_parent refuses a window whose api is not the one create accepted" {
+    // Every member of the union is pointer-sized, so a window the host filled in
+    // as x11 or win32 would hand over a plausible pointer that is not an
+    // NSView. The api has to be judged before the union is read, not after.
+    for ([_][*c]const u8{
+        &c.CLAP_WINDOW_API_WIN32,
+        &c.CLAP_WINDOW_API_X11,
+        &c.CLAP_WINDOW_API_WAYLAND,
+        &c.CLAP_WINDOW_API_UIKIT,
+        null,
+    }) |api| {
+        var editor: Editor = .{};
+        defer editor.destroy();
+        try testing.expect(editor.create(&c.CLAP_WINDOW_API_COCOA, false));
+
+        var diags: gpu.Diagnostics = .{};
+        const window = testWindow(api);
+
+        try testing.expectError(error.WrongWindowApi, editor.setParent(&window, &diags));
+        try testing.expect(editor.view == null);
+    }
 }
