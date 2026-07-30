@@ -311,6 +311,41 @@ Small commits at each logical boundary, all referencing `(#5)`:
 1. `feat: drive rendering from the display link and advertise a resizable editor (#5)`
 1. `docs: record the display link, the mailbox, and the runtime view subclass (#5)`
 
+## What landed differently
+
+Recorded because each was a decision made during execution rather than a slip.
+
+**The barrier is a gate, not a mutex.** The plan called for a `std.Thread.Mutex` held for the body of a tick. Zig 0.16 does not have one: `Mutex` moved under `std.Io` and its `lock` wants an `Io` instance, which a plugin has no business owning an event loop to provide. The replacement is a single atomic word carrying the closed flag and the count of ticks inside, which is better than the original anyway. A tick claims its place and learns whether the gate was open in the same operation, so there is no window between checking and entering, and the `running` flag the plan added to keep the barrier cheap is subsumed rather than needed.
+
+**The clock had to be declared.** Zig 0.16 moved every clock behind `std.Io` too, so `std.time` is now constants only. `clock_gettime_nsec_np(CLOCK_UPTIME_RAW)` is one `extern` and lives in `platform/displaylink.zig`, which is the render loop's clock in both senses.
+
+**Two defects the unit tests could not have found.** The harness caught both.
+
+`Editor.current` could reach 0x0. AppKit floors an autoresizing subview's frame at zero when its superview shrinks by more than the subview's width, which arrives as a legitimate `setFrameSize:` of 0x0. `Pending.post` correctly dropped it, so nothing degenerate ever reached Metal, but `current` kept it: `get_size` would then report a size the plugin had told the host it did not support, and a re-parent would rebuild the view at it. `onResized` now clamps, which gives one invariant worth having: `current` is always a size this editor claims to support.
+
+The frame-rate meter counted its own baseline call as a frame, and its window spanned a hidden editor. The first was a straightforward off-by-one; the second reported 38.8 Hz on the first second after `show`, which reads as a defect in the loop and is really a defect in the instrument. The meter now resets when the loop stops.
+
+## Results
+
+`zig fmt --check`, `zig build test` (89 tests), `zig build`, `zig build -Doptimize=ReleaseFast`, `zig build validate-shaders`, and `shfmt -d` all pass. `clap-validator` reports 21 passed and 0 failed, identical to before, which is the expected outcome: it does not exercise `clap.gui`, so a green run means nothing regressed rather than that the editor works.
+
+The runtime behaviour was verified with a temporary in-process harness, since all of it is runtime behaviour and none of the above touches it. Driving a real `NSApplication`, a real `NSWindow`, and the real vtable:
+
+| Check                                | Result                                                                                     |
+| ------------------------------------ | -------------------------------------------------------------------------------------------- |
+| Renders at display refresh           | 119.6 to 120.2 Hz sustained on a 120 Hz display, across every phase of the run              |
+| The mailbox drains                   | The reported drawable size tracked `set_size` through 960x540, 1600x900, and 480x270        |
+| `set_size` clamps rather than refuses | A 10x10 request produced 480x270, and `get_size` reported it back                          |
+| Hiding stops the loop                | No frames for the two seconds an editor was hidden, and 119.9 Hz on the second after `show` |
+| The teardown race                    | 100 open/close cycles, each with the loop running, clean                                    |
+| The thread rules hold                | Neither `assertMainThread` nor `assertNotMainThread` tripped in a debug build               |
+
+**The leak criterion is met.** Under `leaks --atExit` with `MallocStackLogging`, the total is flat at 286 leaked allocations for 1, 20, and 100 open/close cycles, and every one of them is the `NSXPCConnection` chatter AppKit's LaunchServices creates. No `NSView`, `CAMetalLayer`, `MTLDevice`, `MTLCommandQueue`, pipeline state, `CVDisplayLink`, semaphore, or completion block appears anywhere in the report. A per-cycle leak would compound a hundred times over and be unmissable.
+
+The harness is deliberately not committed, for the same reason issue #4's was not: it needs a GPU and a window server, so it could never join `zig build test` without reintroducing the non-hermetic build ADR 0009 exists to prevent.
+
+**Still to do by hand, in a real host.** The harness is not REAPER and not Logic, and three of the issue's verification steps need one or the other: dragging the window edge continuously during playback, dragging between displays with different refresh rates and backing scales, and several instances open at once without dropouts. `auval` remains unverified for reasons that predate this work.
+
 ## Out of scope
 
 Recorded so these read as deliberate omissions:
