@@ -153,8 +153,18 @@ fn installClapBundle(b: *std.Build, plugin: *std.Build.Step.Compile) void {
 /// a host can load it at all. That leaves the *bundle* unsigned: with no
 /// Contents/_CodeSignature, `codesign --verify` reports "code has no resources but
 /// signature indicates they must be present". cmake/CMakeLists.txt does the same for
-/// the two bundles it builds; see issue #24 for what a distributable signature needs
-/// beyond an identity.
+/// the two bundles it builds.
+///
+/// A real identity additionally gets --timestamp and --options runtime, because
+/// notarization rejects a submission missing either. Both are conditional on the
+/// identity rather than being separate switches, so a distributable signature cannot
+/// be half-configured: there is one knob and it is the one you already had to set.
+/// Neither belongs on the ad-hoc path. --timestamp contacts Apple's timestamp server,
+/// which would make `zig build` need the network, and an ad-hoc signature has no
+/// certificate whose expiry a timestamp could outlive. The hardened runtime is inert
+/// here for a different reason: entitlements and runtime restrictions attach to a
+/// process, and a plugin is loaded into the host's, so the host's apply. It is set
+/// because notarization checks for it, not because it changes how this code runs.
 ///
 /// This does not weaken the hermetic build ADR 0009 protects. /usr/bin/codesign ships
 /// with macOS and is not an on-demand Xcode component the way the Metal toolchain is.
@@ -179,6 +189,13 @@ fn signClapBundle(
     ) orelse "-";
 
     const sign = b.addSystemCommand(&.{ "/usr/bin/codesign", "--force", "--sign", identity });
+
+    // Before addDirectoryArg, not after: the bundle path is positional and codesign
+    // wants it last.
+    if (!std.mem.eql(u8, identity, "-")) {
+        sign.addArgs(&.{ "--timestamp", "--options", "runtime" });
+    }
+
     sign.addDirectoryArg(.{ .cwd_relative = b.getInstallPath(.{ .custom = "Fosforo.clap" }, "") });
     sign.step.dependOn(&binary.step);
     sign.step.dependOn(&plist.step);
