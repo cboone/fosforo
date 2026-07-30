@@ -192,6 +192,15 @@ jobs:
       - name: Build the plugin
         run: zig build
 
+      # The bundle's signature, not the linker's. The linker ad-hoc signs the dylib
+      # on arm64 whatever anyone does, and that alone leaves the bundle without a
+      # Contents/_CodeSignature, which reads as "code has no resources but signature
+      # indicates they must be present" rather than as anything obviously absent.
+      # `zig build` signs the assembled bundle; this is what catches that step being
+      # dropped.
+      - name: Assert the CLAP is signed
+        run: codesign --verify --strict --verbose zig-out/Fosforo.clap
+
       # The gate. That a failing test actually reaches a non-zero exit code was
       # confirmed against a deliberately broken build rather than assumed: a
       # duplicated feature entry compiles, passes `zig build test`, and takes
@@ -275,6 +284,22 @@ jobs:
         run: |
           ./cmake/set-au-display-name --check \
             build/assets/Fosforo.component/Contents/Info.plist
+
+      # Deliberately after the two assertions above, because the three together are
+      # the ordering test and no one of them is it alone. Signing seals
+      # Contents/Info.plist, which both of those steps rewrite, so a signing step that
+      # ran before the rewrites would pass both of them and fail this one, while a
+      # signing step that was dropped fails only this one. The two failures are
+      # distinguishable, and neither is visible to a rewriting step inspecting its own
+      # work.
+      #
+      # No --deep: neither bundle contains nested code, because
+      # AUV2_MACOSX_EMBEDDED_CLAP_LOCATION is unset and so clap-wrapper's
+      # macos_include_clap_in_bundle embeds nothing. --strict covers the rest.
+      - name: Assert the wrapper artifacts are signed
+        run: |
+          codesign --verify --strict --verbose build/assets/Fosforo.component
+          codesign --verify --strict --verbose build/assets/Fosforo.clap
 
       - uses: ./.github/actions/clap-validator
         with:
