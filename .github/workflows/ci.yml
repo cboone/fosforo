@@ -48,19 +48,33 @@ jobs:
   # Must run on macOS: the plugin links Cocoa, Metal, QuartzCore and CoreVideo,
   # so it cannot build or test on the default ubuntu-latest runner.
   # Cross-compilation is off for the same reason (see ADR 0001).
+  #
+  # `timeout-minutes` is an input here rather than a job key, because the jobs
+  # belong to the reusable workflow. One value covers Test, Format and Build, so
+  # it is set by the slowest of the three: Build, at 123s over 28 runs. Format
+  # runs in 30s and gets far more headroom than it needs as a consequence, which
+  # is the price of a single shared input and not worth an upstream change.
   ci:
     uses: cboone/gh-actions/.github/workflows/run-zig-ci.yml@91f9abd25d4f82354c0f950dfc8b6d7525b0f5b5 # v3.0.0
     with:
       zig-version-file: build.zig.zon
       runs-on: macos-latest
       run-cross-compile: false
+      timeout-minutes: 8
 
   # Shaders compile at runtime from embedded source, so the build deliberately
   # does not depend on the Metal toolchain (ADR 0009). This job installs it
   # solely to type-check them, which is why it is separate from `ci` above.
+  #
+  # 90s max over 28 runs. This ceiling deliberately does not budget for the
+  # Metal download below, which was skipped in every run sampled and whose
+  # duration here is unmeasured. If a future runner image ever ships without the
+  # toolchain, this job fails rather than carrying twelve extra minutes of
+  # insurance indefinitely against a step that has never fired; the ceiling then
+  # gets raised once, with a real measurement behind it.
   shaders:
     runs-on: macos-latest
-    timeout-minutes: 20
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -74,8 +88,12 @@ jobs:
             echo "::notice::Metal toolchain absent from this runner image; downloading it."
           fi
 
+      # A label, not a budget. A step timeout cannot exceed its job's, so the
+      # ceiling above is the outer bound either way; this only makes a wedged
+      # multi-gigabyte download read as one rather than as a cancelled job.
       - name: Download the Metal toolchain
         if: steps.metal.outputs.available == 'false'
+        timeout-minutes: 5
         run: |
           xcodebuild -downloadComponent MetalToolchain
           xcrun --kill-cache
@@ -109,9 +127,15 @@ jobs:
   #
   # This is the one check in the project that can go red for reasons unrelated to
   # the code, which is the cost of being the only one that runs anything.
+  #
+  # The ceiling is borrowed, not measured: this job has never run, so 8 comes from
+  # `shaders` and `clap-validator`, which do the same checkout, Zig install and
+  # build on the same runner and peak at 90s and 120s. Replace it with a real
+  # figure and sample size once this PR's runs supply one, the way every other
+  # ceiling here was set (#17).
   smoke:
     runs-on: macos-latest
-    timeout-minutes: 20
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -122,9 +146,15 @@ jobs:
       - name: Smoke-test the GPU path
         run: zig build smoke-gpu
 
+      # A label, on the precedent of the Metal download above. The plausible
+      # failure here is not a red result but a wedge: an AppKit call that blocks
+      # waiting on a window server this process was never granted. Two minutes is
+      # far above the seconds it takes locally, and it makes that case read as
+      # itself instead of as the whole job timing out.
       - name: Smoke-test the AppKit path
         id: appkit
         continue-on-error: true
+        timeout-minutes: 2
         run: zig build smoke-appkit
 
       # The experiment, made legible. Whether a hosted runner hands an unbundled
@@ -151,9 +181,12 @@ jobs:
   # in place under the same tag. The SHA256 sums below are the pin, and the job
   # refuses to install anything that does not match. Bump a version and its sum
   # together; `shasum -a 256` on the downloaded asset produces the replacement.
+  #
+  # 8s max over 9 runs, the fastest job here by an order of magnitude. The two
+  # downloads above are the only variable part and both completed inside that.
   shell:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 3
     env:
       SHFMT_VERSION: "3.13.1"
       SHFMT_SHA256: "fb096c5d1ac6beabbdbaa2874d025badb03ee07929f0c9ff67563ce8c75398b1"
@@ -223,9 +256,14 @@ jobs:
   #
   # Validates the Zig-built bundle. The clap-wrapper-built one is a different
   # artifact from a different entry point, and `clap-wrapper` below covers it.
+  #
+  # 170s max over 19 runs, and that run is a cache miss: 58s building the
+  # validator plus 75s building the plugin. The expensive conditional path is
+  # bounded by observation rather than estimated, which makes this the tightest
+  # ratio in the workflow and the one to watch if a pin bump lands.
   clap-validator:
     runs-on: macos-latest
-    timeout-minutes: 20
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -240,6 +278,19 @@ jobs:
 
       - name: Build the plugin
         run: zig build
+
+      # The bundle's signature, not the linker's. The linker ad-hoc signs the dylib
+      # on arm64 whatever anyone does, and that alone leaves the bundle without a
+      # Contents/_CodeSignature, which reads as "code has no resources but signature
+      # indicates they must be present" rather than as anything obviously absent.
+      # `zig build` signs the assembled bundle; this is what catches that step being
+      # dropped.
+      #
+      # Absolute path, matching the build itself: the assertion should exercise the
+      # same base-OS tool the signing step used, not whatever PATH resolves to on a
+      # future runner image.
+      - name: Assert the CLAP is signed
+        run: /usr/bin/codesign --verify --strict --verbose zig-out/Fosforo.clap
 
       # The gate. That a failing test actually reaches a non-zero exit code was
       # confirmed against a deliberately broken build rather than assumed: a
@@ -297,9 +348,14 @@ jobs:
   # again. The build and the plist assertions come before the validator install
   # deliberately: on a warm cache the install is nearly free either way, and on a
   # cold one the build result should not wait behind a Rust compile.
+  #
+  # 121s max over 12 runs, but the validator cache was warm in all of them, so
+  # that figure does not include the Rust build its sibling measures at 58s. The
+  # narrower job this replaced reached 142s over its own 14 runs. ~200s is the
+  # defensible cold worst case, which is why this sits above the others.
   clap-wrapper:
     runs-on: macos-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -324,6 +380,22 @@ jobs:
         run: |
           ./cmake/set-au-display-name --check \
             build/assets/Fosforo.component/Contents/Info.plist
+
+      # Deliberately after the two assertions above, because the three together are
+      # the ordering test and no one of them is it alone. Signing seals
+      # Contents/Info.plist, which both of those steps rewrite, so a signing step that
+      # ran before the rewrites would pass both of them and fail this one, while a
+      # signing step that was dropped fails only this one. The two failures are
+      # distinguishable, and neither is visible to a rewriting step inspecting its own
+      # work.
+      #
+      # No --deep: neither bundle contains nested code, because
+      # AUV2_MACOSX_EMBEDDED_CLAP_LOCATION is unset and so clap-wrapper's
+      # macos_include_clap_in_bundle embeds nothing. --strict covers the rest.
+      - name: Assert the wrapper artifacts are signed
+        run: |
+          /usr/bin/codesign --verify --strict --verbose build/assets/Fosforo.component
+          /usr/bin/codesign --verify --strict --verbose build/assets/Fosforo.clap
 
       - uses: ./.github/actions/clap-validator
         with:

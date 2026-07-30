@@ -148,6 +148,8 @@ fn installClapBundle(b: *std.Build, plugin: *std.Build.Step.Compile) void {
     b.getInstallStep().dependOn(&binary.step);
     b.getInstallStep().dependOn(&plist.step);
 
+    signClapBundle(b, binary, plist);
+
     const install_local = b.step("install-clap", "Copy the .clap into ~/Library/Audio/Plug-Ins/CLAP");
     const copy = b.addSystemCommand(&.{
         "sh", "-c",
@@ -163,6 +165,44 @@ fn installClapBundle(b: *std.Build, plugin: *std.Build.Step.Compile) void {
     copy.addDirectoryArg(.{ .cwd_relative = b.getInstallPath(.{ .custom = "Fosforo.clap" }, "") });
     copy.step.dependOn(b.getInstallStep());
     install_local.dependOn(&copy.step);
+}
+
+/// Sign the assembled bundle, ad-hoc unless told otherwise.
+///
+/// The linker already ad-hoc signs the dylib, which is automatic on arm64 and is why
+/// a host can load it at all. That leaves the *bundle* unsigned: with no
+/// Contents/_CodeSignature, `codesign --verify` reports "code has no resources but
+/// signature indicates they must be present". cmake/CMakeLists.txt does the same for
+/// the two bundles it builds; see issue #24 for what a distributable signature needs
+/// beyond an identity.
+///
+/// This does not weaken the hermetic build ADR 0009 protects. /usr/bin/codesign ships
+/// with macOS and is not an on-demand Xcode component the way the Metal toolchain is.
+/// Named by absolute path rather than resolved through PATH, so that claim is enforced
+/// rather than assumed: a wrapper or shim earlier in PATH would otherwise sign these
+/// bundles instead, silently. ADR 0001 makes this macOS-only, so the path costs no
+/// portability.
+///
+/// Depends on the two install steps individually rather than on the install step,
+/// which is what avoids a cycle: the install step is the thing that depends on this.
+/// A Run step with no output arguments reports side effects and is never cached, so
+/// this re-runs on every build. Re-signing is idempotent and costs milliseconds.
+fn signClapBundle(
+    b: *std.Build,
+    binary: *std.Build.Step.InstallFile,
+    plist: *std.Build.Step.InstallFile,
+) void {
+    const identity = b.option(
+        []const u8,
+        "codesign-identity",
+        "codesign identity for the .clap bundle ('-' signs ad-hoc)",
+    ) orelse "-";
+
+    const sign = b.addSystemCommand(&.{ "/usr/bin/codesign", "--force", "--sign", identity });
+    sign.addDirectoryArg(.{ .cwd_relative = b.getInstallPath(.{ .custom = "Fosforo.clap" }, "") });
+    sign.step.dependOn(&binary.step);
+    sign.step.dependOn(&plist.step);
+    b.getInstallStep().dependOn(&sign.step);
 }
 
 fn addTestStep(core: Core) void {

@@ -18,3 +18,8 @@ jobs:
     uses: cboone/gh-actions/.github/workflows/scan-for-secrets.yml@91f9abd25d4f82354c0f950dfc8b6d7525b0f5b5 # v3.0.0
     with:
       tool: trufflehog
+      # 53s max over 28 runs. An input rather than a job key, because the job
+      # belongs to the reusable workflow, whose own default is 15. The
+      # `Validate inputs` job there sets no timeout at all and so inherits
+      # GitHub's 360; that is not reachable from here.
+      timeout-minutes: 3
