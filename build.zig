@@ -212,6 +212,17 @@ fn addSmokeSteps(core: Core) void {
     const smoke = b.step("smoke", "Run both halves of the GUI smoke harness");
     smoke.dependOn(addSmokeHalf(b, exe, install, "gpu"));
     smoke.dependOn(addSmokeHalf(b, exe, install, "appkit"));
+
+    // Measured from outside the process, because a leak the harness could see is
+    // one it already owns. The script rather than the raw command, because the
+    // criterion is an absence and an absence has to be told apart from a `leaks`
+    // that produced nothing: see the assertion order in its header.
+    const leaks = b.step("smoke-leaks", "Cycle the editor under leaks --atExit (needs a window server)");
+    const check = b.addSystemCommand(&.{"./scripts/smoke-leak-check"});
+    check.addFileArg(exe.getEmittedBin());
+    check.stdio = .inherit;
+    check.has_side_effects = true;
+    leaks.dependOn(&check.step);
 }
 
 /// One half, as its own step, so CI can require the half that needs no window.

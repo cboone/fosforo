@@ -36,15 +36,16 @@ indent_size = 2
 [*.md]
 trim_trailing_whitespace = false
 
-# The scripts in cmake/ have no extension, so a bare [*.sh] section would not
-# reach them and each has to be named. Add new ones here: the `shell` CI job
-# finds shell files by shebang, so a new script is linted the moment it lands,
-# but it is styled only if it appears below. Discovery is automatic and this list
-# is not, which reads as shfmt rejecting a file that matches its siblings exactly.
+# The scripts in cmake/ and scripts/ have no extension, so a bare [*.sh] section
+# would not reach them and each has to be named. Add new ones here: the `shell`
+# CI job finds shell files by shebang, so a new script is linted the moment it
+# lands, but it is styled only if it appears below. Discovery is automatic and
+# this list is not, which reads as shfmt rejecting a file that matches its
+# siblings exactly.
 #
 # These four keys are the existing style recorded, not imposed: they are exactly
 # `shfmt -i 2 -ci -sr`.
-[{*.sh,*.bash,narrow-au-resource-usage,set-au-display-name}]
+[{*.sh,*.bash,narrow-au-resource-usage,set-au-display-name,smoke-leak-check}]
 indent_style = space
 indent_size = 2
 switch_case_indent = true
