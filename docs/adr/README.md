@@ -18,3 +18,4 @@ Background for all of these lives in [the design brainstorm](../design/scope-plu
 | [0010](./0010-lock-free-history-buffer.md)      | Lock-free circular history buffer, not a queue             | Accepted |
 | [0011](./0011-auv2-first.md)                    | AUv2 first, AUv3 and other formats deferred                | Accepted |
 | [0012](./0012-phosphor-oscilloscope-first.md)   | First deliverable is the phosphor oscilloscope only        | Accepted |
+| [0013](./0013-distribute-as-a-notarized-pkg.md) | Distribute as a signed, notarized pkg installer            | Accepted |
