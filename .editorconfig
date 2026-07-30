@@ -45,7 +45,7 @@ trim_trailing_whitespace = false
 #
 # These four keys are the existing style recorded, not imposed: they are exactly
 # `shfmt -i 2 -ci -sr`.
-[{*.sh,*.bash,assert-adhoc-signature,assert-distributable-signature,build-installer,build-release-bundles,narrow-au-resource-usage,set-au-display-name}]
+[{*.sh,*.bash,assert-adhoc-signature,assert-distributable-signature,build-installer,build-release-bundles,narrow-au-resource-usage,notarize-installer,set-au-display-name}]
 indent_style = space
 indent_size = 2
 switch_case_indent = true
