@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The installer definition for the release pkg (ADR 0013).
+
+  @FOSFORO_VERSION@ is substituted by scripts/build-installer from the version in
+  build.zig.zon, which is the single source of truth. Hardcoding it here would make
+  this a fourth place the version lives, alongside build.zig.zon and the two keys in
+  macos/Info.plist, and the script already refuses to package a disagreement among
+  those three.
+
+  The <domains> element is what lets one package serve both audiences. With
+  enable_currentUserHome, the installer reinterprets each component's absolute
+  install-location relative to the user's home when they choose "Install for me
+  only", so /Library/Audio/Plug-Ins/CLAP becomes ~/Library/Audio/Plug-Ins/CLAP
+  without a second package. enable_anywhere is off deliberately: an audio plugin
+  installed to an arbitrary disk is invisible to every host that scans for it.
+-->
+<installer-gui-script minSpecVersion="2">
+    <title>Fósforo</title>
+
+    <!-- ADR 0001 makes this Apple Silicon only, so the installer says so rather
+         than failing later and less legibly on an Intel machine. -->
+    <options customize="never" require-scripts="false" hostArchitectures="arm64"/>
+
+    <domains enable_anywhere="false" enable_currentUserHome="true" enable_localSystem="true"/>
+
+    <!-- Matches the deployment target that build.zig, cmake/CMakeLists.txt and
+         macos/Info.plist all declare. Keep the four in step. -->
+    <volume-check>
+        <allowed-os-versions>
+            <os-version min="11.0"/>
+        </allowed-os-versions>
+    </volume-check>
+
+    <choices-outline>
+        <line choice="default">
+            <line choice="com.cboone.fosforo.clap"/>
+            <line choice="com.cboone.fosforo.component"/>
+        </line>
+    </choices-outline>
+
+    <choice id="default"/>
+
+    <!-- Both invisible and both required. The formats are not alternatives: a user
+         running REAPER and Logic needs each in its own directory, and choosing
+         between them is a decision they have no basis to make at install time. -->
+    <choice id="com.cboone.fosforo.clap" visible="false">
+        <pkg-ref id="com.cboone.fosforo.clap"/>
+    </choice>
+    <choice id="com.cboone.fosforo.component" visible="false">
+        <pkg-ref id="com.cboone.fosforo.component"/>
+    </choice>
+
+    <pkg-ref id="com.cboone.fosforo.clap" version="@FOSFORO_VERSION@" onConclusion="none">fosforo-clap.pkg</pkg-ref>
+    <pkg-ref id="com.cboone.fosforo.component" version="@FOSFORO_VERSION@" onConclusion="none">fosforo-auv2.pkg</pkg-ref>
+</installer-gui-script>
