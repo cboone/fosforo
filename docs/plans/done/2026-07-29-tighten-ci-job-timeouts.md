@@ -124,7 +124,7 @@ Nothing here can be verified locally; `timeout-minutes` only takes effect on a r
 | ------------------------------------ | --------------------------------------------------------------- | ----------------------------- |
 | `actionlint .github/workflows/*.yml` | Clean. Catches a misplaced key or a bad `with:` input name      | Clean, all four workflows     |
 | `markdownlint-cli2`                  | Clean, per `.markdownlint-cli2.jsonc`                           | Clean, 30 files               |
-| Every job on the PR                  | Green, and `shaders` still reports the download step as skipped | Pending, observed on the PR   |
+| Every job on the PR                  | Green, and `shaders` still reports the download step as skipped | Green; download still skipped |
 
 The `actionlint` run matters more than usual for the two `with:` additions: passing an input a reusable workflow does not declare is a workflow-level error, and `actionlint` resolves the pinned SHA to check it.
 
@@ -144,6 +144,24 @@ done | sort
 ```
 
 If a job lands above 75%, the 4x multiple was too tight for that job specifically and it should be raised with the new figure recorded, not reverted wholesale. The two candidates are `ci / Build`, whose maximum moved from 89s to 123s between the issue being filed and this plan, and `clap-validator` on a cold cache after a pin bump.
+
+### First run under the new ceilings
+
+Run 30554775159, on the pull request. Every job green, and none above 20% of its budget.
+
+| Job                 | Duration | Ceiling | % of ceiling |
+| ------------------- | -------- | ------- | ------------ |
+| `clap-wrapper`      | 96s      | 600s    | 16%          |
+| `shaders`           | 57s      | 480s    | 12%          |
+| `ci / Test`         | 41s      | 480s    | 9%           |
+| `ci / Build`        | 41s      | 480s    | 9%           |
+| `clap-validator`    | 35s      | 480s    | 7%           |
+| `ci / Format`       | 31s      | 480s    | 6%           |
+| `scan / trufflehog` | 10s      | 180s    | 6%           |
+| `shell`             | 7s       | 180s    | 4%           |
+| `scan / gitleaks`   | 5s       | 180s    | 3%           |
+
+Both validator caches were warm, so this run does not exercise `clap-validator`'s cold path, which is the one its 8-minute ceiling is actually sized against. `shaders` reported `Download the Metal toolchain` as `skipped`, as it has in every run sampled.
 
 ## Notes for execution
 
