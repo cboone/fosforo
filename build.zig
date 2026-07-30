@@ -158,6 +158,10 @@ fn installClapBundle(b: *std.Build, plugin: *std.Build.Step.Compile) void {
 ///
 /// This does not weaken the hermetic build ADR 0009 protects. /usr/bin/codesign ships
 /// with macOS and is not an on-demand Xcode component the way the Metal toolchain is.
+/// Named by absolute path rather than resolved through PATH, so that claim is enforced
+/// rather than assumed: a wrapper or shim earlier in PATH would otherwise sign these
+/// bundles instead, silently. ADR 0001 makes this macOS-only, so the path costs no
+/// portability.
 ///
 /// Depends on the two install steps individually rather than on the install step,
 /// which is what avoids a cycle: the install step is the thing that depends on this.
@@ -174,7 +178,7 @@ fn signClapBundle(
         "codesign identity for the .clap bundle ('-' signs ad-hoc)",
     ) orelse "-";
 
-    const sign = b.addSystemCommand(&.{ "codesign", "--force", "--sign", identity });
+    const sign = b.addSystemCommand(&.{ "/usr/bin/codesign", "--force", "--sign", identity });
     sign.addDirectoryArg(.{ .cwd_relative = b.getInstallPath(.{ .custom = "Fosforo.clap" }, "") });
     sign.step.dependOn(&binary.step);
     sign.step.dependOn(&plist.step);

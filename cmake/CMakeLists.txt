@@ -218,9 +218,15 @@ set(FOSFORO_CODESIGN_IDENTITY "-" CACHE STRING
 # because those name a file inside Contents and this names the bundle itself. The
 # sibling $<TARGET_BUNDLE_DIR_NAME> would read better in the COMMENT but needs CMake
 # 3.24, above the floor declared at the top of this file.
+#
+# /usr/bin/codesign by absolute path rather than through PATH, and not via
+# find_program the way ZIG_EXECUTABLE above is found. Zig's location genuinely varies;
+# this one does not, and resolving it through PATH would let a wrapper or shim sign
+# these bundles instead, silently, while the comment above still claimed the base-OS
+# tool had run. ADR 0001 makes this macOS-only, so the path costs no portability.
 function(fosforo_sign_bundle target)
     add_custom_command(TARGET ${target} POST_BUILD
-        COMMAND codesign --force --sign "${FOSFORO_CODESIGN_IDENTITY}"
+        COMMAND /usr/bin/codesign --force --sign "${FOSFORO_CODESIGN_IDENTITY}"
                 "$<TARGET_BUNDLE_DIR:${target}>"
         COMMENT "Signing the ${target} bundle"
         VERBATIM

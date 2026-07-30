@@ -198,8 +198,12 @@ jobs:
       # indicates they must be present" rather than as anything obviously absent.
       # `zig build` signs the assembled bundle; this is what catches that step being
       # dropped.
+      #
+      # Absolute path, matching the build itself: the assertion should exercise the
+      # same base-OS tool the signing step used, not whatever PATH resolves to on a
+      # future runner image.
       - name: Assert the CLAP is signed
-        run: codesign --verify --strict --verbose zig-out/Fosforo.clap
+        run: /usr/bin/codesign --verify --strict --verbose zig-out/Fosforo.clap
 
       # The gate. That a failing test actually reaches a non-zero exit code was
       # confirmed against a deliberately broken build rather than assumed: a
@@ -298,8 +302,8 @@ jobs:
       # macos_include_clap_in_bundle embeds nothing. --strict covers the rest.
       - name: Assert the wrapper artifacts are signed
         run: |
-          codesign --verify --strict --verbose build/assets/Fosforo.component
-          codesign --verify --strict --verbose build/assets/Fosforo.clap
+          /usr/bin/codesign --verify --strict --verbose build/assets/Fosforo.component
+          /usr/bin/codesign --verify --strict --verbose build/assets/Fosforo.clap
 
       - uses: ./.github/actions/clap-validator
         with:
