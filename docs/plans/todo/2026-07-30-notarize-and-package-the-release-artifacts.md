@@ -16,6 +16,24 @@ Issue #24 declared itself blocked on three things. This plan clears all three:
 
 The outcome is a repeatable local path from a clean checkout to a notarized `Fosforo.pkg` that a stranger can download and double-click without Gatekeeper refusing it, plus a documented answer to the hardened-runtime question the issue raises but does not settle.
 
+## Status
+
+Everything reachable without a Developer ID certificate is built and verified. What remains is gated on the certificate itself, which needs interactive Apple authentication and cannot be scripted.
+
+| Step                                               | State                                                                                       |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| A1 conditional `--timestamp` / `--options runtime` | Done. Verified in both directions against the Apple Development certificate                 |
+| A2 CI guard on the ad-hoc path                     | Done. `scripts/assert-adhoc-signature`, wired into both jobs, tested pass and fail          |
+| B hardened runtime and entitlements                | Done. Answer is no entitlements, established mechanistically rather than by one observation |
+| C1 ADR 0013                                        | Done                                                                                        |
+| C2 `build-release-bundles`                         | Done. Fails on the authority alone, which is correct without a Developer ID certificate     |
+| C3 `build-installer`                               | Done. Payload paths and the home install domain verified against a real package             |
+| C4 `notarize-installer`                            | Written and its refusal paths verified. The submission itself is unreachable                |
+| C5 documentation                                   | Done                                                                                        |
+| Final Gatekeeper verification                      | **Blocked on the certificate.** Procedure below                                             |
+
+Measured on 2026-07-30, ad-hoc path restored afterwards: `zig fmt --check` clean, `zig build test` passing, `clap-validator` 44 run / 21 passed / 0 failed, all three bundles ad-hoc and `codesign --verify --strict` clean, both AU plist invariants holding, `actionlint` clean, `shfmt -d` and `shellcheck` clean.
+
 ## Decisions taken
 
 Settled in conversation. Inputs to the plan, not open questions.
@@ -137,6 +155,14 @@ The last checklist item in the issue, and the only check that answers the questi
 5. `xcrun stapler validate` with networking off, since surviving offline is the entire point of stapling.
 
 **Commit:** the measured result recorded in the plan, the way `docs/plans/done/2026-07-29-tighten-ci-job-timeouts.md` records its measurements. Then move this plan to `docs/plans/done/`.
+
+## What testing found that planning did not
+
+Three things, each now encoded in a script or in `AGENTS.md` rather than only recorded here.
+
+- **`cmake --build` clobbers the Zig-built CLAP.** `cmake/CMakeLists.txt` drives Zig through an `ALL` custom target running a bare `zig build --release=fast`, which reassembles and ad-hoc re-signs `zig-out/Fosforo.clap`. Building the CLAP first therefore signs it correctly and then throws that away. `build-release-bundles` builds the Audio Unit first for this reason.
+- **A plain `zig build` is Debug.** `standardOptimizeOption` declares no default, while everything CMake triggers is ReleaseFast, so the two paths disagree about optimize mode. A shipped CLAP must name `--release=fast` explicitly.
+- **Packaging trusted its inputs, and that shipped the wrong bundle.** The first working package contained a stale Debug, ad-hoc CLAP, because `pkgbuild` packages whatever is on disk and nothing had checked provenance. `build-installer` now asserts both bundles will notarize before packaging them. This was observed, not anticipated, and it is the single most valuable thing this testing turned up.
 
 ## Risks
 
