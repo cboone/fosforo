@@ -204,9 +204,13 @@ fn addSmokeSteps(core: Core) void {
     });
 
     // Not `b.installArtifact`. Plain `zig build` is the day-to-day loop and must
-    // keep producing only the .clap; this puts the binary in zig-out/bin only
-    // when a smoke step is what was asked for, which is where
-    // scripts/smoke-leak-check and any by-hand run look for it.
+    // keep producing only the .clap, so the harness reaches zig-out/bin only when
+    // a smoke step is what was asked for. Every smoke step below depends on this,
+    // which is what makes that claim true rather than merely intended.
+    //
+    // It is there to be run by hand, with a cycle count the steps do not offer:
+    // `zig-out/bin/fosforo-smoke appkit 5000`. Nothing in the build reads that
+    // path, including the leak script, which is handed the binary directly.
     const install = b.addInstallArtifact(exe, .{});
 
     const smoke = b.step("smoke", "Run both halves of the GUI smoke harness");
@@ -220,6 +224,7 @@ fn addSmokeSteps(core: Core) void {
     const leaks = b.step("smoke-leaks", "Cycle the editor under leaks --atExit (needs a window server)");
     const check = b.addSystemCommand(&.{"./scripts/smoke-leak-check"});
     check.addFileArg(exe.getEmittedBin());
+    check.step.dependOn(&install.step);
     check.stdio = .inherit;
     check.has_side_effects = true;
     leaks.dependOn(&check.step);
