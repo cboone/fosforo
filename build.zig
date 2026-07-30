@@ -20,8 +20,13 @@ pub fn build(b: *std.Build) void {
     });
     const optimize = b.standardOptimizeOption(.{});
 
-    const clap_c = translateClap(b, target, optimize);
-    const objc = b.dependency("objc", .{ .target = target, .optimize = optimize }).module("objc");
+    const core: Core = .{
+        .b = b,
+        .target = target,
+        .optimize = optimize,
+        .clap_c = translateClap(b, target, optimize),
+        .objc = b.dependency("objc", .{ .target = target, .optimize = optimize }).module("objc"),
+    };
 
     // Two artifacts share one implementation, differing only in whether they
     // export the CLAP entry symbol themselves. See ADR 0003.
@@ -32,18 +37,18 @@ pub fn build(b: *std.Build) void {
     const impl = b.addLibrary(.{
         .name = "fosforo_impl",
         .linkage = .static,
-        .root_module = coreModule(b, target, optimize, clap_c, objc, false),
+        .root_module = core.module(.{}),
     });
     b.installArtifact(impl);
 
     const plugin = b.addLibrary(.{
         .name = "fosforo",
         .linkage = .dynamic,
-        .root_module = coreModule(b, target, optimize, clap_c, objc, true),
+        .root_module = core.module(.{ .export_entry = true }),
     });
 
     installClapBundle(b, plugin);
-    addTestStep(b, target, optimize, clap_c, objc);
+    addTestStep(core);
     addShaderValidationStep(b);
 }
 
@@ -77,39 +82,53 @@ fn translateClap(
     return translate.createModule();
 }
 
-fn coreModule(
+/// Everything every artifact built from this source has in common, gathered so
+/// the call sites do not each thread five arguments through.
+const Core = struct {
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     clap_c: *std.Build.Module,
     objc: *std.Build.Module,
-    export_entry: bool,
-) *std.Build.Module {
-    const options = b.addOptions();
-    options.addOption(bool, "export_entry", export_entry);
-    // Sentinel-terminated because it crosses the ABI as a C string.
-    options.addOption([:0]const u8, "version", zon.version);
 
-    const mod = b.createModule(.{
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    mod.addImport("clap_c", clap_c);
-    mod.addImport("objc", objc);
-    mod.addImport("build_options", options.createModule());
+    const Options = struct {
+        /// The module's root source file, which is also what bounds
+        /// `@embedFile` and relative `@import`. Every root here has to sit
+        /// directly in src/ for that reason: a root one directory deeper would
+        /// put the rest of src/ out of reach and break the shader import below.
+        root: []const u8 = "src/main.zig",
+        export_entry: bool = false,
+    };
 
-    // Shaders are compiled at runtime from source embedded in the binary
-    // (ADR 0009). `@embedFile` resolves relative to the importing file and
-    // cannot escape the module root, which is src/, so the file is reached
-    // through the import table instead. Keeping shaders/ outside src/ is what
-    // lets `zig build validate-shaders` treat it as a directory of shaders
-    // rather than of Zig.
-    mod.addAnonymousImport("scope.metal", .{ .root_source_file = b.path("shaders/scope.metal") });
-    for (frameworks) |fw| mod.linkFramework(fw, .{});
-    return mod;
-}
+    fn module(self: Core, options: Options) *std.Build.Module {
+        const b = self.b;
+
+        const build_options = b.addOptions();
+        build_options.addOption(bool, "export_entry", options.export_entry);
+        // Sentinel-terminated because it crosses the ABI as a C string.
+        build_options.addOption([:0]const u8, "version", zon.version);
+
+        const mod = b.createModule(.{
+            .root_source_file = b.path(options.root),
+            .target = self.target,
+            .optimize = self.optimize,
+            .link_libc = true,
+        });
+        mod.addImport("clap_c", self.clap_c);
+        mod.addImport("objc", self.objc);
+        mod.addImport("build_options", build_options.createModule());
+
+        // Shaders are compiled at runtime from source embedded in the binary
+        // (ADR 0009). `@embedFile` resolves relative to the importing file and
+        // cannot escape the module root, which is src/, so the file is reached
+        // through the import table instead. Keeping shaders/ outside src/ is what
+        // lets `zig build validate-shaders` treat it as a directory of shaders
+        // rather than of Zig.
+        mod.addAnonymousImport("scope.metal", .{ .root_source_file = b.path("shaders/scope.metal") });
+        for (frameworks) |fw| mod.linkFramework(fw, .{});
+        return mod;
+    }
+};
 
 /// Assemble the loadable macOS bundle a CLAP host expects:
 ///
@@ -145,18 +164,10 @@ fn installClapBundle(b: *std.Build, plugin: *std.Build.Step.Compile) void {
     install_local.dependOn(&copy.step);
 }
 
-fn addTestStep(
-    b: *std.Build,
-    target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
-    clap_c: *std.Build.Module,
-    objc: *std.Build.Module,
-) void {
-    const tests = b.addTest(.{
-        .root_module = coreModule(b, target, optimize, clap_c, objc, false),
-    });
-    const run = b.addRunArtifact(tests);
-    b.step("test", "Run unit tests").dependOn(&run.step);
+fn addTestStep(core: Core) void {
+    const tests = core.b.addTest(.{ .root_module = core.module(.{}) });
+    const run = core.b.addRunArtifact(tests);
+    core.b.step("test", "Run unit tests").dependOn(&run.step);
 }
 
 /// Shaders are compiled at runtime from embedded source (ADR 0009), so the
