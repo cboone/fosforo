@@ -231,6 +231,15 @@ jobs:
       - name: Assert the CLAP is signed
         run: /usr/bin/codesign --verify --strict --verbose zig-out/Fosforo.clap
 
+      # The other half, and it asserts a negative the step above cannot. A real
+      # identity additionally gets --timestamp and --options runtime, conditional on
+      # the identity not being '-'. An edit that made those unconditional would still
+      # produce a valid signature and still pass --verify; what it would break is the
+      # hermetic build, and the first symptom would be this job hanging on Apple's
+      # timestamp server rather than failing anything legible.
+      - name: Assert the CLAP signature stays ad-hoc
+        run: ./scripts/assert-adhoc-signature zig-out/Fosforo.clap
+
       # The gate. That a failing test actually reaches a non-zero exit code was
       # confirmed against a deliberately broken build rather than assumed: a
       # duplicated feature entry compiles, passes `zig build test`, and takes
@@ -335,6 +344,16 @@ jobs:
         run: |
           /usr/bin/codesign --verify --strict --verbose build/assets/Fosforo.component
           /usr/bin/codesign --verify --strict --verbose build/assets/Fosforo.clap
+
+      # Same negative as the `clap-validator` job asserts for the Zig-built bundle,
+      # and it has to be repeated here rather than inherited: the two jobs build
+      # through different systems, and the conditional exists separately in
+      # build.zig and cmake/CMakeLists.txt, so either one can leak without the other.
+      - name: Assert the wrapper signatures stay ad-hoc
+        run: |
+          ./scripts/assert-adhoc-signature \
+            build/assets/Fosforo.component \
+            build/assets/Fosforo.clap
 
       - uses: ./.github/actions/clap-validator
         with:

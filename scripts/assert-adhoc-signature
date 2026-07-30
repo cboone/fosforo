@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# assert-adhoc-signature — assert a bundle carries an ad-hoc signature and nothing more
+# Author: Christopher Boone
+# Date: 2026-07-30
+#
+# build.zig and cmake/CMakeLists.txt add --timestamp and --options runtime whenever
+# the code-signing identity is not '-', because notarization rejects a submission
+# missing either. Neither flag may reach the default path: --timestamp contacts
+# Apple's timestamp server, which would make a plain build need the network and break
+# the hermetic build ADR 0009 protects.
+#
+# That conditional is the kind of thing that leaks silently. An edit that appends the
+# flags unconditionally still produces a valid signature, so `codesign --verify` stays
+# green and the first symptom is a CI job hanging on a timestamp server it cannot
+# reach. This asserts the negative that --verify cannot: signed, but ad-hoc, and
+# without any of the three marks a real identity leaves behind.
+#
+# CI has no certificate, so this is the only part of the release path it can guard.
+# The positive direction is checked by hand against a real identity; see the release
+# section of AGENTS.md.
+#
+# Usage:
+#   assert-adhoc-signature <bundle> [<bundle>...]
+#
+# Exit codes:
+#   0  - Every bundle is signed ad-hoc, unhardened, untimestamped and unattributed
+#  64  - Invalid arguments
+#  65  - A bundle carries a signature that is not purely ad-hoc
+#  66  - A bundle does not exist, or carries no signature at all
+
+set -euo pipefail
+
+if [[ -n "${TRACE:-}" ]]; then
+  set -x
+fi
+
+readonly E_USAGE=64
+readonly E_DATAERR=65
+readonly E_NOINPUT=66
+
+readonly PROGRAM_NAME="${0##*/}"
+
+# Write a message to stderr, prefixed with the program name.
+# Arguments:
+#   $@ - message parts
+function warn() {
+  echo "${PROGRAM_NAME}: ${*}" >&2
+}
+
+function usage() {
+  echo "Usage: ${PROGRAM_NAME} <bundle> [<bundle>...]" >&2
+}
+
+# Print a bundle's signature description.
+# codesign writes -dvv output to stderr, so it is redirected rather than captured
+# from stdout, which stays empty.
+# Arguments:
+#   $1 - path to the bundle
+# Outputs:
+#   The description on stdout
+# Returns:
+#   0 on success, non-zero when the bundle is unsigned or unreadable
+function signature_description() {
+  local bundle="${1}"
+
+  /usr/bin/codesign --display --verbose=2 "${bundle}" 2>&1
+}
+
+# Assert that a bundle's signature carries no mark of a real identity.
+#
+# Three independent marks, because they fail independently: --options runtime shows
+# in the flags, --timestamp adds a Timestamp line, and the identity itself adds an
+# Authority chain. An assertion on any one of them alone would pass a signature that
+# had acquired the other two.
+# Arguments:
+#   $1 - path to the bundle
+# Outputs:
+#   One line per violation, to stderr
+# Returns:
+#   0 when the signature is purely ad-hoc, non-zero otherwise
+function assert_adhoc() {
+  local bundle="${1}"
+  local description flags
+  local -i violations=0
+
+  description=$(signature_description "${bundle}")
+
+  flags=$(echo "${description}" | sed -n 's/.*\(flags=[^ ]*\).*/\1/p')
+  if [[ -z "${flags}" ]]; then
+    warn "${bundle}: no signature at all"
+    return 1
+  fi
+
+  # Deliberately a substring test rather than an equality test against 0x2. The
+  # assertion is semantic: ad-hoc and not hardened. Pinning the literal value would
+  # fail on any unrelated flag a future codesign sets, which is noise, not signal.
+  if [[ "${flags}" != *adhoc* ]]; then
+    warn "${bundle}: signed with a real identity (${flags})"
+    ((violations++)) || true
+  fi
+
+  if [[ "${flags}" == *runtime* ]]; then
+    warn "${bundle}: hardened runtime reached the default path (${flags})"
+    ((violations++)) || true
+  fi
+
+  if echo "${description}" | grep -q '^Timestamp='; then
+    warn "${bundle}: secure timestamp reached the default path"
+    ((violations++)) || true
+  fi
+
+  if echo "${description}" | grep -q '^Authority='; then
+    warn "${bundle}: certificate authority chain reached the default path"
+    ((violations++)) || true
+  fi
+
+  ((violations == 0))
+}
+
+function main() {
+  local -a bundles=()
+  local bundle
+  local -i failures=0
+
+  while [[ ${#} -gt 0 ]]; do
+    case "${1}" in
+      -*)
+        warn "unknown option '${1}'"
+        usage
+        return "${E_USAGE}"
+        ;;
+      *)
+        bundles+=("${1}")
+        ;;
+    esac
+    shift
+  done
+
+  if [[ ${#bundles[@]} -eq 0 ]]; then
+    usage
+    return "${E_USAGE}"
+  fi
+
+  for bundle in "${bundles[@]}"; do
+    if [[ ! -d "${bundle}" ]]; then
+      warn "cannot read '${bundle}'"
+      return "${E_NOINPUT}"
+    fi
+  done
+
+  for bundle in "${bundles[@]}"; do
+    if ! assert_adhoc "${bundle}"; then
+      ((failures++)) || true
+    else
+      echo "${bundle}: ad-hoc, unhardened, untimestamped"
+    fi
+  done
+
+  if ((failures > 0)); then
+    return "${E_DATAERR}"
+  fi
+}
+
+main "${@}"
