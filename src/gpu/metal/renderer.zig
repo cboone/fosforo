@@ -63,15 +63,58 @@ const background: ClearColor = .{ .red = 0.02, .green = 0.02, .blue = 0.03, .alp
 const vertex_function = "fullscreen_vertex";
 const fragment_function = "clear_fragment";
 
+/// How far the CPU may run ahead of the GPU, in frames.
+///
+/// Three is the conventional choice and is also `CAMetalLayer`'s own maximum:
+/// two leaves the CPU waiting on the GPU at the smallest hiccup, and four buys
+/// nothing but latency. Both bounds are set, because they bound different
+/// things. The drawable pool limits how many presented frames can be
+/// outstanding; the semaphore limits how far ahead the CPU may encode, which is
+/// what phase 2's per-frame dynamic buffers will actually need in order to know
+/// which slot of a ring is free.
+const max_frames_in_flight = 3;
+
 /// Acquires the system default device. Follows the Create Rule, so the caller
 /// owns what comes back and has to release it.
 extern "c" fn MTLCreateSystemDefaultDevice() ?*anyopaque;
+
+/// libdispatch. Declared rather than translated for the same reason Metal's
+/// enums are restated: the headers are full of macros and attributes that
+/// `translate-c` has no use for, and these three functions are a stable ABI.
+extern "c" fn dispatch_semaphore_create(value: isize) ?*anyopaque;
+extern "c" fn dispatch_semaphore_wait(sema: *anyopaque, timeout: u64) isize;
+extern "c" fn dispatch_semaphore_signal(sema: *anyopaque) isize;
+
+/// `DISPATCH_TIME_FOREVER`. Blocking the display-link thread is the intended
+/// backpressure: CoreVideo drops the ticks that arrive while we are waiting,
+/// which is exactly the right response to a GPU that has fallen behind.
+const dispatch_time_forever: u64 = ~@as(u64, 0);
+
+/// The block `addCompletedHandler:` takes, which is how a slot comes back.
+///
+/// The semaphore is captured as an `objc.c.id` rather than as a raw pointer,
+/// which is not a formality. `zig-objc` retains `id`-typed captures when the
+/// runtime copies the block to the heap, and `addCompletedHandler:` does copy
+/// it. That retain is what makes `deinit` safe: releasing the semaphore while a
+/// command buffer is still executing would otherwise leave a queued handler
+/// signalling freed memory, and the alternative fix, draining every slot before
+/// releasing, can hang the host's main thread on a wedged GPU.
+const Completion = objc.Block(struct { sema: objc.c.id }, .{objc.c.id}, void);
+
+fn signalCompleted(block: *const Completion.Context, buffer: objc.c.id) callconv(.c) void {
+    _ = buffer;
+    if (block.sema) |sema| _ = dispatch_semaphore_signal(@ptrCast(sema));
+}
 
 pub const Renderer = struct {
     device: objc.Object,
     queue: objc.Object,
     pipeline: objc.Object,
     layer: objc.Object,
+
+    /// Counts free frame slots. Waited on at the top of every frame and
+    /// signalled from the GPU's completion handler.
+    in_flight: objc.Object,
 
     /// [main-thread] Builds everything the GPU needs and hangs a layer off the
     /// host's view.
@@ -107,18 +150,36 @@ pub const Renderer = struct {
         const pipeline = try buildPipeline(device, diags);
         errdefer pipeline.release();
 
+        const in_flight = objc.Object.fromId(dispatch_semaphore_create(max_frames_in_flight) orelse {
+            diags.set("libdispatch would not create the in-flight-frames semaphore");
+            return error.NoDevice;
+        });
+        errdefer in_flight.release();
+
         const layer = try attachLayer(view, device, size, scale, diags);
 
-        return .{ .device = device, .queue = queue, .pipeline = pipeline, .layer = layer };
+        return .{
+            .device = device,
+            .queue = queue,
+            .pipeline = pipeline,
+            .layer = layer,
+            .in_flight = in_flight,
+        };
     }
 
     /// [main-thread] Releases everything `init` took ownership of.
     ///
     /// Must run before the view is released, since the layer is still attached
-    /// to it. `gui.Editor` guarantees that by ordering its teardown.
+    /// to it. `gui.Editor` guarantees that by ordering its teardown, and also
+    /// guarantees no tick is in flight by the time this runs.
+    ///
+    /// The semaphore is released without draining it first. Frames may still be
+    /// executing on the GPU, and each one's completion handler holds its own
+    /// retain, so the last handler to run is what actually frees it.
     pub fn deinit(self: *Renderer) void {
         platform.assertMainThread();
 
+        self.in_flight.release();
         self.layer.release();
         self.pipeline.release();
         self.queue.release();
@@ -126,14 +187,58 @@ pub const Renderer = struct {
         self.* = undefined;
     }
 
-    /// Draw and present one frame.
+    /// [render-thread] Point the drawable at a new size and backing scale.
     ///
-    /// Called from `show` today. Issue #5 calls the same function from a
-    /// display link, which is the whole reason it takes no arguments and
-    /// reports nothing: a frame that cannot be drawn is skipped, not escalated.
-    pub fn frame(self: *Renderer) void {
+    /// Called from the top of a tick, after the mailbox has been drained and
+    /// before anything reads the resources it is about to replace. That
+    /// ordering is the whole point of the mailbox (ADR 0010): the host's
+    /// resize callback arrives on the main thread, and doing this there would
+    /// be reallocating out from under a frame this thread is midway through.
+    ///
+    /// Phase 3's accumulation textures are reallocated here, which is why this
+    /// takes the size rather than reading it back off the layer.
+    ///
+    /// Inside a transaction because these are CoreAnimation properties being
+    /// set from somewhere that is not the main thread: it makes the pair land
+    /// as one change and skips the implicit animation CoreAnimation would
+    /// otherwise attach to each.
+    pub fn resize(self: *Renderer, size: iface.Size, scale: f64) void {
+        platform.assertNotMainThread();
+
         const pool = objc.AutoreleasePool.init();
         defer pool.deinit();
+
+        const transaction = objc.getClass("CATransaction").?;
+        transaction.msgSend(void, "begin", .{});
+        defer transaction.msgSend(void, "commit", .{});
+        transaction.msgSend(void, "setDisableActions:", .{true});
+
+        self.layer.msgSend(void, "setContentsScale:", .{scale});
+        self.layer.msgSend(void, "setDrawableSize:", .{drawableSize(size, scale)});
+    }
+
+    /// [render-thread] Draw and present one frame.
+    ///
+    /// Driven by the display link, which is why it takes no arguments and
+    /// reports nothing: a frame that cannot be drawn is skipped, not escalated.
+    pub fn frame(self: *Renderer) void {
+        platform.assertNotMainThread();
+
+        const pool = objc.AutoreleasePool.init();
+        defer pool.deinit();
+
+        const sema: *anyopaque = @ptrCast(self.in_flight.value.?);
+        _ = dispatch_semaphore_wait(sema, dispatch_time_forever);
+
+        // Every early return below has to give the slot back. This is the
+        // classic way the pattern fails: three skipped frames in a row would
+        // otherwise drain the semaphore to zero, and the next wait would block
+        // forever on a signal that is never coming, stopping the render loop
+        // for good rather than for a moment.
+        var handed_off = false;
+        defer if (!handed_off) {
+            _ = dispatch_semaphore_signal(sema);
+        };
 
         // Nil under load, and that is normal rather than an error: the
         // compositor is holding every drawable and the right answer is to let
@@ -176,6 +281,13 @@ pub const Renderer = struct {
             @as(u64, 3),
         });
         encoder.msgSend(void, "endEncoding", .{});
+
+        // The slot now belongs to this command buffer, and comes back when the
+        // GPU is finished with it. Registered before `commit`, because after it
+        // the buffer may already have completed.
+        var completion = Completion.init(.{ .sema = self.in_flight.value }, signalCompleted);
+        buffer.msgSend(void, "addCompletedHandler:", .{&completion});
+        handed_off = true;
 
         buffer.msgSend(void, "presentDrawable:", .{drawable});
         buffer.msgSend(void, "commit", .{});
@@ -266,6 +378,10 @@ fn attachLayer(
     // Nothing reads back from the drawable, which lets Metal choose a cheaper
     // storage mode. Phase 3's accumulation textures are separate from it.
     layer.msgSend(void, "setFramebufferOnly:", .{true});
+    // Stated rather than inherited. Three is already the default, and it is the
+    // other half of the frame bound the semaphore sets: writing it down is what
+    // keeps the two from drifting apart if one is ever tuned.
+    layer.msgSend(void, "setMaximumDrawableCount:", .{@as(u64, max_frames_in_flight)});
     layer.msgSend(void, "setContentsScale:", .{scale});
     layer.msgSend(void, "setDrawableSize:", .{drawableSize(size, scale)});
     layer.msgSend(void, "setFrame:", .{bounds});

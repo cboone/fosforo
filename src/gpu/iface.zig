@@ -8,8 +8,10 @@
 //!
 //! The interface is shaped to this project's algorithm rather than to graphics
 //! in general, which is what keeps it small. It also stays honest about what
-//! exists: there is no `resize` and no texture creation here, because nothing
-//! calls them yet. Operations arrive with the phase that has a caller for them.
+//! exists: there is no texture creation here, because nothing calls it yet.
+//! Operations arrive with the phase that has a caller for them, which is how
+//! `resize` arrived: the display link gave the backend a second thread, and a
+//! resizable editor gave that thread something to service.
 
 const std = @import("std");
 
@@ -84,6 +86,11 @@ pub const Renderer = @import("metal/renderer.zig").Renderer;
 comptime {
     assertSignature("init", @TypeOf(Renderer.init), fn (NativeView, Size, f64, *Diagnostics) Error!Renderer);
     assertSignature("deinit", @TypeOf(Renderer.deinit), fn (*Renderer) void);
+    // Both `[render-thread]`, and the reason `Size` is in this file's
+    // vocabulary rather than the backend's: a resize crosses from the host's
+    // main thread to the render thread through a mailbox above this seam, so
+    // the size has to be expressible without naming anything Metal owns.
+    assertSignature("resize", @TypeOf(Renderer.resize), fn (*Renderer, Size, f64) void);
     assertSignature("frame", @TypeOf(Renderer.frame), fn (*Renderer) void);
 }
 
