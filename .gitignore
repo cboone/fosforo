@@ -12,8 +12,14 @@
 *.pem
 *.key
 *.p12
+# App Store Connect API keys, which notarytool takes as --key. Downloadable once
+# and never again, so the copy on disk is the only copy.
+*.p8
 credentials.json
 token.json
+
+# Release artifacts, signed and notarized locally (ADR 0013)
+dist/
 
 # Zig
 .zig-cache/

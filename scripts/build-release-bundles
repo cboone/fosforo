@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# build-release-bundles — build both shipping bundles with a Developer ID signature
+# Author: Christopher Boone
+# Date: 2026-07-30
+#
+# The first of the three release steps (ADR 0013). Produces the two bundles the
+# installer packages, signed so they will notarize:
+#
+#   zig-out/Fosforo.clap            the CLAP, built by zig build
+#   build/assets/Fosforo.component  the Audio Unit, built through clap-wrapper
+#
+# The CMake build also produces build/assets/Fosforo.clap. That one exists so CI can
+# prove the clap-wrapper seam works and is deliberately not shipped; the Zig-built
+# CLAP is the native artifact and the day-to-day loop.
+#
+# The identity comes from the environment rather than an argument, so it stays out of
+# shell history, and there is no default: a release build must not be able to fall
+# back to an ad-hoc signature and produce something that looks finished.
+#
+# Usage:
+#   FOSFORO_SIGNING_IDENTITY="Developer ID Application: ..." build-release-bundles
+#
+# Environment:
+#   FOSFORO_SIGNING_IDENTITY   Required. The Developer ID Application identity.
+#
+# Exit codes:
+#   0  - Both bundles built and carry a signature that will notarize
+#  64  - FOSFORO_SIGNING_IDENTITY is unset or empty
+#  65  - A built bundle's signature will not notarize
+#  70  - A build step failed
+
+set -euo pipefail
+
+if [[ -n "${TRACE:-}" ]]; then
+  set -x
+fi
+
+readonly E_USAGE=64
+readonly E_DATAERR=65
+readonly E_SOFTWARE=70
+
+readonly PROGRAM_NAME="${0##*/}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(dirname -- "${SCRIPT_DIR}")"
+readonly REPO_ROOT
+
+readonly CLAP_BUNDLE="zig-out/Fosforo.clap"
+readonly AUV2_BUNDLE="build/assets/Fosforo.component"
+readonly WRAPPER_CLAP="build/assets/Fosforo.clap"
+
+# Write a message to stderr, prefixed with the program name.
+# Arguments:
+#   $@ - message parts
+function warn() {
+  echo "${PROGRAM_NAME}: ${*}" >&2
+}
+
+# Announce a step, so a long build reads as progress rather than as a hang.
+# Arguments:
+#   $@ - message parts
+function step() {
+  echo "==> ${*}"
+}
+
+# Build the CLAP bundle.
+#
+# --release=fast, not the default. `zig build` alone is a Debug build, because
+# standardOptimizeOption declares no default, and shipping one would mean shipping
+# safety checks and an unoptimized renderer to people who cannot turn them off.
+#
+# It also matches what CMake already does. Its Zig custom target runs
+# `zig build --release=fast`, so the static library inside the Audio Unit is
+# ReleaseFast whatever this script does. Building the CLAP any other way would ship
+# two bundles compiled from one tree at two different optimize modes.
+#
+# Zig re-signs on every build: the signing step is a Run step with no output
+# arguments, which Zig treats as having side effects and never caches.
+# Arguments:
+#   $1 - the signing identity
+function build_clap() {
+  local identity="${1}"
+
+  step "Building ${CLAP_BUNDLE}"
+  zig build --release=fast -Dcodesign-identity="${identity}"
+}
+
+# Build the Audio Unit bundle through clap-wrapper.
+#
+# The bundles are removed first, and that is load-bearing rather than tidy. Signing
+# is a POST_BUILD command, POST_BUILD commands run only when the target actually
+# relinks, and changing FOSFORO_CODESIGN_IDENTITY alone does not make it relink. A
+# reconfigure followed by a plain build therefore leaves the previous signature in
+# place while reporting success, which is exactly the failure this script exists to
+# prevent. Removing the outputs forces the link, and the signature with it.
+# Arguments:
+#   $1 - the signing identity
+function build_auv2() {
+  local identity="${1}"
+
+  step "Configuring CMake with the release identity"
+  cmake -B build cmake/ -DFOSFORO_CODESIGN_IDENTITY="${identity}"
+
+  step "Removing previously built bundles so POST_BUILD signing re-runs"
+  rm -rf "${AUV2_BUNDLE}" "${WRAPPER_CLAP}"
+
+  step "Building ${AUV2_BUNDLE}"
+  cmake --build build --target fosforo_all
+}
+
+function main() {
+  local identity="${FOSFORO_SIGNING_IDENTITY:-}"
+
+  if [[ -z "${identity}" ]]; then
+    warn "FOSFORO_SIGNING_IDENTITY is unset"
+    warn "a release build has no ad-hoc fallback, deliberately: see ADR 0013"
+    warn "list candidates with: security find-identity -v -p codesigning"
+    return "${E_USAGE}"
+  fi
+
+  cd -- "${REPO_ROOT}"
+
+  # The Audio Unit first, and the order is load-bearing rather than arbitrary.
+  # cmake/CMakeLists.txt drives the Zig build itself, through a custom target that
+  # runs a bare `zig build --release=fast` with no identity, because all it wants
+  # from Zig is the static library. That rebuild also reassembles and re-signs
+  # zig-out/Fosforo.clap, ad-hoc. Building the CLAP first therefore produces a
+  # correctly signed bundle and then silently replaces it with an ad-hoc one, and
+  # every check downstream is against the wrong file.
+  if ! build_auv2 "${identity}"; then
+    warn "cmake build failed"
+    return "${E_SOFTWARE}"
+  fi
+
+  if ! build_clap "${identity}"; then
+    warn "zig build failed"
+    return "${E_SOFTWARE}"
+  fi
+
+  step "Asserting both bundles will notarize"
+  if ! "${SCRIPT_DIR}/assert-distributable-signature" "${CLAP_BUNDLE}" "${AUV2_BUNDLE}"; then
+    return "${E_DATAERR}"
+  fi
+
+  step "Ready to package: ${CLAP_BUNDLE} and ${AUV2_BUNDLE}"
+}
+
+main "${@}"
