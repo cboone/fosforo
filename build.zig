@@ -50,6 +50,7 @@ pub fn build(b: *std.Build) void {
     installClapBundle(b, plugin);
     addTestStep(core);
     addShaderValidationStep(b);
+    addSmokeSteps(core);
 }
 
 /// Build the CLAP bindings.
@@ -184,4 +185,58 @@ fn addShaderValidationStep(b: *std.Build) void {
     });
     check.addFileArg(b.path("shaders/scope.metal"));
     step.dependOn(&check.step);
+}
+
+/// The GUI smoke harness (src/smoke.zig and ADR 0013), which is the only thing
+/// here that runs a Metal or an AppKit call rather than type-checking one.
+///
+/// Deliberately not wired into `zig build test`, on `addShaderValidationStep`'s
+/// precedent and ADR 0009's reasoning: making the default test path depend on a
+/// machine capability reintroduces exactly the non-hermetic build that ADR
+/// exists to prevent. The two halves are separate steps because their
+/// requirements are, a device for one and a window server as well for the other.
+fn addSmokeSteps(core: Core) void {
+    const b = core.b;
+
+    const exe = b.addExecutable(.{
+        .name = "fosforo-smoke",
+        .root_module = core.module(.{ .root = "src/smoke.zig" }),
+    });
+
+    // Not `b.installArtifact`. Plain `zig build` is the day-to-day loop and must
+    // keep producing only the .clap; this puts the binary in zig-out/bin only
+    // when a smoke step is what was asked for, which is where
+    // scripts/smoke-leak-check and any by-hand run look for it.
+    const install = b.addInstallArtifact(exe, .{});
+
+    const smoke = b.step("smoke", "Run both halves of the GUI smoke harness");
+    smoke.dependOn(addSmokeHalf(b, exe, install, "gpu"));
+    smoke.dependOn(addSmokeHalf(b, exe, install, "appkit"));
+}
+
+/// One half, as its own step, so CI can require the half that needs no window.
+fn addSmokeHalf(
+    b: *std.Build,
+    exe: *std.Build.Step.Compile,
+    install: *std.Build.Step.InstallArtifact,
+    half: []const u8,
+) *std.Build.Step {
+    const run = b.addRunArtifact(exe);
+    run.addArg(half);
+    run.step.dependOn(&install.step);
+
+    // Both matter, and for the same reason. `.inherit` is what lets the harness
+    // narrate: a run step that buffers its output defeats the whole argument for
+    // an executable over a test artifact. `has_side_effects` is what stops the
+    // build runner reporting a cached result for a check whose entire subject is
+    // the machine it is running on.
+    run.stdio = .inherit;
+    run.has_side_effects = true;
+
+    const step = b.step(
+        b.fmt("smoke-{s}", .{half}),
+        b.fmt("Run the {s} half of the GUI smoke harness", .{half}),
+    );
+    step.dependOn(&run.step);
+    return step;
 }
