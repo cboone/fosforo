@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Rendering is driven by a `CVDisplayLink` tied to the display the editor is on, so frames are paced by vsync rather than drawn once from `show`. The loop stops while the editor is hidden, which keeps several loaded instances from paying for frames nobody is looking at ([#5](https://github.com/cboone/fosforo/issues/5)).
+- The editor is resizable, freely on both axes and clamped to a 480x270 minimum. The 960x540 default is a starting size and not a ratio to preserve: the reason it is wide is that a scope's horizontal axis is time, which is an argument for letting someone buy more of it rather than for locking 16:9 ([#5](https://github.com/cboone/fosforo/issues/5)).
+- A single-slot mailbox carrying resizes from the host's main thread to the render thread, serviced at the top of a tick before anything it invalidates is read. This is the one genuine threading seam in the design (ADR 0010), and it lands now, while the only resource behind the seam is a drawable, rather than in phase 3 when the accumulation textures make the same mistake a use-after-free ([#5](https://github.com/cboone/fosforo/issues/5)).
 - CLAP plugin factory, descriptor, and instance lifecycle, so the plugin is instantiable by a host for the first time ([#2](https://github.com/cboone/fosforo/issues/2)).
 - The permanent CLAP plugin `id`, `com.catamount.fosforo`. Hosts persist this into project files, so it will not change again ([#2](https://github.com/cboone/fosforo/issues/2)).
 
