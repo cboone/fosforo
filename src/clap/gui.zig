@@ -1,24 +1,35 @@
-//! The editor's lifecycle, as CLAP's `clap.gui` extension drives it.
+//! The editor's lifecycle, as CLAP's `clap.gui` extension drives it, and the
+//! seam between the host's main thread and the render thread.
 //!
-//! Everything here runs on the host's main thread. The split against
-//! `platform/view.zig` and `gpu/` is deliberate and load-bearing for the tests:
-//! this file holds the decisions (which windowing API is acceptable, what size
-//! the editor is, what order teardown happens in), and the two modules below it
-//! hold the AppKit and Metal calls. That is what lets `zig build test` exercise
-//! the state machine without an `NSApplication` or a GPU (ADR 0009).
+//! Most of this file runs on the host's main thread. `tick` does not: it is the
+//! display link's callback, and everything it reaches has to be safe against a
+//! main thread that may be resizing or tearing down the editor at the same
+//! moment. That boundary is the whole subject of ADR 0010, and `Pending` below
+//! is the entirety of the protocol across it.
+//!
+//! The split against `platform/view.zig`, `platform/displaylink.zig`, and
+//! `gpu/` is deliberate and load-bearing for the tests: this file holds the
+//! decisions (which windowing API is acceptable, how large the editor may be,
+//! what order teardown happens in, what crosses between threads), and the
+//! modules below it hold the AppKit, CoreVideo, and Metal calls. That is what
+//! lets `zig build test` exercise the state machine and the mailbox without an
+//! `NSApplication`, a window server, or a GPU (ADR 0009).
 //!
 //! The vtable itself lives in `plugin.zig`, alongside the ones for
 //! `clap.audio-ports` and `clap.state`, because it needs the `*Instance` that
 //! this file deliberately knows nothing about.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const clap = @import("c.zig");
+const log_mod = @import("log.zig");
 const gpu = @import("../gpu/iface.zig");
+const display_link = @import("../platform/displaylink.zig");
 const view_mod = @import("../platform/view.zig");
 
 const c = clap.c;
 
-/// The editor's fixed size, in logical points.
+/// The editor's size on first open, in logical points.
 ///
 /// Cocoa is a logical-pixel API, so this is points rather than backing pixels
 /// and the same number produces the same apparent size on a Retina display as
@@ -26,9 +37,99 @@ const c = clap.c;
 /// the room; half of 1920x1080 because that sits on a laptop display without
 /// taking it over.
 ///
-/// Fixed until issue #5, which introduces resizing together with the mailbox
-/// that makes it safe against a render thread.
+/// A default, not a constraint. The ratio is deliberately **not** enforced:
+/// the argument for it is that a time axis wants room, and locking 16:9 is
+/// exactly what would stop someone buying more of it by making the editor short
+/// and wide.
 pub const default_size: gpu.Size = .{ .width = 960, .height = 540 };
+
+/// The smallest editor `adjust_size` will agree to.
+///
+/// Half the default on each axis, so the relationship between the two is
+/// legible. The floor is a design one rather than a machine one: Metal would
+/// happily draw a 40x20 drawable, but phase 5's cursor readouts are what stop
+/// being usable first, and they need somewhere to live.
+pub const min_size: gpu.Size = .{ .width = 480, .height = 270 };
+
+/// A single-slot mailbox carrying a size and a backing scale from the host's
+/// main thread to the render thread.
+///
+/// This is the one genuine threading seam in the design (ADR 0010). The host's
+/// resize callback arrives on the main thread and has to reallocate resources
+/// the render thread is actively using; the answer is that it reallocates
+/// nothing and leaves a note, which the render thread reads at the top of its
+/// next tick, before it touches anything the note invalidates.
+///
+/// Everything is packed into one `u64` so a post is a single atomic store and a
+/// drain is a single atomic swap. There is no torn read to reason about and no
+/// lock for the main thread to be caught holding.
+///
+/// **Last write wins, and that is the correct semantics rather than a
+/// simplification.** A window drag produces one post per frame and the render
+/// thread only ever wants the newest; a queue would faithfully deliver a
+/// backlog of sizes the editor no longer has.
+pub const Pending = struct {
+    slot: std.atomic.Value(u64) = .init(empty),
+
+    /// All-zero is the empty state, which needs no separate flag: Metal rejects
+    /// a zero-sized drawable, so a post carrying a zero dimension conveys
+    /// nothing and is correctly indistinguishable from no post at all.
+    const empty: u64 = 0;
+
+    const Packed = packed struct(u64) {
+        width: u16,
+        height: u16,
+        /// Backing pixels per logical point, in 1/256ths.
+        ///
+        /// Exact for the 1.0 and 2.0 that AppKit actually reports, and within
+        /// 1/512 of anything else, which is far below a pixel on any drawable
+        /// this will ever size. Fixed point rather than a second atomic,
+        /// because splitting the size and the scale across two words would let
+        /// the render thread act on a size from one display and a scale from
+        /// another.
+        scale_256: u16,
+        _: u16 = 0,
+    };
+
+    const scale_step = 256;
+
+    /// What the render thread gets back.
+    pub const Update = struct {
+        size: gpu.Size,
+        scale: f64,
+    };
+
+    /// [main-thread] Leave a note. Saturates rather than wrapping, and drops a
+    /// degenerate size rather than encoding one.
+    pub fn post(self: *Pending, size: gpu.Size, scale: f64) void {
+        if (size.width == 0 or size.height == 0) return;
+
+        const scale_256 = std.math.lossyCast(u16, @round(scale * scale_step));
+        if (scale_256 == 0) return;
+
+        const message: Packed = .{
+            .width = std.math.lossyCast(u16, size.width),
+            .height = std.math.lossyCast(u16, size.height),
+            .scale_256 = scale_256,
+        };
+
+        self.slot.store(@bitCast(message), .release);
+    }
+
+    /// [render-thread] Take the note, if there is one, leaving the mailbox
+    /// empty. A size is therefore acted on exactly once no matter how many
+    /// times it was posted.
+    pub fn take(self: *Pending) ?Update {
+        const raw = self.slot.swap(empty, .acquire);
+        if (raw == empty) return null;
+
+        const message: Packed = @bitCast(raw);
+        return .{
+            .size = .{ .width = message.width, .height = message.height },
+            .scale = @as(f64, @floatFromInt(message.scale_256)) / scale_step,
+        };
+    }
+};
 
 /// One instance's editor. Inert until the host calls `create`, and inert again
 /// after `destroy`, which is what makes both safe to call more than once.
@@ -39,8 +140,31 @@ pub const Editor = struct {
     created: bool = false,
     visible: bool = false,
 
+    /// The editor's size and backing scale as the main thread understands them.
+    /// The render thread never reads these; it reads whatever `Pending` last
+    /// carried across.
+    current: gpu.Size = default_size,
+    scale: f64 = 1.0,
+
     view: ?view_mod.View = null,
     renderer: ?gpu.Renderer = null,
+    link: ?display_link.DisplayLink = null,
+
+    pending: Pending = .{},
+
+    /// Handed to the view, which stores a pointer to it. Only meaningful while
+    /// `view` is non-null, and only valid because an `Editor` lives inside the
+    /// heap-allocated `Instance` and therefore does not move.
+    delegate: view_mod.Delegate = undefined,
+
+    /// Guards the render path against a teardown running beside it.
+    gate: Gate = .{},
+
+    /// Debug builds only. Reports the rate the loop is observed to run at,
+    /// which is the only way to tell a healthy loop from a stopped one when the
+    /// picture is a flat colour.
+    meter: Meter = .{},
+    log: ?*const log_mod.Log = null,
 
     /// [main-thread] The only place the host's windowing API is judged, shared
     /// by `is_api_supported` and `create` so the two cannot disagree.
@@ -73,30 +197,56 @@ pub const Editor = struct {
     }
 
     /// [main-thread] Release everything, in the reverse of the order it was
-    /// built: the renderer first, because its layer is still attached to the
-    /// view, and the view second.
+    /// built: the render loop first, then the renderer, whose layer is still
+    /// attached to the view, and the view last.
     ///
     /// Safe when `create` failed, when `set_parent` never happened, and when
     /// called twice. A host is supposed to call this exactly once, but the cost
-    /// of surviving one that does not is three null checks.
+    /// of surviving one that does not is a handful of null checks.
     pub fn destroy(self: *Editor) void {
+        // Order matters, and each step closes a different half of the race.
+        //
+        // The gate first. Any tick that has not yet entered the render path is
+        // turned away from here on, and `close` does not return until one that
+        // already had has left.
+        //
+        // This is the step CoreVideo will not do for us. `CVDisplayLinkStop`
+        // is not documented to wait for a callback already in flight, and both
+        // WebKit and Chromium guard it rather than bet on the answer. The cost
+        // of not betting is at most one frame, once, when an editor closes.
+        self.gate.close();
+
+        // Then the link, after which CoreVideo will not call back at all.
+        if (self.link) |l| l.destroy();
+        self.link = null;
+
         if (self.renderer) |*renderer| renderer.deinit();
         self.renderer = null;
 
         if (self.view) |v| v.destroy();
         self.view = null;
 
+        self.pending = .{};
+        self.meter = .{};
+        self.current = default_size;
+        self.scale = 1.0;
         self.visible = false;
         self.created = false;
+
+        // Reopened last, so the editor is reusable: a host may `create` and
+        // `set_parent` the same one again. Safe here and nowhere else, because
+        // the display link is gone and no tick can exist to slip through.
+        self.gate = .{};
     }
 
     /// [main-thread] Embed the editor in the host's window.
     ///
-    /// Order matters twice over. The view is attached to the parent *before*
-    /// its backing scale is read, because a view has no window until it is in
-    /// one and the scale would otherwise be a guess. And the renderer is built
-    /// last, because it is the only step that can fail for reasons outside this
-    /// process.
+    /// Order matters three times over. The view is attached to the parent
+    /// *before* its backing scale is read, because a view has no window until
+    /// it is in one and the scale would otherwise be a guess. The renderer is
+    /// built after that, because it is the first step that can fail for reasons
+    /// outside this process. And the display link is built last, because there
+    /// is no sense pacing frames for a renderer that does not exist.
     pub fn setParent(
         self: *Editor,
         window: *const c.clap_window_t,
@@ -122,47 +272,304 @@ pub const Editor = struct {
         // guarantees across Zig versions.
         const parent = clap.cocoaView(window) orelse return error.NoParentView;
 
-        const v = view_mod.View.create(default_size.width, default_size.height) orelse
+        self.delegate = .{
+            .context = self,
+            .resized = onResized,
+            .display_changed = onDisplayChanged,
+        };
+
+        const v = view_mod.View.create(self.current.width, self.current.height, &self.delegate) orelse
             return error.ViewCreationFailed;
         errdefer v.destroy();
 
-        v.attach(parent);
+        // Published before `attach`, because attaching moves the view into a
+        // window and AppKit reports that synchronously through the delegate.
+        // A callback that found `self.view` still null would silently drop the
+        // first display it ever learned about.
         self.view = v;
         errdefer self.view = null;
 
-        self.renderer = try gpu.Renderer.init(v.handle(), default_size, v.backingScale(), diags);
+        v.attach(parent);
+
+        self.scale = v.backingScale();
+        self.renderer = try gpu.Renderer.init(v.handle(), self.current, self.scale, diags);
+        errdefer {
+            self.renderer.?.deinit();
+            self.renderer = null;
+        }
+
+        self.link = display_link.DisplayLink.create(v.displayID(), tick, self) orelse
+            return error.DisplayLinkCreationFailed;
 
         // A host that reopens an editor may parent it while it is already
-        // showing rather than calling `show` again, so the first frame is drawn
-        // from whichever of the two arrives last.
-        if (self.visible) self.drawOnce();
+        // showing rather than calling `show` again, so the loop starts from
+        // whichever of the two arrives last.
+        if (self.visible) self.startLoop();
     }
 
     /// [main-thread] CLAP's `show` and `hide`. Hiding frees nothing: it is
     /// expected to be reversible, and the host may re-show the same editor.
+    ///
+    /// It does stop the loop, which is not merely an optimisation. A host with
+    /// several instances loaded and one editor open should not be paying for
+    /// the others' frames, and "no audio dropouts with several instances open"
+    /// is one of the things this issue has to hold up.
     pub fn setHidden(self: *Editor, hidden: bool) bool {
         if (!self.created) return false;
 
         self.visible = !hidden;
         if (self.view) |v| v.setHidden(hidden);
 
-        if (!hidden) self.drawOnce();
+        if (hidden) self.stopLoop() else self.startLoop();
         return true;
     }
 
-    /// Draw a single frame, if there is anything to draw it with.
+    /// [main-thread] Apply a size the host asked for.
     ///
-    /// This is the whole render loop for now. Issue #5 replaces the call sites
-    /// with a `CVDisplayLink` driving the same `frame()` at vsync; nothing
-    /// below this function changes when it does.
-    fn drawOnce(self: *Editor) void {
-        if (self.renderer) |*renderer| renderer.frame();
+    /// Clamped rather than refused. A host is expected to call `adjust_size`
+    /// first and most do, but one that skips it and gets a refusal is left with
+    /// its window at the new size and the editor at the old one, which is a
+    /// worse mismatch than the one clamping produces. `get_size` is how a host
+    /// learns what it actually got.
+    ///
+    /// Routed through the view rather than posting directly, so a resize the
+    /// host requested and a resize the host performed itself arrive by exactly
+    /// one path. Two paths is how the layer and the drawable end up disagreeing
+    /// about which was last.
+    ///
+    /// Does not require `create`, for the same reason `get_size` does not: this
+    /// is bookkeeping about how large an editor would be, and a host is
+    /// entitled to negotiate that before asking for one. Answering `get_size`
+    /// while refusing `set_size` would be an inconsistency a host has no way to
+    /// discover except by trying.
+    pub fn setSize(self: *Editor, width: u32, height: u32) bool {
+        const clamped = clampSize(width, height);
+        if (self.view) |v| {
+            v.setSize(clamped.width, clamped.height);
+        } else {
+            // No view yet, so nothing will call back. Record it so the view is
+            // created at this size when `set_parent` arrives.
+            self.current = clamped;
+        }
+        return true;
     }
 
-    /// [main-thread] Fixed until issue #5.
-    pub fn size(self: *const Editor) gpu.Size {
+    /// [main-thread] The closest size this editor would actually adopt.
+    ///
+    /// Each axis is clamped independently, so a tall narrow request answers
+    /// with a tall narrow size rather than being snapped back to the default's
+    /// proportions.
+    pub fn adjustSize(self: *const Editor, width: u32, height: u32) gpu.Size {
         _ = self;
-        return default_size;
+        return clampSize(width, height);
+    }
+
+    /// [main-thread] The size the editor is now, which is what a host reads
+    /// back after `set_size`.
+    pub fn size(self: *const Editor) gpu.Size {
+        return self.current;
+    }
+
+    /// [render-thread] One frame, as the display link calls for it.
+    ///
+    /// The mailbox is drained before anything is drawn, which is the ordering
+    /// ADR 0010 asks for: the resources a resize invalidates are replaced
+    /// before this frame reads them, rather than underneath a frame already in
+    /// progress.
+    fn tick(context: *anyopaque) void {
+        const self: *Editor = @ptrCast(@alignCast(context));
+
+        if (!self.gate.enter()) return;
+        defer self.gate.leave();
+
+        const renderer = if (self.renderer) |*r| r else return;
+
+        if (self.pending.take()) |update| renderer.resize(update.size, update.scale);
+        renderer.frame();
+
+        self.report();
+    }
+
+    /// [main-thread] Start and stop the display link. Both are no-ops before
+    /// `set_parent`, which is the state every test leaves the editor in.
+    fn startLoop(self: *Editor) void {
+        const l = self.link orelse return;
+        _ = l.start();
+    }
+
+    fn stopLoop(self: *Editor) void {
+        const l = self.link orelse return;
+        l.stop();
+
+        // The meter's window is wall time, so one that spans a hidden editor
+        // would report the stall as a slow second and read as a defect in the
+        // loop. Restarting it means the first number after `show` describes the
+        // loop rather than the pause before it.
+        self.meter = .{};
+    }
+
+    /// [render-thread] Debug builds only.
+    ///
+    /// The deliverable of this phase is a flat colour, so a loop running at
+    /// 120 Hz and a loop that stopped ten seconds ago produce identical
+    /// pictures. This line is the difference, and it carries the drawable size
+    /// too, which is what makes a resize observable rather than inferred.
+    fn report(self: *Editor) void {
+        if (builtin.mode != .Debug) return;
+
+        const rate = self.meter.observe(display_link.monotonicNanos()) orelse return;
+        const l = self.log orelse return;
+
+        l.print(c.CLAP_LOG_DEBUG, "rendering at {d:.1} Hz, {d}x{d} at {d:.2}x", .{
+            rate,
+            self.current.width,
+            self.current.height,
+            self.scale,
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // The view's delegate. All [main-thread].
+    // -----------------------------------------------------------------------
+
+    /// The view resized, whether because the host called `set_size` or because
+    /// it resized its own window and the autoresizing mask carried it.
+    ///
+    /// Clamped, and not merely for symmetry with `setSize`. AppKit will hand
+    /// over a degenerate size in the ordinary course of events: an autoresizing
+    /// subview whose superview shrinks by more than the subview's own width has
+    /// its frame floored at zero, which arrives here as 0x0. Taking that
+    /// literally would leave `get_size` reporting a size the editor told the
+    /// host it does not support, and would be the size the view is rebuilt at
+    /// if the host re-parents. Clamping keeps one invariant: `current` is
+    /// always a size this editor claims to support.
+    fn onResized(context: *anyopaque, width: u32, height: u32) void {
+        const self: *Editor = @ptrCast(@alignCast(context));
+
+        self.current = clampSize(width, height);
+        self.pending.post(self.current, self.scale);
+    }
+
+    /// The backing scale, the window, or the display changed. Which of the
+    /// three it was is not worth distinguishing: all three mean the assumptions
+    /// behind the drawable and the frame pacing are stale.
+    fn onDisplayChanged(context: *anyopaque) void {
+        const self: *Editor = @ptrCast(@alignCast(context));
+
+        const v = self.view orelse return;
+
+        self.scale = v.backingScale();
+        self.pending.post(self.current, self.scale);
+
+        if (self.link) |l| l.setDisplay(v.displayID());
+    }
+};
+
+/// A one-way gate the render thread passes through and teardown closes.
+///
+/// This exists because `CVDisplayLinkStop` does not promise what a caller
+/// freeing resources actually needs to know. It stops future callbacks; it says
+/// nothing about one already running. Without an answer, `destroy` would be
+/// releasing a Metal device that a tick might be one instruction away from
+/// sending a message to, which is a crash inside someone else's DAW that only
+/// happens when an editor closes at exactly the wrong moment.
+///
+/// One word carries both halves, which is what makes it correct: a tick claims
+/// its place and learns whether the gate was open in the same atomic operation,
+/// so there is no window between checking and entering for `close` to slip
+/// into.
+///
+/// Deliberately not a mutex. Zig 0.16 has no blocking mutex that does not want
+/// an `Io` instance, and reaching for a pthread here would put a platform
+/// dependency in the one file whose whole design is that it has none.
+const Gate = struct {
+    /// Bit 0 is the closed flag; everything above it counts ticks inside.
+    state: std.atomic.Value(u32) = .init(0),
+
+    const closed: u32 = 1;
+    const one_tick: u32 = 2;
+
+    /// [render-thread] Claim a place inside, or find the gate shut.
+    ///
+    /// The increment happens either way and is undone on refusal, because
+    /// reading the flag first and incrementing second is exactly the race this
+    /// type exists to close.
+    fn enter(self: *Gate) bool {
+        const previous = self.state.fetchAdd(one_tick, .acquire);
+        if (previous & closed != 0) {
+            _ = self.state.fetchSub(one_tick, .release);
+            return false;
+        }
+        return true;
+    }
+
+    /// [render-thread] Give the place back.
+    fn leave(self: *Gate) void {
+        _ = self.state.fetchSub(one_tick, .release);
+    }
+
+    /// [main-thread] Shut the gate and wait for anyone inside to leave.
+    ///
+    /// Spins rather than sleeping. The wait is bounded by one tick, it happens
+    /// once when an editor closes, and the alternative is a condition variable
+    /// this file would have to reach outside itself for.
+    fn close(self: *Gate) void {
+        _ = self.state.fetchOr(closed, .acquire);
+
+        while (self.state.load(.acquire) != closed) {
+            std.atomic.spinLoopHint();
+            std.Thread.yield() catch {};
+        }
+    }
+};
+
+/// Each axis independently, so 300x900 answers 480x900 rather than 480x270.
+fn clampSize(width: u32, height: u32) gpu.Size {
+    return .{
+        .width = @max(width, min_size.width),
+        .height = @max(height, min_size.height),
+    };
+}
+
+/// Frames observed per second, sampled about once a second.
+///
+/// Split out from `Editor` because it is arithmetic over a clock and nothing
+/// else, which makes it the one part of the render thread's work that can be
+/// tested exactly.
+const Meter = struct {
+    started_ns: u64 = 0,
+    frames: u32 = 0,
+
+    const window_ns: u64 = std.time.ns_per_s;
+
+    /// Returns a rate once a window has elapsed, and null on every other call.
+    ///
+    /// Takes the time rather than reading it, which is what keeps the one piece
+    /// of the render thread's work that is pure arithmetic testable exactly.
+    fn observe(self: *Meter, now_ns: u64) ?f64 {
+        // The first call establishes the baseline instead of measuring against
+        // one, and is not itself counted: it marks the instant the window opens
+        // rather than a frame inside it. `CLOCK_UPTIME_RAW` is nanoseconds
+        // since boot, so treating a zero baseline as real would divide the
+        // frame count by the machine's entire uptime.
+        if (self.started_ns == 0) {
+            self.started_ns = now_ns;
+            self.frames = 0;
+            return null;
+        }
+
+        self.frames += 1;
+
+        const elapsed = now_ns -| self.started_ns;
+        if (elapsed < window_ns) return null;
+
+        const rate = @as(f64, @floatFromInt(self.frames)) *
+            @as(f64, @floatFromInt(std.time.ns_per_s)) /
+            @as(f64, @floatFromInt(elapsed));
+
+        self.started_ns = now_ns;
+        self.frames = 0;
+        return rate;
     }
 };
 
@@ -173,9 +580,10 @@ pub const Editor = struct {
 const testing = std.testing;
 
 // Every test here stops short of `setParent`, which is the one method that
-// reaches AppKit and Metal. That boundary is why this file exists separately
-// from `platform/view.zig`: the decisions are testable on a machine with no
-// window server, and the calls are verified by opening the editor in a host.
+// reaches AppKit, CoreVideo, and Metal. That boundary is why this file exists
+// separately from the platform modules: the decisions and the whole of the
+// thread protocol are testable on a machine with no window server, and the
+// calls are verified by opening the editor in a host.
 
 test "only embedded cocoa is accepted" {
     try testing.expect(Editor.isApiSupported(&c.CLAP_WINDOW_API_COCOA, false));
@@ -237,13 +645,243 @@ test "show and hide track visibility and are refused before create" {
     try testing.expect(editor.create(&c.CLAP_WINDOW_API_COCOA, false));
     defer editor.destroy();
 
-    // No renderer, so `drawOnce` is a no-op. That it can be reached without
-    // one is the property under test.
+    // No display link, so starting and stopping the loop are no-ops. That they
+    // can be reached without one is the property under test: a host is entitled
+    // to show an editor it has not parented yet.
     try testing.expect(editor.setHidden(false));
     try testing.expect(editor.visible);
 
     try testing.expect(editor.setHidden(true));
     try testing.expect(!editor.visible);
+}
+
+test "destroy is safe on an editor that was shown but never parented" {
+    var editor: Editor = .{};
+    try testing.expect(editor.create(&c.CLAP_WINDOW_API_COCOA, false));
+    try testing.expect(editor.setHidden(false));
+
+    // The teardown barrier runs whether or not a link was ever created, so an
+    // uncontended gate is the whole cost in this path.
+    editor.destroy();
+    try testing.expect(editor.link == null);
+
+    // Reopened, because a host may create and parent the same editor again.
+    try testing.expect(editor.gate.enter());
+    editor.gate.leave();
+}
+
+test "a closed gate turns ticks away and leaves the count where it found it" {
+    var gate: Gate = .{};
+
+    try testing.expect(gate.enter());
+    gate.leave();
+
+    // Uncontended, so this returns without waiting for anything.
+    gate.close();
+
+    // Every refused entry has to undo its own claim. One that did not would
+    // leave the count non-zero, and the next `close` would spin forever on a
+    // tick that no longer exists.
+    try testing.expect(!gate.enter());
+    try testing.expect(!gate.enter());
+    try testing.expectEqual(Gate.closed, gate.state.load(.acquire));
+
+    gate.close();
+}
+
+test "close waits for a tick that is already inside" {
+    var gate: Gate = .{};
+    try testing.expect(gate.enter());
+
+    // The state a tick mid-frame leaves behind: closed, and still occupied.
+    _ = gate.state.fetchOr(Gate.closed, .acquire);
+    try testing.expectEqual(Gate.closed | Gate.one_tick, gate.state.load(.acquire));
+
+    // `close` would spin here rather than returning, which is the property
+    // under test and also why it cannot be called until the tick leaves.
+    gate.leave();
+    gate.close();
+    try testing.expectEqual(Gate.closed, gate.state.load(.acquire));
+}
+
+test "each axis is clamped against the minimum independently" {
+    var editor: Editor = .{};
+    defer editor.destroy();
+    try testing.expect(editor.create(&c.CLAP_WINDOW_API_COCOA, false));
+
+    // A tall narrow request keeps its height rather than being snapped back to
+    // the default's proportions, which is what `preserve_aspect_ratio` being
+    // false has to mean in practice.
+    try testing.expectEqual(gpu.Size{ .width = 480, .height = 900 }, editor.adjustSize(300, 900));
+    try testing.expectEqual(gpu.Size{ .width = 1600, .height = 270 }, editor.adjustSize(1600, 4));
+    try testing.expectEqual(min_size, editor.adjustSize(0, 0));
+    try testing.expectEqual(min_size, editor.adjustSize(1, 1));
+
+    // Anything at or above the minimum passes through untouched.
+    try testing.expectEqual(default_size, editor.adjustSize(default_size.width, default_size.height));
+    try testing.expectEqual(min_size, editor.adjustSize(min_size.width, min_size.height));
+}
+
+test "set_size before a view is parented records the size the view will be built at" {
+    var editor: Editor = .{};
+    defer editor.destroy();
+    try testing.expect(editor.create(&c.CLAP_WINDOW_API_COCOA, false));
+
+    try testing.expect(editor.setSize(1280, 720));
+    try testing.expectEqual(gpu.Size{ .width = 1280, .height = 720 }, editor.size());
+
+    // Clamped, not refused: a host that skipped `adjust_size` still gets an
+    // editor, and `get_size` is how it finds out what it got.
+    try testing.expect(editor.setSize(10, 10));
+    try testing.expectEqual(min_size, editor.size());
+}
+
+test "sizing is negotiable before create, the way get_size already is" {
+    var editor: Editor = .{};
+
+    // A host that asks how large the editor would be, before asking for one,
+    // gets a consistent answer from all three rather than an answer from
+    // `get_size` and a refusal from the other two.
+    try testing.expectEqual(default_size, editor.size());
+    try testing.expectEqual(min_size, editor.adjustSize(1, 1));
+
+    try testing.expect(editor.setSize(1280, 720));
+    try testing.expectEqual(gpu.Size{ .width = 1280, .height = 720 }, editor.size());
+}
+
+test "a degenerate size from AppKit is clamped rather than recorded" {
+    var editor: Editor = .{};
+    defer editor.destroy();
+    try testing.expect(editor.create(&c.CLAP_WINDOW_API_COCOA, false));
+
+    // An autoresizing subview whose superview shrinks past its width has its
+    // frame floored at zero by AppKit, which arrives here as 0x0. Recording it
+    // would leave `get_size` reporting a size the editor told the host it does
+    // not support, and would be the size the view is rebuilt at on re-parent.
+    Editor.onResized(&editor, 0, 0);
+    try testing.expectEqual(min_size, editor.size());
+
+    // And the mailbox never carries it either, from either direction: the
+    // clamp above, and `post` dropping a zero regardless.
+    try testing.expectEqual(min_size, editor.pending.take().?.size);
+}
+
+test "a posted resize is taken exactly once" {
+    var pending: Pending = .{};
+
+    try testing.expect(pending.take() == null);
+
+    pending.post(.{ .width = 1280, .height = 720 }, 2.0);
+
+    const update = pending.take().?;
+    try testing.expectEqual(gpu.Size{ .width = 1280, .height = 720 }, update.size);
+    try testing.expectEqual(@as(f64, 2.0), update.scale);
+
+    // Drained. A size acted on twice would mean phase 3 reallocating textures
+    // it had already reallocated.
+    try testing.expect(pending.take() == null);
+}
+
+test "the last post wins, which is what a window drag produces" {
+    var pending: Pending = .{};
+
+    // One post per frame for the length of a drag. Only the newest describes
+    // the editor the user is now looking at.
+    pending.post(.{ .width = 700, .height = 400 }, 1.0);
+    pending.post(.{ .width = 800, .height = 450 }, 1.0);
+    pending.post(.{ .width = 900, .height = 500 }, 1.0);
+
+    const update = pending.take().?;
+    try testing.expectEqual(gpu.Size{ .width = 900, .height = 500 }, update.size);
+    try testing.expect(pending.take() == null);
+}
+
+test "a degenerate post is dropped rather than encoded" {
+    var pending: Pending = .{};
+
+    // Metal rejects a zero-sized drawable, so each of these conveys nothing.
+    // Dropping them is what lets all-zero double as the empty state.
+    pending.post(.{ .width = 0, .height = 540 }, 2.0);
+    try testing.expect(pending.take() == null);
+
+    pending.post(.{ .width = 960, .height = 0 }, 2.0);
+    try testing.expect(pending.take() == null);
+
+    pending.post(.{ .width = 960, .height = 540 }, 0);
+    try testing.expect(pending.take() == null);
+}
+
+test "a dropped post leaves an earlier one intact" {
+    var pending: Pending = .{};
+
+    pending.post(.{ .width = 960, .height = 540 }, 2.0);
+    pending.post(.{ .width = 0, .height = 0 }, 2.0);
+
+    // The degenerate post is discarded rather than clearing the mailbox, so the
+    // render thread still learns about the resize that did happen.
+    const update = pending.take().?;
+    try testing.expectEqual(gpu.Size{ .width = 960, .height = 540 }, update.size);
+}
+
+test "an out-of-range size saturates rather than wrapping" {
+    var pending: Pending = .{};
+
+    // 65536 truncated to `u16` would be zero, which the mailbox reads as empty:
+    // an absurd size would silently become a dropped resize instead of a
+    // clamped one.
+    pending.post(.{ .width = 100_000, .height = 70_000 }, 1.0);
+
+    const update = pending.take().?;
+    try testing.expectEqual(@as(u32, std.math.maxInt(u16)), update.size.width);
+    try testing.expectEqual(@as(u32, std.math.maxInt(u16)), update.size.height);
+}
+
+test "the scale round trips exactly at the values AppKit reports" {
+    var pending: Pending = .{};
+
+    for ([_]f64{ 1.0, 2.0, 3.0, 1.5 }) |scale| {
+        pending.post(default_size, scale);
+        try testing.expectEqual(scale, pending.take().?.scale);
+    }
+}
+
+test "an unusual scale round trips within a fraction of a pixel" {
+    var pending: Pending = .{};
+
+    // Fixed point in 1/256ths, so the worst case is half a step. Over a 4096
+    // pixel drawable that is eight thousandths of a pixel.
+    pending.post(.{ .width = 4096, .height = 4096 }, 1.7734375 + 0.001);
+
+    const scale = pending.take().?.scale;
+    try testing.expect(@abs(scale - 1.7734375) <= 0.5 / 256.0);
+}
+
+test "the meter reports a rate only once a window has elapsed" {
+    var meter: Meter = .{};
+
+    // `CLOCK_UPTIME_RAW` counts from boot, so the first reading is a baseline
+    // rather than a measurement. Treating it as one would divide the frame
+    // count by the machine's whole uptime.
+    const boot: u64 = 900 * std.time.ns_per_s;
+    try testing.expect(meter.observe(boot) == null);
+
+    // 125 Hz rather than 120, so the period divides a second exactly and the
+    // test measures the meter rather than integer division.
+    const period = std.time.ns_per_s / 125;
+    var now = boot;
+    for (0..124) |_| {
+        now += period;
+        try testing.expect(meter.observe(now) == null);
+    }
+
+    // The frame that lands exactly on the window's edge closes it, and the
+    // baseline call is not among the 125 counted.
+    now += period;
+    try testing.expectEqual(@as(f64, 125), meter.observe(now).?);
+
+    // The window restarts rather than accumulating, so a loop that stalls after
+    // a healthy second reports the stall rather than an average that hides it.
+    try testing.expect(meter.observe(now + std.time.ns_per_s / 2) == null);
 }
 
 /// A window the host would hand to `set_parent`, carrying no view.
