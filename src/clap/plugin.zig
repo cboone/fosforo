@@ -706,17 +706,21 @@ fn onMainThread(plugin: [*c]const c.clap_plugin_t) callconv(.c) void {
 }
 
 // ---------------------------------------------------------------------------
-// Tests
+// The host fixture
+//
+// Public, and above the test banner, because `src/smoke.zig` shares it: that
+// harness plays the host for real, against a real window, and a second
+// `clap_host_t` written out beside this one would drift from it. The harness
+// copies this and overrides `get_extension` alone, so the two cannot disagree
+// about anything else a host owes a plugin.
 // ---------------------------------------------------------------------------
-
-const testing = std.testing;
 
 /// A host offering no extensions at all, which is the shape every callback here
 /// has to survive. `get_extension` is populated because `init` calls it; the
 /// remaining pointers stay null because nothing in this file reaches them, so a
 /// test that starts failing on a null call is reporting a real contract
 /// violation rather than a gap in the fixture.
-const test_host: c.clap_host_t = .{
+pub const test_host: c.clap_host_t = .{
     .clap_version = clap.version,
     .host_data = null,
     .name = "fosforo test",
@@ -729,7 +733,7 @@ const test_host: c.clap_host_t = .{
     .request_callback = null,
 };
 
-fn testNoExtensions(
+pub fn testNoExtensions(
     host: [*c]const c.clap_host_t,
     extension_id: [*c]const u8,
 ) callconv(.c) ?*const anyopaque {
@@ -737,6 +741,12 @@ fn testNoExtensions(
     _ = extension_id;
     return null;
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+const testing = std.testing;
 
 // Event list stubs. A host always supplies both lists, so the fixture below
 // does too rather than leaving them null.

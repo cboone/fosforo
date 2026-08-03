@@ -152,8 +152,11 @@ endif()
 # make_clapfirst_plugins exposes no override for either, and the plist is written at
 # build time by a generated helper executable, so the only seam is the copy that
 # landed in the bundle. Registering these after make_clapfirst_plugins() returns puts
-# them behind clap-wrapper's own POST_BUILD commands. Nothing signs the .component on
-# this path, so there is no signature to invalidate.
+# them behind clap-wrapper's own POST_BUILD commands.
+#
+# Both must also stay *ahead* of the signing step at the end of this file. Signing
+# seals Contents/Info.plist into _CodeSignature/CodeResources, so a rewrite landing
+# after it invalidates the signature that sealed it.
 if(APPLE AND TARGET ${PROJECT_NAME}_auv2)
     # clap-wrapper's AUv2 build helper hardcodes a resourceUsage dictionary claiming
     # network.client and temporary-exception.files.all.read-write, and emits it next to
@@ -183,4 +186,68 @@ if(APPLE AND TARGET ${PROJECT_NAME}_auv2)
         COMMENT "Writing the display name and description into the AU"
         VERBATIM
     )
+endif()
+
+# ---------------------------------------------------------------------------
+# Sign the bundles.
+# ---------------------------------------------------------------------------
+
+# Ad-hoc by default, so a plain `cmake --build` needs no keychain, no certificate and
+# no network. A release identity is a configure-time override:
+#
+#   cmake -B build cmake/ -DFOSFORO_CODESIGN_IDENTITY="Developer ID Application: ..."
+#
+# That override alone does not make an artifact distributable. A signature that will
+# notarize also needs --timestamp, --options runtime, and possibly an entitlements
+# file, none of which is useful without a release process. See issue #24. build.zig
+# carries the same switch for the bundle it assembles, spelled
+# `zig build -Dcodesign-identity=`.
+set(FOSFORO_CODESIGN_IDENTITY "-" CACHE STRING
+    "codesign identity for the built bundles; '-' signs ad-hoc")
+
+# The linker ad-hoc signs the Mach-O binary on arm64, which is automatic and is why
+# these bundles load at all. It leaves the *bundle* unsigned: with no
+# Contents/_CodeSignature, `codesign --verify` reports "code has no resources but
+# signature indicates they must be present".
+#
+# clap-wrapper does not close this and is not going to. Its only codesign calls sign
+# the generated AUv2 build helper executable, wrap_clap.cmake has none at all, and
+# make_clapfirst.cmake says outright that signing is the consuming project's decision.
+#
+# $<TARGET_BUNDLE_DIR> rather than the $<TARGET_FILE_DIR>/.. the plist commands use,
+# because those name a file inside Contents and this names the bundle itself. The
+# sibling $<TARGET_BUNDLE_DIR_NAME> would read better in the COMMENT but needs CMake
+# 3.24, above the floor declared at the top of this file.
+#
+# /usr/bin/codesign by absolute path rather than through PATH, and not via
+# find_program the way ZIG_EXECUTABLE above is found. Zig's location genuinely varies;
+# this one does not, and resolving it through PATH would let a wrapper or shim sign
+# these bundles instead, silently, while the comment above still claimed the base-OS
+# tool had run. ADR 0001 makes this macOS-only, so the path costs no portability.
+function(fosforo_sign_bundle target)
+    add_custom_command(TARGET ${target} POST_BUILD
+        COMMAND /usr/bin/codesign --force --sign "${FOSFORO_CODESIGN_IDENTITY}"
+                "$<TARGET_BUNDLE_DIR:${target}>"
+        COMMENT "Signing the ${target} bundle"
+        VERBATIM
+    )
+endfunction()
+
+if(APPLE AND TARGET ${PROJECT_NAME}_auv2)
+    # Last, and that is the whole point. POST_BUILD commands run in registration
+    # order, and the two above rewrite Contents/Info.plist, which this seals into
+    # CodeResources. Signing first would leave a component whose signature no longer
+    # matches its own plist: `codesign --verify` would then report tampering rather
+    # than a missing signature, which is worse than not signing at all.
+    #
+    # A fourth POST_BUILD command on this target belongs above this call, not below.
+    fosforo_sign_bundle(${PROJECT_NAME}_auv2)
+endif()
+
+if(APPLE AND TARGET ${PROJECT_NAME}_clap)
+    # Nothing rewrites this bundle after make_clapfirst_plugins() returns, so there is
+    # no ordering hazard here. It is signed for the same reason the component is: it
+    # fails `codesign --verify` identically without it, and one rule covering every
+    # bundle is worth more than an exception that has to be explained.
+    fosforo_sign_bundle(${PROJECT_NAME}_clap)
 endif()

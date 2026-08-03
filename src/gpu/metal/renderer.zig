@@ -167,6 +167,44 @@ pub const Renderer = struct {
         };
     }
 
+    /// [main-thread] Everything `init` does except attach a surface, released
+    /// again before it returns.
+    ///
+    /// The half of starting a renderer that needs no window, and so the half
+    /// that can run on a machine with a GPU and nothing else. It shares
+    /// `buildPipeline` with `init` rather than paraphrasing it, which is what
+    /// makes a pass here mean the shipping path compiled the shader, and not
+    /// merely that some shader compiled.
+    ///
+    /// Writes what it found into `diags` on success as well as on failure. A
+    /// smoke test that reports "ok" without naming the device it acquired is
+    /// asserting something nobody can check, and the device's name is bytes by
+    /// the time it crosses the seam.
+    pub fn probe(diags: *iface.Diagnostics) iface.Error!void {
+        platform.assertMainThread();
+
+        const pool = objc.AutoreleasePool.init();
+        defer pool.deinit();
+
+        const device = objc.Object.fromId(MTLCreateSystemDefaultDevice() orelse {
+            diags.set("Metal reported no default device");
+            return error.NoDevice;
+        });
+        defer device.release();
+
+        const queue = device.msgSend(objc.Object, "newCommandQueue", .{});
+        if (queue.value == null) {
+            diags.set("the Metal device would not create a command queue");
+            return error.NoDevice;
+        }
+        defer queue.release();
+
+        const pipeline = try buildPipeline(device, diags);
+        pipeline.release();
+
+        diags.set(platform.utf8(device.msgSend(objc.Object, "name", .{})));
+    }
+
     /// [main-thread] Releases everything `init` took ownership of.
     ///
     /// Must run before the view is released, since the layer is still attached

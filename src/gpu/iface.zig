@@ -47,12 +47,19 @@ pub const Error = error{
     SurfaceCreationFailed,
 };
 
-/// A fixed buffer the backend writes a human-readable failure into.
+/// A fixed buffer the backend writes a human-readable line into.
 ///
 /// This exists so a Metal compiler diagnostic can reach the host's log without
 /// the gpu layer importing the log or the clap layer importing Metal. Both
 /// directions would be a layering violation, and the message is the difference
 /// between "the editor did not open" and a file and line number.
+///
+/// Every caller but one reads this only after a failure. `probe` is the
+/// exception and fills it in on success too, with what it found, because a
+/// smoke test reporting "ok" without naming the device it acquired is asserting
+/// something nobody can check. So the buffer carries a description rather than
+/// strictly a failure, and `message()` staying empty-when-unset is what lets
+/// both kinds of caller read it unconditionally.
 ///
 /// Fixed rather than allocated: the failure paths this serves are the ones
 /// where the least should be assumed about the process, and truncating a
@@ -76,6 +83,18 @@ pub const Diagnostics = struct {
 /// The one backend. Aliased rather than dispatched through a vtable, because
 /// paying for indirection with a single implementation would buy nothing that
 /// the comptime check below does not buy for free.
+///
+/// Four operations, three of which the editor drives: `init`, `deinit`, and
+/// `frame`.
+///
+/// `probe` is the fourth, and it has one caller: `src/smoke.zig`. It does
+/// everything `init` does except attach a surface, which makes it the half of
+/// starting a renderer that needs no window and can therefore run unattended.
+/// That is a real backend capability rather than a testing hook. "Can this
+/// machine start this backend at all, and if not, why" is a question any second
+/// backend would have to answer too, and answering it here is what lets a
+/// runtime shader compilation failure be caught by CI rather than by whoever
+/// next opens the editor.
 pub const Renderer = @import("metal/renderer.zig").Renderer;
 
 // ADR 0005 asks a reviewer to treat a Metal type named above this seam as a
@@ -92,6 +111,7 @@ comptime {
     // the size has to be expressible without naming anything Metal owns.
     assertSignature("resize", @TypeOf(Renderer.resize), fn (*Renderer, Size, f64) void);
     assertSignature("frame", @TypeOf(Renderer.frame), fn (*Renderer) void);
+    assertSignature("probe", @TypeOf(Renderer.probe), fn (*Diagnostics) Error!void);
 }
 
 fn assertSignature(comptime name: []const u8, comptime Found: type, comptime Want: type) void {
