@@ -24,6 +24,7 @@
         "src",
         "shaders",
         "cmake",
+        "scripts",
         "LICENSE",
         "README.md",
     },

@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - CLAP plugin factory, descriptor, and instance lifecycle, so the plugin is instantiable by a host for the first time ([#2](https://github.com/cboone/fosforo/issues/2)).
 - The permanent CLAP plugin `id`, `com.catamount.fosforo`. Hosts persist this into project files, so it will not change again ([#2](https://github.com/cboone/fosforo/issues/2)).
+- A GUI smoke harness, `zig build smoke`, which is the only thing in the project that runs a Metal or an AppKit call rather than type-checking one. It plays the host: a real `NSWindow`, the real `clap_entry`, and the editor opened and torn down repeatedly through the `clap.gui` vtable. Split into a `gpu` half that needs no window and covers runtime shader compilation, which `zig build validate-shaders` cannot prove, and an `appkit` half that covers view embedding and the lifecycle. `zig build smoke-leaks` wraps the second in `leaks --atExit` and fails if anything this project owns survives 400 open and close cycles. Never part of `zig build test`, so the default build stays hermetic ([#19](https://github.com/cboone/fosforo/issues/19), [ADR 0013](docs/adr/0013-gui-smoke-harness-as-a-build-step.md)).
+- CI runs the smoke harness on every push. The `gpu` half is required; the `appkit` half runs under `continue-on-error` until a real run settles whether a hosted runner grants an unbundled process a window-server connection ([#19](https://github.com/cboone/fosforo/issues/19)).
 
 ### Changed
 

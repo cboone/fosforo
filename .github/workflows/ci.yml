@@ -105,6 +105,67 @@ jobs:
       - name: Type-check shaders
         run: zig build validate-shaders
 
+  # The only job that *runs* a Metal or an AppKit call rather than type-checking
+  # one. Everything else here, `zig build test` included, proves that the message
+  # sends compile; a shader that passes `metal -fsyntax-only` can still fail
+  # `newLibraryWithSource:`, and a selector signature that is wrong in a way the
+  # ABI tolerates is only wrong once it is called. See ADR 0013.
+  #
+  # Separate from `shaders` above deliberately, even though both concern the same
+  # file. That job installs the Metal toolchain; this one must not have it, because
+  # runtime compilation from embedded source is the path the plugin actually takes
+  # (ADR 0009) and a runner with the compiler present would not prove it works
+  # without one.
+  #
+  # One job rather than two, so the checkout, the Zig install and the build are
+  # paid once for both halves. The halves are gated differently:
+  #
+  #   gpu     needs a Metal device and no window. Required.
+  #   appkit  needs a window server as well, which a headless runner may not
+  #           grant. `continue-on-error`, and the step after it reports what
+  #           happened, because settling that question is what this run is for.
+  #
+  # This is the one check in the project that can go red for reasons unrelated to
+  # the code, which is the cost of being the only one that runs anything.
+  #
+  # The ceiling is borrowed, not measured: this job has never run, so 8 comes from
+  # `shaders` and `clap-validator`, which do the same checkout, Zig install and
+  # build on the same runner and peak at 90s and 120s. Replace it with a real
+  # figure and sample size once this PR's runs supply one, the way every other
+  # ceiling here was set (#17).
+  smoke:
+    runs-on: macos-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version-file: build.zig.zon
+
+      - name: Smoke-test the GPU path
+        run: zig build smoke-gpu
+
+      # A label, on the precedent of the Metal download above. The plausible
+      # failure here is not a red result but a wedge: an AppKit call that blocks
+      # waiting on a window server this process was never granted. Two minutes is
+      # far above the seconds it takes locally, and it makes that case read as
+      # itself instead of as the whole job timing out.
+      - name: Smoke-test the AppKit path
+        id: appkit
+        continue-on-error: true
+        timeout-minutes: 2
+        run: zig build smoke-appkit
+
+      # The experiment, made legible. Whether a hosted runner hands an unbundled
+      # process a window-server connection is not something to reason about, and
+      # a notice in the run summary is how the answer gets read without opening
+      # the log of a job that passed.
+      - name: Report whether the runner granted a window server
+        if: always()
+        run: |
+          echo "::notice::AppKit smoke half: ${{ steps.appkit.outcome }}"
+
   # The reusable workflow's `format` job runs `zig fmt --check` and nothing
   # else, so no shell tooling ran anywhere in this repository. That left the
   # `.editorconfig` profile resting on someone remembering to run the tool.
