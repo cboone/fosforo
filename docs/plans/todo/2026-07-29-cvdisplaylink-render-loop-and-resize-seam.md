@@ -319,7 +319,13 @@ Recorded because each was a decision made during execution rather than a slip.
 
 **The clock had to be declared.** Zig 0.16 moved every clock behind `std.Io` too, so `std.time` is now constants only. `clock_gettime_nsec_np(CLOCK_UPTIME_RAW)` is one `extern` and lives in `platform/displaylink.zig`, which is the render loop's clock in both senses.
 
-**Two defects the unit tests could not have found.** The harness caught both.
+**The temporary harness was superseded mid-flight.** This plan said a harness needed for verification would be built and thrown away, on issue #4's precedent. While the work was in progress, [issue #19](https://github.com/cboone/fosforo/issues/19) landed `src/smoke.zig` on `main` as a committed, CI-wired equivalent, together with [ADR 0013](../../adr/0013-gui-smoke-harness-as-a-build-step.md) and `scripts/smoke-leak-check`. The throwaway harness did its job and was deleted; everything it checked is now checked by `zig build smoke` and `zig build smoke-leaks`, at four hundred cycles instead of one hundred, on every push.
+
+**Merging `main` turned an inherited gap into a regression, so this branch closed it.** ADR 0013 recorded that the harness could not prove a frame was presented, and assigned the fix to the display link. It was not optional by the time the merge landed: `show` used to draw synchronously, so every smoke cycle exercised `Renderer.frame` once, and a display link that starts on `show` and stops on `hide` never ticks between two calls that run back to back. Instrumenting the tick counted **zero** frames across ten cycles in a run that reported `smoke: appkit ok`.
+
+`frame` now returns an `Outcome` instead of `void`, `Editor` counts presented frames behind `framesPresented()`, and each AppKit cycle waits for a frame, resizes, waits again, then hides and asserts the counter stopped. Both failure modes were verified by planting them: a `show` that does not start the loop, and a `nextDrawable` that always reports `no_drawable`, each produce `NoFramePresented`. See the amendment to ADR 0013.
+
+**Two defects the unit tests could not have found.** The throwaway harness caught both.
 
 `Editor.current` could reach 0x0. AppKit floors an autoresizing subview's frame at zero when its superview shrinks by more than the subview's width, which arrives as a legitimate `setFrameSize:` of 0x0. `Pending.post` correctly dropped it, so nothing degenerate ever reached Metal, but `current` kept it: `get_size` would then report a size the plugin had told the host it did not support, and a re-parent would rebuild the view at it. `onResized` now clamps, which gives one invariant worth having: `current` is always a size this editor claims to support.
 
@@ -337,12 +343,20 @@ The runtime behaviour was verified with a temporary in-process harness, since al
 | The mailbox drains                   | The reported drawable size tracked `set_size` through 960x540, 1600x900, and 480x270        |
 | `set_size` clamps rather than refuses | A 10x10 request produced 480x270, and `get_size` reported it back                          |
 | Hiding stops the loop                | No frames for the two seconds an editor was hidden, and 119.9 Hz on the second after `show` |
-| The teardown race                    | 100 open/close cycles, each with the loop running, clean                                    |
+| The teardown race                    | 100 open/close cycles by hand, then 400 under `zig build smoke-leaks`, clean                |
 | The thread rules hold                | Neither `assertMainThread` nor `assertNotMainThread` tripped in a debug build               |
+| Frames are actually presented        | Asserted per cycle by `zig build smoke-appkit`, and confirmed to fail when sabotaged        |
+| Hiding stops the loop                | The presented count does not advance for 50 ms after `hide`                                 |
 
-**The leak criterion is met.** Under `leaks --atExit` with `MallocStackLogging`, the total is flat at 286 leaked allocations for 1, 20, and 100 open/close cycles, and every one of them is the `NSXPCConnection` chatter AppKit's LaunchServices creates. No `NSView`, `CAMetalLayer`, `MTLDevice`, `MTLCommandQueue`, pipeline state, `CVDisplayLink`, semaphore, or completion block appears anywhere in the report. A per-cycle leak would compound a hundred times over and be unmissable.
+**The leak criterion is met, and is now enforced rather than measured once.** By hand, under `leaks --atExit` with `MallocStackLogging`, the total was flat at 286 leaked allocations for 1, 20, and 100 open/close cycles, all of it the `NSXPCConnection` chatter AppKit's LaunchServices creates. `zig build smoke-leaks`, which arrived from `main` mid-flight, reaches the same conclusion over 400 cycles with the render loop running: `nothing this project owns was leaked`. A per-cycle leak would compound four hundred times over and be unmissable.
 
-The harness is deliberately not committed, for the same reason issue #4's was not: it needs a GPU and a window server, so it could never join `zig build test` without reintroducing the non-hermetic build ADR 0009 exists to prevent.
+After the merge, the whole result is reproducible with committed steps rather than a harness that no longer exists:
+
+```bash
+zig build test          # 89 unit tests
+zig build smoke         # both halves, including the frame assertions
+zig build smoke-leaks   # 400 cycles under leaks --atExit
+```
 
 **Still to do by hand, in a real host.** The harness is not REAPER and not Logic, and three of the issue's verification steps need one or the other: dragging the window edge continuously during playback, dragging between displays with different refresh rates and backing scales, and several instances open at once without dropouts. `auval` remains unverified for reasons that predate this work.
 
