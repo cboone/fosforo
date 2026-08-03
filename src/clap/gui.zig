@@ -160,6 +160,16 @@ pub const Editor = struct {
     /// Guards the render path against a teardown running beside it.
     gate: Gate = .{},
 
+    /// Frames the render thread has actually put on screen.
+    ///
+    /// Written by the render thread and read by anything else, so it is atomic
+    /// rather than a plain counter. It exists because "the loop is running" and
+    /// "the loop is drawing" are different claims, and until this counter there
+    /// was no way to check the second: the deliverable is a flat colour, so a
+    /// renderer skipping every tick is invisible. ADR 0013 records that gap and
+    /// `src/smoke.zig` is what now asserts against it.
+    presented: std.atomic.Value(u64) = .init(0),
+
     /// Debug builds only. Reports the rate the loop is observed to run at,
     /// which is the only way to tell a healthy loop from a stopped one when the
     /// picture is a flat colour.
@@ -228,6 +238,7 @@ pub const Editor = struct {
 
         self.pending = .{};
         self.meter = .{};
+        self.presented = .init(0);
         self.current = default_size;
         self.scale = 1.0;
         self.visible = false;
@@ -385,9 +396,21 @@ pub const Editor = struct {
         const renderer = if (self.renderer) |*r| r else return;
 
         if (self.pending.take()) |update| renderer.resize(update.size, update.scale);
-        renderer.frame();
+
+        // Counted, not merely performed. Monotonic and never reset, so a caller
+        // that samples it twice can tell the loop advanced without having to
+        // coordinate with teardown over when zero means "not started".
+        if (renderer.frame().drew()) _ = self.presented.fetchAdd(1, .release);
 
         self.report();
+    }
+
+    /// [thread-safe] Frames put on screen since this editor was created.
+    ///
+    /// The one observable that distinguishes a render loop doing its job from
+    /// one ticking and drawing nothing. `src/smoke.zig` is the caller.
+    pub fn framesPresented(self: *const Editor) u64 {
+        return self.presented.load(.acquire);
     }
 
     /// [main-thread] Start and stop the display link. Both are no-ops before

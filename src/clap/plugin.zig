@@ -99,6 +99,18 @@ const Instance = struct {
     }
 };
 
+/// The editor behind a plugin the host is holding.
+///
+/// `Instance` stays private, because everything a host needs is reachable
+/// through the vtable and a second way in would be a second thing to keep
+/// correct. This is the one exception, and it exists for `src/smoke.zig`: CLAP
+/// has no callback that reports whether a frame was drawn, by design, so the
+/// only way to assert the render loop is doing anything is to read the counter
+/// the editor keeps. See ADR 0013.
+pub fn editorOf(plugin: [*c]const c.clap_plugin_t) *const gui.Editor {
+    return &Instance.from(plugin).editor;
+}
+
 /// Split out from `createPlugin` so tests can supply a checked allocator and
 /// catch a leak that the C entry point would otherwise hide.
 fn create(allocator: std.mem.Allocator, host: *const c.clap_host_t) !*Instance {

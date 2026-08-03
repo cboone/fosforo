@@ -257,9 +257,16 @@ pub const Renderer = struct {
 
     /// [render-thread] Draw and present one frame.
     ///
-    /// Driven by the display link, which is why it takes no arguments and
-    /// reports nothing: a frame that cannot be drawn is skipped, not escalated.
-    pub fn frame(self: *Renderer) void {
+    /// Driven by the display link, which is why it takes no arguments: a frame
+    /// that cannot be drawn is skipped rather than escalated, and the caller has
+    /// nothing to decide.
+    ///
+    /// It does report what happened, which is a different thing from failing.
+    /// Nobody outside can otherwise distinguish a loop presenting frames from
+    /// one skipping every single tick, and those look identical from the far
+    /// side of a flat colour. ADR 0013 names that gap; this is the signal that
+    /// closes it.
+    pub fn frame(self: *Renderer) iface.Outcome {
         platform.assertNotMainThread();
 
         const pool = objc.AutoreleasePool.init();
@@ -283,7 +290,7 @@ pub const Renderer = struct {
         // this tick go. Treating it as a failure is how a render loop turns a
         // busy moment into a visible stall.
         const drawable = self.layer.msgSend(objc.Object, "nextDrawable", .{});
-        if (drawable.value == null) return;
+        if (drawable.value == null) return .no_drawable;
 
         const pass = objc.getClass("MTLRenderPassDescriptor").?
             .msgSend(objc.Object, "renderPassDescriptor", .{});
@@ -304,10 +311,10 @@ pub const Renderer = struct {
         // of whatever the texture happened to hold, which is a worse outcome
         // than the dropped frame skipping produces.
         const buffer = self.queue.msgSend(objc.Object, "commandBuffer", .{});
-        if (buffer.value == null) return;
+        if (buffer.value == null) return .no_command_buffer;
 
         const encoder = buffer.msgSend(objc.Object, "renderCommandEncoderWithDescriptor:", .{pass});
-        if (encoder.value == null) return;
+        if (encoder.value == null) return .no_encoder;
 
         encoder.msgSend(void, "setRenderPipelineState:", .{self.pipeline});
         // A fullscreen triangle, which is cheaper than a quad and needs no
@@ -329,6 +336,8 @@ pub const Renderer = struct {
 
         buffer.msgSend(void, "presentDrawable:", .{drawable});
         buffer.msgSend(void, "commit", .{});
+
+        return .presented;
     }
 };
 

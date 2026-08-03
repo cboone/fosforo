@@ -47,6 +47,39 @@ pub const Error = error{
     SurfaceCreationFailed,
 };
 
+/// What became of one tick.
+///
+/// `frame` reports this rather than returning nothing, because a skipped frame
+/// and a presented one are indistinguishable from outside and the difference is
+/// the whole question a smoke test is asking. ADR 0013 records the gap this
+/// closes: a build in which `nextDrawable` returned nil on every call drew
+/// nothing, and passed every check this project had.
+///
+/// Not an error set. Every value but the first is a normal outcome under load
+/// rather than a fault, and modelling them as errors would push a caller toward
+/// escalating something whose only correct response is to let the tick go.
+pub const Outcome = enum {
+    /// Encoded, presented, and committed.
+    presented,
+
+    /// The compositor was holding every drawable. Normal under load, and the
+    /// reason the render loop must not treat a skip as a failure.
+    no_drawable,
+
+    /// The command queue would not produce a buffer, which is memory pressure
+    /// or device loss rather than anything this frame did.
+    no_command_buffer,
+
+    /// The buffer would not produce an encoder, on the same reasoning.
+    no_encoder,
+
+    /// Whether this tick put anything on screen. The distinctions above are for
+    /// a human reading a log; this is what a caller counts.
+    pub fn drew(self: Outcome) bool {
+        return self == .presented;
+    }
+};
+
 /// A fixed buffer the backend writes a human-readable line into.
 ///
 /// This exists so a Metal compiler diagnostic can reach the host's log without
@@ -110,7 +143,7 @@ comptime {
     // main thread to the render thread through a mailbox above this seam, so
     // the size has to be expressible without naming anything Metal owns.
     assertSignature("resize", @TypeOf(Renderer.resize), fn (*Renderer, Size, f64) void);
-    assertSignature("frame", @TypeOf(Renderer.frame), fn (*Renderer) void);
+    assertSignature("frame", @TypeOf(Renderer.frame), fn (*Renderer) Outcome);
     assertSignature("probe", @TypeOf(Renderer.probe), fn (*Diagnostics) Error!void);
 }
 
