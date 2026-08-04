@@ -38,6 +38,14 @@ readonly E_USAGE=64
 readonly E_DATAERR=65
 readonly E_NOINPUT=66
 
+# What assert_adhoc reports back, so main can tell the two apart and honour the exit
+# codes documented above. A bundle carrying no signature at all means the build's
+# signing step did not run; a bundle carrying the wrong one means it ran with the
+# wrong flags. Those have different causes and different fixes, so they get different
+# exit codes rather than collapsing into one.
+readonly ASSERT_VIOLATION=1
+readonly ASSERT_NO_SIGNATURE=2
+
 readonly PROGRAM_NAME="${0##*/}"
 
 # Write a message to stderr, prefixed with the program name.
@@ -77,18 +85,23 @@ function signature_description() {
 # Outputs:
 #   One line per violation, to stderr
 # Returns:
-#   0 when the signature is purely ad-hoc, non-zero otherwise
+#   0 when the signature is purely ad-hoc, ASSERT_NO_SIGNATURE when the bundle
+#   carries none, ASSERT_VIOLATION when it carries the wrong one
 function assert_adhoc() {
   local bundle="${1}"
   local description flags
   local -i violations=0
 
-  description=$(signature_description "${bundle}")
+  # codesign exits non-zero on an unsigned bundle. Captured rather than allowed to
+  # fail the script, both because the diagnostic below is more useful than errexit's
+  # silence and because errexit would not fire here anyway: this function is only
+  # ever called from an `if !` condition, which suppresses it.
+  description=$(signature_description "${bundle}") || true
 
   flags=$(echo "${description}" | sed -n 's/.*\(flags=[^ ]*\).*/\1/p')
   if [[ -z "${flags}" ]]; then
     warn "${bundle}: no signature at all"
-    return 1
+    return "${ASSERT_NO_SIGNATURE}"
   fi
 
   # Deliberately a substring test rather than an equality test against 0x2. The
@@ -114,7 +127,9 @@ function assert_adhoc() {
     ((violations++)) || true
   fi
 
-  ((violations == 0))
+  if ((violations > 0)); then
+    return "${ASSERT_VIOLATION}"
+  fi
 }
 
 function main() {
@@ -148,13 +163,25 @@ function main() {
     fi
   done
 
+  local -i unsigned=0
+  local -i result
+
   for bundle in "${bundles[@]}"; do
-    if ! assert_adhoc "${bundle}"; then
-      ((failures++)) || true
-    else
-      echo "${bundle}: ad-hoc, unhardened, untimestamped"
-    fi
+    result=0
+    assert_adhoc "${bundle}" || result="${?}"
+
+    case "${result}" in
+      0) echo "${bundle}: ad-hoc, unhardened, untimestamped" ;;
+      "${ASSERT_NO_SIGNATURE}") ((unsigned++)) || true ;;
+      *) ((failures++)) || true ;;
+    esac
   done
+
+  # A missing signature outranks a wrong one. It means the build's signing step did
+  # not run at all, which is the more fundamental failure and the one to fix first.
+  if ((unsigned > 0)); then
+    return "${E_NOINPUT}"
+  fi
 
   if ((failures > 0)); then
     return "${E_DATAERR}"

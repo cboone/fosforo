@@ -46,6 +46,11 @@ readonly E_SOFTWARE=70
 readonly PROGRAM_NAME="${0##*/}"
 readonly DEFAULT_PROFILE="fosforo-notary"
 
+# The certificate type that signs the package. Distinct from the Developer ID
+# *Application* certificate that signs the bundles inside it, which
+# scripts/assert-distributable-signature checks.
+readonly REQUIRED_AUTHORITY="Developer ID Installer:"
+
 # Write a message to stderr, prefixed with the program name.
 # Arguments:
 #   $@ - message parts
@@ -64,22 +69,37 @@ function usage() {
   echo "Usage: ${PROGRAM_NAME} <path/to/package.pkg>" >&2
 }
 
-# Assert the package carries an installer signature before spending a round trip.
+# Assert the package carries a Developer ID Installer signature before spending a
+# round trip.
 #
-# notarytool rejects an unsigned package, but it does so after the upload. Checking
-# locally turns a slow failure into an immediate one, and distinguishes "unsigned"
-# from the other reasons a submission can be refused.
+# notarytool rejects a package signed with the wrong certificate, but it does so
+# after the upload. Checking locally turns a slow failure into an immediate one.
+#
+# "Signed" is not the same as "signed by the right thing", and the difference is the
+# whole reason scripts/assert-distributable-signature exists for the bundles: an
+# Apple Development certificate produces a signature that looks correct in every way
+# except the authority, and will never notarize. The same trap applies to the
+# package, so the same check applies here rather than merely asking whether some
+# signature is present.
 # Arguments:
 #   $1 - path to the package
 # Returns:
-#   0 when the package is signed, non-zero otherwise
+#   0 when the package carries the required authority, non-zero otherwise
 function assert_package_signed() {
   local package="${1}"
+  local description
 
-  if ! pkgutil --check-signature "${package}" > /dev/null 2>&1; then
+  if ! description=$(pkgutil --check-signature "${package}" 2>&1); then
     warn "${package}: not signed"
     warn "notarization requires a Developer ID Installer signature"
     warn "rebuild without --unsigned: see scripts/build-installer"
+    return 1
+  fi
+
+  if ! echo "${description}" | grep -q "${REQUIRED_AUTHORITY}"; then
+    warn "${package}: not signed by a '${REQUIRED_AUTHORITY}' certificate"
+    warn "the signature below would upload and then be rejected:"
+    echo "${description}" >&2
     return 1
   fi
 }

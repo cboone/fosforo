@@ -33,6 +33,13 @@ readonly E_USAGE=64
 readonly E_DATAERR=65
 readonly E_NOINPUT=66
 
+# What assert_distributable reports back, so main can honour the exit codes
+# documented above. A bundle carrying no valid signature at all means the build's
+# signing step did not run; a bundle carrying the wrong one means it ran with the
+# wrong identity or flags. Different causes, different fixes, different exit codes.
+readonly ASSERT_VIOLATION=1
+readonly ASSERT_NO_SIGNATURE=2
+
 readonly PROGRAM_NAME="${0##*/}"
 
 # The certificate type notarization requires for the code inside a package. The
@@ -70,7 +77,8 @@ function signature_description() {
 # Outputs:
 #   One line per violation, to stderr
 # Returns:
-#   0 when the signature will notarize, non-zero otherwise
+#   0 when the signature will notarize, ASSERT_NO_SIGNATURE when the bundle carries
+#   no valid signature, ASSERT_VIOLATION when it carries one that will not notarize
 function assert_distributable() {
   local bundle="${1}"
   local description flags
@@ -78,15 +86,19 @@ function assert_distributable() {
 
   if ! /usr/bin/codesign --verify --strict "${bundle}" 2> /dev/null; then
     warn "${bundle}: signature is not valid"
-    return 1
+    return "${ASSERT_NO_SIGNATURE}"
   fi
 
-  description=$(signature_description "${bundle}")
+  # codesign exits non-zero on an unsigned bundle. Captured rather than allowed to
+  # fail the script, both because the diagnostic below is more useful than errexit's
+  # silence and because errexit would not fire here anyway: this function is only
+  # ever called from an `if !` condition, which suppresses it.
+  description=$(signature_description "${bundle}") || true
 
   flags=$(echo "${description}" | sed -n 's/.*\(flags=[^ ]*\).*/\1/p')
   if [[ -z "${flags}" ]]; then
     warn "${bundle}: no signature at all"
-    return 1
+    return "${ASSERT_NO_SIGNATURE}"
   fi
 
   if [[ "${flags}" == *adhoc* ]]; then
@@ -113,7 +125,9 @@ function assert_distributable() {
     ((violations++)) || true
   fi
 
-  ((violations == 0))
+  if ((violations > 0)); then
+    return "${ASSERT_VIOLATION}"
+  fi
 }
 
 function main() {
@@ -147,13 +161,26 @@ function main() {
     fi
   done
 
+  local -i unsigned=0
+  local -i result
+
   for bundle in "${bundles[@]}"; do
-    if ! assert_distributable "${bundle}"; then
-      ((failures++)) || true
-    else
-      echo "${bundle}: Developer ID signed, hardened, securely timestamped"
-    fi
+    result=0
+    assert_distributable "${bundle}" || result="${?}"
+
+    case "${result}" in
+      0) echo "${bundle}: Developer ID signed, hardened, securely timestamped" ;;
+      "${ASSERT_NO_SIGNATURE}") ((unsigned++)) || true ;;
+      *) ((failures++)) || true ;;
+    esac
   done
+
+  # A missing or invalid signature outranks a wrong one. It means the build's signing
+  # step did not run at all, which is the more fundamental failure and the one to fix
+  # first.
+  if ((unsigned > 0)); then
+    return "${E_NOINPUT}"
+  fi
 
   if ((failures > 0)); then
     return "${E_DATAERR}"
