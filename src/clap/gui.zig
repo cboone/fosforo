@@ -51,6 +51,21 @@ pub const default_size: gpu.Size = .{ .width = 960, .height = 540 };
 /// being usable first, and they need somewhere to live.
 pub const min_size: gpu.Size = .{ .width = 480, .height = 270 };
 
+/// The largest editor this plugin will agree to, in logical points.
+///
+/// A machine limit rather than a design one, and the mirror of `min_size`'s
+/// reasoning. Metal's maximum texture dimension is 16384 on Apple Silicon, and
+/// the backing scale AppKit reports is at most 2, so 8192 points is the largest
+/// editor whose drawable is certain to be allocatable. It is also far larger
+/// than any display sold, so no real request is refused by it.
+///
+/// This exists because a size arriving from a host is a trust boundary, and
+/// gets the treatment `activate` and `process` already give theirs: refuse
+/// rather than assert. Without an upper bound a single bad number from a host
+/// becomes a drawable Metal cannot allocate, on a thread with no way to report
+/// it.
+pub const max_size: gpu.Size = .{ .width = 8192, .height = 8192 };
+
 /// A single-slot mailbox carrying a size and a backing scale from the host's
 /// main thread to the render thread.
 ///
@@ -138,7 +153,19 @@ pub const Editor = struct {
     /// separately from `view`, because an editor is legitimately created and
     /// not yet parented, and the two states answer different questions.
     created: bool = false,
-    visible: bool = false,
+
+    /// Whether the host has explicitly hidden the editor, rather than whether
+    /// it has explicitly shown it.
+    ///
+    /// The polarity is load-bearing. CLAP specifies that a host calls `show`,
+    /// and REAPER does, but clap-wrapper's AUv2 view has both of its
+    /// `gui->show()` calls commented out, so the Audio Unit reaches
+    /// `set_parent` and is then never shown. Gating the render loop on a
+    /// positive `visible` meant the display link was created and never started,
+    /// and the editor in Logic drew nothing at all. Defaulting to "not hidden"
+    /// makes an embedded editor render in both hosts, and leaves `hide` as the
+    /// only thing that stops it.
+    hidden: bool = false,
 
     /// The editor's size and backing scale as the main thread understands them.
     /// The render thread never reads these; it reads whatever `Pending` last
@@ -241,7 +268,7 @@ pub const Editor = struct {
         self.presented = .init(0);
         self.current = default_size;
         self.scale = 1.0;
-        self.visible = false;
+        self.hidden = false;
         self.created = false;
 
         // Reopened last, so the editor is reusable: a host may `create` and
@@ -315,7 +342,7 @@ pub const Editor = struct {
         // A host that reopens an editor may parent it while it is already
         // showing rather than calling `show` again, so the loop starts from
         // whichever of the two arrives last.
-        if (self.visible) self.startLoop();
+        if (!self.hidden) self.startLoop();
     }
 
     /// [main-thread] CLAP's `show` and `hide`. Hiding frees nothing: it is
@@ -328,7 +355,7 @@ pub const Editor = struct {
     pub fn setHidden(self: *Editor, hidden: bool) bool {
         if (!self.created) return false;
 
-        self.visible = !hidden;
+        self.hidden = hidden;
         if (self.view) |v| v.setHidden(hidden);
 
         if (hidden) self.stopLoop() else self.startLoop();
@@ -549,9 +576,32 @@ const Gate = struct {
 /// Each axis independently, so 300x900 answers 480x900 rather than 480x270.
 fn clampSize(width: u32, height: u32) gpu.Size {
     return .{
-        .width = @max(width, min_size.width),
-        .height = @max(height, min_size.height),
+        .width = clampAxis(width, min_size.width, max_size.width),
+        .height = clampAxis(height, min_size.height, max_size.height),
     };
+}
+
+/// One axis, defending against a host that sent something impossible.
+///
+/// **A dimension above `i32`'s range is a negative number that wrapped**, and
+/// this is not hypothetical: REAPER 7.78 sends exactly that while the user
+/// drags an editor's bottom edge up past its top, arriving here as 4294967295
+/// and 4294967274, which are -1 and -22. CLAP types these as `u32`, AppKit
+/// computes them as signed `CGFloat`, and nothing in between catches the
+/// conversion.
+///
+/// Such a value is collapsed to the **minimum** rather than the maximum. No
+/// display is two billion points across, so the number is not a real request in
+/// either reading, and of the two the negative one is certainly what happened:
+/// a drag that went past zero. Snapping to the smallest legal editor is what
+/// that gesture meant.
+///
+/// Left unguarded this reached Metal. A height of 4294967295 saturated to 65535
+/// crossing the mailbox and asked for a 960x131070 drawable, eighty times
+/// Metal's texture limit, from a render loop that had no way to refuse.
+fn clampAxis(value: u32, lo: u32, hi: u32) u32 {
+    if (value > std.math.maxInt(i32)) return lo;
+    return std.math.clamp(value, lo, hi);
 }
 
 /// Frames observed per second, sampled about once a second.
@@ -672,10 +722,10 @@ test "show and hide track visibility and are refused before create" {
     // can be reached without one is the property under test: a host is entitled
     // to show an editor it has not parented yet.
     try testing.expect(editor.setHidden(false));
-    try testing.expect(editor.visible);
+    try testing.expect(!editor.hidden);
 
     try testing.expect(editor.setHidden(true));
-    try testing.expect(!editor.visible);
+    try testing.expect(editor.hidden);
 }
 
 test "destroy is safe on an editor that was shown but never parented" {
@@ -770,6 +820,67 @@ test "sizing is negotiable before create, the way get_size already is" {
 
     try testing.expect(editor.setSize(1280, 720));
     try testing.expectEqual(gpu.Size{ .width = 1280, .height = 720 }, editor.size());
+}
+
+test "a dimension that wrapped past zero collapses to the minimum" {
+    // Not hypothetical. REAPER 7.78 sends exactly these while the user drags an
+    // editor's bottom edge up past its top: 4294967295 and 4294967274 are -1
+    // and -22, computed as signed CGFloat and delivered through CLAP's u32.
+    const wrapped_minus_1: u32 = 4294967295;
+    const wrapped_minus_22: u32 = 4294967274;
+
+    try testing.expectEqual(min_size, clampSize(wrapped_minus_1, wrapped_minus_1));
+
+    // Only the axis that went negative collapses. A drag that ran the height
+    // past zero says nothing about the width the user still wants.
+    try testing.expectEqual(
+        gpu.Size{ .width = 960, .height = min_size.height },
+        clampSize(960, wrapped_minus_22),
+    );
+}
+
+test "an absurd size is bounded rather than passed to Metal" {
+    // A height of 4294967295 saturated to 65535 crossing the mailbox and asked
+    // for a 960x131070 drawable, eighty times Metal's texture limit, from a
+    // thread with no way to refuse it.
+    try testing.expectEqual(max_size, clampSize(100_000, 100_000));
+    try testing.expectEqual(max_size.width, clampSize(std.math.maxInt(i32), 540).width);
+
+    // Everything a real display could ask for passes through untouched.
+    try testing.expectEqual(gpu.Size{ .width = 7680, .height = 4320 }, clampSize(7680, 4320));
+}
+
+test "a clamped size always survives the mailbox intact" {
+    // The two bounds have to agree: `Pending` packs each axis into a `u16`, so
+    // any size `clampSize` admits must fit without the saturation in `post`
+    // silently changing it.
+    try testing.expect(max_size.width <= std.math.maxInt(u16));
+    try testing.expect(max_size.height <= std.math.maxInt(u16));
+
+    var pending: Pending = .{};
+    pending.post(clampSize(std.math.maxInt(u32), std.math.maxInt(u32)), 2.0);
+    try testing.expectEqual(min_size, pending.take().?.size);
+
+    pending.post(clampSize(100_000, 100_000), 2.0);
+    try testing.expectEqual(max_size, pending.take().?.size);
+}
+
+test "an editor renders once parented, without waiting for a host to call show" {
+    var editor: Editor = .{};
+    defer editor.destroy();
+    try testing.expect(editor.create(&c.CLAP_WINDOW_API_COCOA, false));
+
+    // clap-wrapper's AUv2 view has both of its `gui->show()` calls commented
+    // out, so the Audio Unit is parented and never shown. Gating the loop on a
+    // positive `visible` left the display link created and never started, and
+    // the editor in Logic drew nothing at all.
+    try testing.expect(!editor.hidden);
+
+    // `hide` is still the thing that stops it, and is still reversible.
+    try testing.expect(editor.setHidden(true));
+    try testing.expect(editor.hidden);
+    try testing.expect(editor.setHidden(false));
+    try testing.expect(!editor.hidden);
 }
 
 test "a degenerate size from AppKit is clamped rather than recorded" {
