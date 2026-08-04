@@ -28,11 +28,37 @@ Everything reachable without a Developer ID certificate is built and verified. W
 | C1 ADR 0013                                        | Done                                                                                        |
 | C2 `build-release-bundles`                         | Done. Fails on the authority alone, which is correct without a Developer ID certificate     |
 | C3 `build-installer`                               | Done. Payload paths and the home install domain verified against a real package             |
-| C4 `notarize-installer`                            | Written and its refusal paths verified. The submission itself is unreachable                |
+| C4 `notarize-installer`                            | Done. Accepted by Apple on the first submission                                             |
 | C5 documentation                                   | Done                                                                                        |
-| Final Gatekeeper verification                      | **Blocked on the certificate.** Procedure below                                             |
+| Final Gatekeeper verification                      | Done, apart from loading the notarized build in a host                                      |
 
 Measured on 2026-07-30, ad-hoc path restored afterwards: `zig fmt --check` clean, `zig build test` passing, `clap-validator` 44 run / 21 passed / 0 failed, all three bundles ad-hoc and `codesign --verify --strict` clean, both AU plist invariants holding, `actionlint` clean, `shfmt -d` and `shellcheck` clean.
+
+### The release path, run end to end on 2026-08-04
+
+Certificates issued under team `UAM22D2F3S`, both expiring 2027-02-01. The short lifetime is why `--timestamp` is mandatory rather than optional: a secure timestamp keeps a signature valid past the certificate's expiry.
+
+| Check                                      | Result                                                                          |
+| ------------------------------------------ | ------------------------------------------------------------------------------- |
+| `security find-identity -v -p codesigning` | Lists Application, omits Installer. The documented trap, now measured           |
+| `build-release-bundles`                    | Both bundles `flags=0x10000(runtime)`, timestamped, Developer ID authority      |
+| Shipped CLAP is ReleaseFast                | `hashes=6+3`, against `hashes=123+3` for the Debug build                        |
+| `build-installer`                          | `dist/Fosforo-0.0.0.pkg`, 370K, `productbuild` timestamped the signature itself |
+| Gatekeeper **before** notarizing           | `rejected`, `source=Unnotarized Developer ID`, exit 3                           |
+| `notarytool submit --wait`                 | `934427f0-61a2-407e-b526-7c785d83f202`: **Accepted**, first attempt             |
+| Gatekeeper **after** stapling              | `accepted`, `source=Notarized Developer ID`                                     |
+| Assessed with `com.apple.quarantine` set   | `accepted`, `source=Notarized Developer ID`                                     |
+| `stapler validate`, never-stapled control  | Exit 66                                                                         |
+| `stapler validate`, stapled and moved      | Exit 0, so the ticket is embedded in the file rather than tied to its path      |
+| Downloaded in a browser                    | Safari set `com.apple.quarantine` = `0083;6a720dbb;Safari Technology Preview;…` |
+| That downloaded copy assessed              | `accepted`, `source=Notarized Developer ID`                                     |
+| Installed from it, home domain             | Both bundles placed, Developer ID signed, hardened runtime                      |
+
+The before-and-after Gatekeeper pair is the load-bearing one: it makes the change attributable to notarization rather than to anything else about the package.
+
+The browser download is the only row that tests what a user actually experiences. Every row above it was assessed against a file that had never carried `com.apple.quarantine`, which is a weaker claim than it looks. Confirming the attribute was genuinely set, before reading the assessment, is what makes the result mean anything.
+
+**Still outstanding:** loading the notarized build in REAPER and Logic. Both are installed from the package and ready. This is the last empirical gap and it needs a GUI host.
 
 ## Decisions taken
 
