@@ -358,7 +358,23 @@ zig build smoke         # both halves, including the frame assertions
 zig build smoke-leaks   # 400 cycles under leaks --atExit
 ```
 
-**Still to do by hand, in a real host.** The harness is not REAPER and not Logic, and three of the issue's verification steps need one or the other: dragging the window edge continuously during playback, dragging between displays with different refresh rates and backing scales, and several instances open at once without dropouts. `auval` remains unverified for reasons that predate this work.
+### In a real host
+
+The harness is neither REAPER nor Logic, and three of the issue's verification steps need one or the other.
+
+| Step                                            | Result                                                                                  |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Dragging the window edge during playback        | **Passed** in REAPER. No problems observed                                              |
+| Dragging across displays of differing scale     | **Untestable on this hardware.** See below                                              |
+| Several instances open at once, no dropouts     | Pending, in Logic                                                                       |
+
+**The cross-display path ships unverified, and that is worth stating rather than omitting.** The development machine has a single display, so nothing can exercise `viewDidChangeBackingProperties` or `DisplayLink.setDisplay`. Two behaviours therefore rest on reading alone: that a window dragged to a display with a different backing scale re-posts its scale and re-sizes the drawable, and that the display link retargets to the new display's refresh rate rather than continuing to pace against the old one.
+
+Neither failure is dangerous. A stale scale renders blurry or oversized rather than crashing, and a stale display paces the loop at the wrong rate while still presenting every frame. Both are quality defects a second monitor would surface immediately, and neither can be reached from `zig build test`, which has no window server, or from `src/smoke.zig`, which opens one window and never moves it. This is the one part of the change with no evidence behind it.
+
+**Logic is the better host for the dropout check**, because a dropout there raises an explicit **System Overload** dialog rather than leaving it to be judged by ear. Two things make the test mean something. The audio buffer has to be small enough that the result is not foregone: at a default block size a pass-through plus a clear-to-grey renderer has so much headroom that a clean run proves nothing. And the editors have to be **visible simultaneously**, because `hide` stops the display link, so instances whose windows are closed cost nothing and testing four of those tests one.
+
+`auval` remains unverified for reasons that predate this work.
 
 ## Out of scope
 
@@ -376,7 +392,8 @@ Recorded so these read as deliberate omissions:
 | Risk                                                                              | Mitigation                                                                                                                                          |
 | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `CVDisplayLink` is deprecated as of macOS 15                                      | Still the only option at the 11.0 deployment target, and Zig declares the externs itself so nothing warns. Revisit with the ADR that raises the target |
-| `CVDisplayLinkStop` is not documented to wait for a callback already in flight    | The `tick_lock` barrier in `destroy` makes the question moot rather than betting on the answer                                                        |
+| `CVDisplayLinkStop` is not documented to wait for a callback already in flight    | The `Gate` barrier in `destroy` makes the question moot rather than betting on the answer                                                             |
+| The cross-display paths cannot be exercised on the development machine           | Single display, so the backing-scale and display-retarget callbacks ship on reading alone. Neither failure is dangerous and a second monitor surfaces both at once. Stated in the verification section rather than left implied |
 | A skipped frame leaks its semaphore slot and stalls the loop after three          | One `defer` covering every early return, and the hand-off is the last thing `frame` does before committing                                            |
 | The completion block outlives the renderer                                        | The semaphore is captured as an `objc.c.id`, so the block retains it and `deinit` releasing is not the last reference                                 |
 | Two copies of the plugin in one process collide on the runtime class name         | An address-derived suffix per loaded image. Reusing the existing class would leave IMPs pointing into another copy's text segment                     |
