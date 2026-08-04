@@ -30,7 +30,7 @@ Everything reachable without a Developer ID certificate is built and verified. W
 | C3 `build-installer`                               | Done. Payload paths and the home install domain verified against a real package             |
 | C4 `notarize-installer`                            | Done. Accepted by Apple on the first submission                                             |
 | C5 documentation                                   | Done                                                                                        |
-| Final Gatekeeper verification                      | Done, apart from loading the notarized build in a host                                      |
+| Final Gatekeeper verification                      | Done. Also loaded in REAPER and Logic                                                       |
 
 Measured on 2026-07-30, ad-hoc path restored afterwards: `zig fmt --check` clean, `zig build test` passing, `clap-validator` 44 run / 21 passed / 0 failed, all three bundles ad-hoc and `codesign --verify --strict` clean, both AU plist invariants holding, `actionlint` clean, `shfmt -d` and `shellcheck` clean.
 
@@ -58,7 +58,24 @@ The before-and-after Gatekeeper pair is the load-bearing one: it makes the chang
 
 The browser download is the only row that tests what a user actually experiences. Every row above it was assessed against a file that had never carried `com.apple.quarantine`, which is a weaker claim than it looks. Confirming the attribute was genuinely set, before reading the assessment, is what makes the result mean anything.
 
-**Still outstanding:** loading the notarized build in REAPER and Logic. Both are installed from the package and ready. This is the last empirical gap and it needs a GUI host.
+### Loaded in both hosts
+
+The last empirical gap, closed by hand because it needs a GUI host.
+
+- **REAPER, the CLAP.** Loads and runs. No `clap.log` output, which is correct rather than a symptom: `src/clap/log.zig:109` gates the `stderr` mirror to Debug builds, and this is a ReleaseFast bundle from the package. REAPER separately accepts `clap.log` messages and discards them, so a release build has no diagnostic destination at all.
+- **Logic, the Audio Unit.** Loads, validates with a green Compatibility check in the Plug-in Manager, and opens its editor.
+
+Both render the dim background and nothing else, which is what this phase draws: `shaders/scope.metal` is a placeholder whose `clear_fragment` returns `float4(0.02, 0.02, 0.03, 1.0)`, and the trace passes arrive in phase 3. The editor is fixed-size because the resize seam is [#5](https://github.com/cboone/fosforo/issues/5).
+
+**That the editor appeared at all is the result.** `renderer.zig` builds its pipeline with `try buildPipeline(...)` and `gui.zig` creates the editor with `try gpu.Renderer.init(...)`, so a shader that failed to compile would fail editor creation rather than draw a blank frame. A drawn frame therefore means `newLibraryWithSource:` compiled the shader at runtime inside Logic's sandboxed `AUHostingServiceXPC`, from a Developer ID signed, hardened-runtime bundle carrying no entitlements. That is the phase B conclusion confirmed in the strictest host available, rather than only reasoned about.
+
+One diagnostic caveat worth knowing before relying on this again: the clear colour and the fragment shader's output are deliberately identical, so the picture cannot distinguish "the shader ran" from "only the clear ran". The proof is structural, not visual.
+
+### A false alarm worth recording
+
+The Audio Unit appeared to have vanished from Logic's Audio FX menu. It had not. Logic filters that menu by the channel strip's format, and the plugin declares exactly one configuration, `[[2, 2]]`, stereo in and stereo out (`src/clap/plugin.zig:623`). On a mono track it is correctly not offered, and every other unit in that menu was mono too. Dropping a stereo file onto the track changed its format and the plugin appeared.
+
+Nothing about signing, packaging or notarization was involved, and a good deal of diagnosis went into the wrong half of the system before the channel format was checked. Two instruments misled along the way and are worth distrusting next time: `log show` returns nothing at all here without Full Disk Access, so a null result from it means nothing, and Logic's tagset filenames are hex-encoded (`aufx/Fsfr/Ctmn` is `61756678-46736672-43746d6e.tagset`), so grepping them for a plugin name silently finds nothing.
 
 ## Decisions taken
 
