@@ -36,7 +36,7 @@ Measured on 2026-07-30, ad-hoc path restored afterwards: `zig fmt --check` clean
 
 ### The release path, run end to end on 2026-08-04
 
-Certificates issued under team `UAM22D2F3S`, both expiring 2027-02-01. The short lifetime is why `--timestamp` is mandatory rather than optional: a secure timestamp keeps a signature valid past the certificate's expiry.
+Certificates issued under team `UAM22D2F3S`, both expiring 2027-02-01, six months out rather than the usual five years. Xcode issued them under the G1 intermediate, which expires at that same instant, and Apple caps a leaf's validity at its issuer's. Tracked as issue [#30](https://github.com/cboone/fosforo/issues/30); it does not affect anything signed here, because a secure timestamp keeps a signature valid past its certificate's expiry, which is why `--timestamp` is mandatory rather than optional.
 
 | Check                                      | Result                                                                          |
 | ------------------------------------------ | ------------------------------------------------------------------------------- |
