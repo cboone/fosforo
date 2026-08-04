@@ -364,9 +364,20 @@ The harness is neither REAPER nor Logic, and three of the issue's verification s
 
 | Step                                            | Result                                                                                  |
 | ----------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| Dragging the window edge during playback        | **Passed** in REAPER. No problems observed                                              |
+| Dragging the window edge during playback        | **Not yet validly tested.** See below                                                   |
 | Dragging across displays of differing scale     | **Untestable on this hardware.** See below                                              |
 | Several instances open at once, no dropouts     | Pending, in Logic                                                                       |
+
+**The first attempt at the drag test proved nothing, and the reason is worth recording.** It was run against the bundle installed in `~/Library/Audio/Plug-Ins/`, which had been built from a different worktree on `chore/notarize-builds`: no `src/platform/displaylink.zig`, and `guiCanResize` returning false. That editor is a fixed 960x540 with no render loop, so the window edge was never draggable and an uneventful result was the only possible outcome. It read as a pass.
+
+**A plugin under test is installed, not built, and those are different acts.** `zig build` and `cmake --build` write into the worktree; a host reads `~/Library/Audio/Plug-Ins/`. Nothing connects the two but a copy someone has to remember to make, and with several worktrees on several branches the installed bundle belongs to whichever of them ran that copy last. The check is cheap and worth making a habit of before trusting any host result:
+
+```bash
+shasum -a 256 ~/Library/Audio/Plug-Ins/CLAP/Fosforo.clap/Contents/MacOS/Fosforo \
+              zig-out/Fosforo.clap/Contents/MacOS/Fosforo
+```
+
+Two identical hashes mean the host is loading the branch under test. Anything else means the result describes some other build. The Audio Unit has no equivalent to `zig build install-clap`, so its copy is entirely manual and is the easier of the two to get wrong.
 
 **The cross-display path ships unverified, and that is worth stating rather than omitting.** The development machine has a single display, so nothing can exercise `viewDidChangeBackingProperties` or `DisplayLink.setDisplay`. Two behaviours therefore rest on reading alone: that a window dragged to a display with a different backing scale re-posts its scale and re-sizes the drawable, and that the display link retargets to the new display's refresh rate rather than continuing to pace against the old one.
 
