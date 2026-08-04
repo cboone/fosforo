@@ -12,7 +12,7 @@ Issue #24 declared itself blocked on three things. This plan clears all three:
 | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | A Developer ID certificate                  | Absent. `security find-identity -v -p codesigning` finds only `Apple Development: Christopher Boone (U33UQ83W5V)` | Issue one from the existing paid membership. Prerequisites section below               |
 | A release process                           | Absent. `build.zig.zon` is `0.0.0`, `CHANGELOG.md` has only `[Unreleased]`                                        | Three scripts under `scripts/`, run locally. No version bump: see **Out of scope**     |
-| A decision about what a release artifact is | Undecided. Up to three bundles land in three directories                                                          | A signed, notarized `.pkg` with a user-selectable install domain. Recorded as ADR 0013 |
+| A decision about what a release artifact is | Undecided. Up to three bundles land in three directories                                                          | A signed, notarized `.pkg` with a user-selectable install domain. Recorded as ADR 0014 |
 
 The outcome is a repeatable local path from a clean checkout to a notarized `Fosforo.pkg` that a stranger can download and double-click without Gatekeeper refusing it, plus a documented answer to the hardened-runtime question the issue raises but does not settle.
 
@@ -25,7 +25,7 @@ Everything reachable without a Developer ID certificate is built and verified. W
 | A1 conditional `--timestamp` / `--options runtime` | Done. Verified in both directions against the Apple Development certificate                 |
 | A2 CI guard on the ad-hoc path                     | Done. `scripts/assert-adhoc-signature`, wired into both jobs, tested pass and fail          |
 | B hardened runtime and entitlements                | Done. Answer is no entitlements, established mechanistically rather than by one observation |
-| C1 ADR 0013                                        | Done                                                                                        |
+| C1 ADR 0014                                        | Done                                                                                        |
 | C2 `build-release-bundles`                         | Done. Fails on the authority alone, which is correct without a Developer ID certificate     |
 | C3 `build-installer`                               | Done. Payload paths and the home install domain verified against a real package             |
 | C4 `notarize-installer`                            | Done. Accepted by Apple on the first submission                                             |
@@ -148,9 +148,9 @@ The issue asks whether runtime Metal shader compilation needs `com.apple.securit
 
 The main work. Each commit lands its own housekeeping and its own documentation; none of it is deferred to a cleanup pass.
 
-### C1: ADR 0013
+### C1: ADR 0014
 
-`docs/adr/0013-distribute-as-a-notarized-pkg.md`, in the shape of the existing ADRs, plus its row in the table in `docs/adr/README.md`. Records the pkg choice over a dmg or per-format zips, the user-selectable domain, and the deliberate exclusion of distribution signing from CI. The decision record precedes the code implementing it.
+`docs/adr/0014-distribute-as-a-notarized-pkg.md`, in the shape of the existing ADRs, plus its row in the table in `docs/adr/README.md`. Records the pkg choice over a dmg or per-format zips, the user-selectable domain, and the deliberate exclusion of distribution signing from CI. The decision record precedes the code implementing it.
 
 ### C2: signed bundles, on demand
 
@@ -220,4 +220,4 @@ Three things, each now encoded in a script or in `AGENTS.md` rather than only re
 
 - **Cutting v0.1.0.** No version bump, no tag, no published release. The build plan puts v0.1.0 after Phases 3 through 6, and the trigger modes and measurement UI it names do not exist yet.
 - **Notarization in CI.** Decided against above, not deferred.
-- **A dmg, per-format zips, or an update feed.** ADR 0013 records why the pkg won; alternatives get a new ADR rather than a revision.
+- **A dmg, per-format zips, or an update feed.** ADR 0014 records why the pkg won; alternatives get a new ADR rather than a revision.

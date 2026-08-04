@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+# smoke-leak-check — cycle the editor under `leaks --atExit` and assert nothing this project owns survives
+# Author: Christopher Boone
+# Date: 2026-07-30
+#
+# The GUI smoke harness proves the editor opens. This proves that opening and
+# closing it several hundred times leaves nothing behind, which the harness
+# cannot prove about itself: a leak it could see is one it already owns, so the
+# measurement has to come from outside the process. See ADR 0013.
+#
+# `leaks` exits non-zero whenever it finds anything at all, and it always finds
+# something: AppKit's LaunchServices chatter leaks a few hundred NSXPCConnection
+# allocations per run, varying run to run, and none of them are this project's.
+# So the exit code is not the signal, and neither is a clean grep on its own. The
+# order of the assertions below is the point:
+#
+#   1. The harness itself passed. A leak report over a failed run means nothing.
+#   2. `leaks` produced a report and it parses. A grep that finds nothing in
+#      output that was never generated reads exactly like a pass.
+#   3. No leaked object belongs to this project.
+#
+# The patterns in PLUGIN_OWNED are prefixes, chosen from evidence rather than
+# from the framework headers. Dropping the release of the command queue in
+# `Renderer.deinit` leaks an object that `leaks` names `AGXG17XFamilyCommandQueue`,
+# not `MTLCommandQueue`: the concrete Metal classes are driver-private and their
+# names carry the GPU family. A list of the public class names would have
+# reported that planted leak as clean.
+#
+# Usage:
+#   smoke-leak-check [--cycles N] <path/to/fosforo-smoke>
+#
+#   --cycles N   Open and close the editor N times. Defaults to 400.
+#
+# Exit codes:
+#   0  - The harness passed and leaked nothing this project owns
+#  64  - Invalid arguments
+#  65  - The harness failed, the report did not parse, or something leaked
+#  66  - The harness binary does not exist or is not executable
+
+set -euo pipefail
+
+if [[ -n "${TRACE:-}" ]]; then
+  set -x
+fi
+
+readonly E_USAGE=64
+readonly E_DATAERR=65
+readonly E_NOINPUT=66
+
+readonly PROGRAM_NAME="${0##*/}"
+
+# Cycles enough that one leaked object per cycle stands out against the few
+# hundred allocations AppKit leaks on its own. At 400 a per-cycle leak more than
+# doubles the total; at 10 it would sit inside the run-to-run variation.
+readonly DEFAULT_CYCLES=400
+
+# Where the report starts. Also the positive control: no such line means `leaks`
+# produced nothing, and every check after it would pass vacuously.
+readonly REPORT_MARKER='leaks Report Version'
+
+# Class-name prefixes this project is responsible for, as `leaks` spells them.
+readonly PLUGIN_OWNED='^(NSView|CALayer|CAMetalLayer|IOSurface|IOGPU|_?MTL|AGX)'
+
+# Write a message to stderr, prefixed with the program name.
+# Arguments:
+#   $@ - message parts
+function warn() {
+  echo "${PROGRAM_NAME}: ${*}" >&2
+}
+
+function usage() {
+  echo "Usage: ${PROGRAM_NAME} [--cycles N] <path/to/fosforo-smoke>" >&2
+}
+
+# Everything from the report marker to the end of the capture.
+# Arguments:
+#   $1 - path to the captured output
+# Outputs:
+#   The report on stdout, empty when `leaks` produced none
+function report_body() {
+  local capture="${1}"
+
+  sed -n "/${REPORT_MARKER}/,\$p" "${capture}"
+}
+
+# The class of every leaked object, one per line, deduplicated.
+#
+# `leaks` writes each entry as `<ClassName 0xADDRESS>`, so anchoring on the angle
+# bracket is what separates a leaked object's class from the same name appearing
+# in a stack frame. Without that anchor the binary image names in the backtraces
+# match too, and the report always carries several.
+# Arguments:
+#   $1 - path to the captured output
+# Outputs:
+#   One class name per line
+function leaked_classes() {
+  local capture="${1}"
+
+  report_body "${capture}" |
+    grep -oE '<[A-Za-z_][A-Za-z0-9_]*' |
+    tr -d '<' |
+    sort -u
+}
+
+function main() {
+  local binary=""
+  local cycles="${DEFAULT_CYCLES}"
+  local capture
+  local summary
+  local classes
+  local offender
+  local offenders
+  local -i status
+
+  while [[ ${#} -gt 0 ]]; do
+    case "${1}" in
+      --cycles)
+        if [[ ${#} -lt 2 ]]; then
+          warn "--cycles needs a count"
+          usage
+          return "${E_USAGE}"
+        fi
+        cycles="${2}"
+        shift
+        ;;
+      -*)
+        warn "unknown option '${1}'"
+        usage
+        return "${E_USAGE}"
+        ;;
+      *)
+        if [[ -n "${binary}" ]]; then
+          warn "expected exactly one harness path"
+          usage
+          return "${E_USAGE}"
+        fi
+        binary="${1}"
+        ;;
+    esac
+    shift
+  done
+
+  if [[ -z "${binary}" ]]; then
+    usage
+    return "${E_USAGE}"
+  fi
+
+  if [[ ! -x "${binary}" ]]; then
+    warn "cannot execute '${binary}'"
+    return "${E_NOINPUT}"
+  fi
+
+  if ! [[ "${cycles}" =~ ^[1-9][0-9]*$ ]]; then
+    warn "'${cycles}' is not a positive cycle count"
+    return "${E_USAGE}"
+  fi
+
+  capture="$(mktemp -t smoke-leak-check)"
+  # shellcheck disable=SC2064 # Expand now: the path must survive the function scope.
+  trap "rm -f '${capture}'" EXIT
+
+  warn "running ${cycles} cycles under leaks --atExit, please wait"
+
+  # MallocStackLogging is what makes the report name the allocation site rather
+  # than an address. `leaks` exits non-zero on any leak at all, including the
+  # ones AppKit produces on its own, so its status is recorded and not obeyed.
+  status=0
+  MallocStackLogging=1 leaks --atExit -- "${binary}" appkit "${cycles}" > "${capture}" 2>&1 || status=${?}
+
+  # First, because a leak report over a run that fell over partway through
+  # describes a process that never reached the teardown being measured.
+  if ! grep -q '^smoke: appkit ok$' "${capture}"; then
+    warn "the harness did not pass, so there is nothing to measure"
+    tail -n 20 "${capture}" >&2
+    return "${E_DATAERR}"
+  fi
+
+  # Second. Everything below is a search for absence, and a search for absence
+  # over output that was never produced succeeds for the wrong reason.
+  summary="$(grep -E '[0-9]+ leaks for [0-9]+ total leaked bytes' "${capture}" || true)"
+  if [[ -z "$(report_body "${capture}")" || -z "${summary}" ]]; then
+    warn "leaks produced no parseable report (exit ${status}); the checks below would be vacuous"
+    tail -n 20 "${capture}" >&2
+    return "${E_DATAERR}"
+  fi
+
+  classes="$(leaked_classes "${capture}")"
+  if [[ -z "${classes}" ]]; then
+    warn "the report names no leaked classes at all, which the summary contradicts"
+    return "${E_DATAERR}"
+  fi
+
+  warn "leaks: ${summary#*: }"
+  warn "report parsed, $(echo "${classes}" | wc -l | tr -d ' ') distinct leaked classes"
+
+  offenders="$(echo "${classes}" | grep -E "${PLUGIN_OWNED}" || true)"
+  if [[ -n "${offenders}" ]]; then
+    warn "these leaked objects belong to this project:"
+    while IFS= read -r offender; do
+      echo "  ${offender}" >&2
+    done <<< "${offenders}"
+    return "${E_DATAERR}"
+  fi
+
+  warn "nothing this project owns was leaked"
+}
+
+main "${@}"

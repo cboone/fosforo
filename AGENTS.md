@@ -16,11 +16,12 @@ These are settled decisions recorded in [`docs/adr/`](docs/adr/). Do not relitig
 - **Metal must not leak above `src/gpu/iface.zig`.** That seam is load-bearing even though only one backend exists (ADR 0005).
 - **No WebView UI** (ADR 0006).
 - **Nothing reachable from the audio thread may allocate, lock, or make a syscall** (ADR 0010).
+- **The GUI smoke harness is an executable behind its own steps, never part of `zig build test`** (ADR 0013).
 
 ## Structure
 
 ```text
-build.zig                   two artifacts from one core: static lib + .clap bundle
+build.zig                   three artifacts from one core: static lib, .clap bundle, smoke harness
 build.zig.zon               pins Zig 0.16.0, CLAP 1.2.10, zig-objc by content hash
 cmake/                      clap-wrapper integration, used only for the AUv2 build
   CMakeLists.txt
@@ -29,8 +30,17 @@ cmake/                      clap-wrapper integration, used only for the AUv2 bui
   set-au-display-name       writes the display name and description into the AU
 macos/Info.plist            the .clap bundle's plist
 shaders/scope.metal         compiled at runtime from embedded source, not linked
+packaging/distribution.xml  the installer's domains, choices and payload layout
+scripts/
+  smoke-leak-check          wraps the smoke harness in `leaks --atExit` and judges the report
+  assert-adhoc-signature    CI's guard that the default build stays offline and ad-hoc
+  assert-distributable-signature  the inverse, run locally: Developer ID, hardened, timestamped
+  build-release-bundles     release step 1: both bundles, signed to notarize
+  build-installer           release step 2: one pkg, signed with the Installer identity
+  notarize-installer        release step 3: submit, staple, assess
 src/
   main.zig                  the host-facing boundary and exported entry points
+  smoke.zig                 the out-of-band GUI smoke harness, which plays the host
   clap/c.zig                translated CLAP ABI plus comptime layout assertions
   clap/plugin.zig           factory, descriptor, lifecycle, audio ports, process
   clap/gui.zig              the editor's lifecycle, with no AppKit or Metal in it
@@ -55,6 +65,10 @@ zig build test             # unit tests
 zig build install-clap     # copy into ~/Library/Audio/Plug-Ins/CLAP
 zig fmt --check build.zig src/
 zig build validate-shaders # needs the Metal toolchain; see below
+zig build smoke            # runs Metal and AppKit for real; needs a GPU and a window server
+zig build smoke-gpu        # the half that needs no window: device, shader, pipeline
+zig build smoke-appkit     # the half that opens a window and cycles the editor
+zig build smoke-leaks      # 400 cycles under `leaks --atExit`, judged by scripts/smoke-leak-check
 codesign --verify --strict --verbose zig-out/Fosforo.clap  # the bundle signature, not the linker's
 git ls-files -z | xargs -0 shfmt -f | xargs shfmt -d      # no parser/printer options: they discard .editorconfig
 git ls-files -z | xargs -0 shfmt -f | xargs shellcheck
@@ -73,7 +87,7 @@ Validate with `clap-validator validate zig-out/Fosforo.clap`. CI runs it on ever
 
 ## Releasing
 
-A release is a single signed, notarized, stapled `.pkg` that places both bundles (ADR 0013). It is built locally and deliberately never in CI, because this repository is public and the alternative is Developer ID private keys in repository secrets. Three steps, each independently re-runnable, so a rejected notarization does not cost a rebuild:
+A release is a single signed, notarized, stapled `.pkg` that places both bundles (ADR 0014). It is built locally and deliberately never in CI, because this repository is public and the alternative is Developer ID private keys in repository secrets. Three steps, each independently re-runnable, so a rejected notarization does not cost a rebuild:
 
 ```bash
 export FOSFORO_SIGNING_IDENTITY="Developer ID Application: ..."
@@ -115,6 +129,8 @@ An App Store Connect API key rather than an app-specific password, because it is
 - **The display name lives in four places.** It cannot be derived from one source, because it crosses Zig, CMake, and a generated plist. `src/clap/plugin.zig` holds the CLAP descriptor's `name` and `description` and is the source of truth; `macos/Info.plist` carries `CFBundleName` and `CFBundleDisplayName` for the Zig-built bundle; `DISPLAY_NAME` in `cmake/CMakeLists.txt` covers the CLAP that CMake builds; and `cmake/set-au-display-name` covers the Audio Unit, whose plist clap-wrapper composes from the ASCII `OUTPUT_NAME` and then describes as a wrapper. Change one, change all four. The ASCII `Fosforo` that names files, binaries, and `CFBundleExecutable` is a separate string and must not follow.
 - **Some identifiers are permanent.** The AU triple (`aufx`/`Fsfr`/`Ctmn`) and the CLAP plugin `id` are stored in users' project files; changing either makes the plugin read as missing. The manufacturer name and display name are free metadata. See the plan's identifiers section before touching any of them.
 - **Shader validation is deliberately not part of `zig build test`,** so the build stays hermetic (ADR 0009).
+- **The smoke harness is an executable, and that is not an oversight.** `src/smoke.zig` is the only thing here that runs a Metal or an AppKit call rather than type-checking one. It is not a test artifact because a test binary has to stay silent: `std.debug.print` from inside one interleaves with the runner's stream and the build runner reports the step as failed despite a zero exit code, which is the same hazard `src/clap/log.zig` disables its `stderr` mirror under `builtin.is_test` to avoid. And it is never wired into `zig build test`, on `validate-shaders`' precedent, because the default test path must not acquire a dependency on the machine having a GPU. It is also the only check in the project that can go red for reasons unrelated to the code, which is why CI requires the `gpu` half and runs the `appkit` half under `continue-on-error` (ADR 0013). Its `main` takes a `std.process.Init.Minimal`, which is how Zig 0.16 hands over argv; there is no `std.process.args()` any more.
+- **A clean `leaks` report is not evidence until you know `leaks` ran.** It exits non-zero whenever it finds anything and it always finds something: AppKit's LaunchServices chatter leaks a few hundred `NSXPCConnection` allocations per run, so its exit code cannot be the gate. `scripts/smoke-leak-check` therefore asserts that the harness passed and that a parseable report exists *before* it concludes anything from an absence. Match leaked objects by class prefix, never by the framework's public class names: dropping the command queue release in `Renderer.deinit` leaks an object `leaks` calls `AGXG17XFamilyCommandQueue`, and a grep for `MTLCommandQueue` reports that planted leak as clean.
 - **`shfmt` reads `.editorconfig`, but only when given no parser or printer options.** The shell profile, equivalent to `-i 2 -ci -sr`, lives there because `cmake/narrow-au-resource-usage` was written to a style the repository never recorded, so bare `shfmt` reported an already-consistent file as unformatted. Passing any option from `shfmt --help`'s "Parser options" or "Printer options" groups (`-ln`, `-p`, `-s`, `-i`, `-bn`, `-ci`, `-sr`, `-kp`, `-fn`, `-mn`) makes `shfmt` discard `.editorconfig` wholesale, which means `shfmt -d` is correct and `shfmt -i 2 -d` silently is not. The output-mode selectors are exempt, so `-d`, `-w`, `-l` and `-f` are all safe. Verified per flag, not inferred from the documentation. The scripts in `cmake/` have no extension, so the section names each one directly; a `[*.sh]` section does not match them. **A new shell script must be added to that section.** The `shell` job selects files by shebang, so it lints a new script immediately, while `.editorconfig` styles it only once listed, and the failure that asymmetry produces is `shfmt` reporting tabs against a file that matches its siblings exactly. Always select files with `git ls-files`, never `shfmt -d .`: `shfmt` does not read `.gitignore`, so walking the tree reaches vendored scripts under `build/` once the CMake build has run, and `shfmt -w .` will reformat them. A fresh CI checkout has no `build/`, so `-d .` passes there and fails locally. The `shell` CI job enforces this and `shellcheck` together, and `.editorconfig` is deliberately absent from that workflow's `paths-ignore` lists so a change to the profile cannot skip the job that checks it.
 - **`clap-validator` is pinned twice over,** at workflow-level `env` in `.github/workflows/ci.yml`: the validator commit, because it is installed from git rather than a registry and a tag can move, and the Rust toolchain that builds it, because the crate declares an MSRV the runner image may stop satisfying. Bump them together and the cache key follows automatically. Warnings do not fail either job: `clap-validator` exits non-zero on failed and crashed tests only, so a `WARNING` line is visible in the log without breaking the build.
 - **Two jobs validate a `.clap`, and they share one cached validator.** `.github/actions/clap-validator` is a local composite action that builds and caches it; `clap-validator` and `clap-wrapper` both call it and pass the workflow-level pins. The cache key lives only in that action, because a key written twice can drift, and a drifted key still passes: it just pays a full Rust build every run. On a cold cache both jobs build concurrently and race to save, which is safe, since the loser warns rather than failing.

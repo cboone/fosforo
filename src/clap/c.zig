@@ -45,6 +45,17 @@ pub fn cocoaView(window: *const c.clap_window_t) ?*anyopaque {
     return window.unnamed_0.cocoa;
 }
 
+/// The write side of `cocoaView`, for a caller playing the **host**.
+///
+/// The plugin only ever reads a window the host filled in, so nothing shipped
+/// calls this: it exists for `src/smoke.zig`, which drives the editor from the
+/// other side of the ABI. It lives here regardless, because the alternative is
+/// that harness spelling `unnamed_0` itself and reintroducing exactly the
+/// generated-name fragility the accessor above exists to contain.
+pub fn setCocoaView(window: *c.clap_window_t, view: ?*anyopaque) void {
+    window.unnamed_0.cocoa = view;
+}
+
 test "restated version macros match the vendored headers" {
     try std.testing.expectEqual(c.CLAP_VERSION.major, version_major);
     try std.testing.expectEqual(c.CLAP_VERSION.minor, version_minor);
@@ -59,6 +70,33 @@ test "restated feature strings are pinned against a careless edit" {
     try std.testing.expectEqualStrings("analyzer", feature.analyzer);
     try std.testing.expectEqualStrings("audio-effect", feature.audio_effect);
     try std.testing.expectEqualStrings("stereo", feature.stereo);
+}
+
+// The only coverage either window accessor has. Neither can be reached from a
+// test through the plugin, because `Editor.setParent` refuses a window carrying
+// no view before it ever reads the union, and a test has no `NSView` to put in
+// one. Round-tripping the two against each other is what proves `unnamed_0` is
+// still the generated name and `cocoa` still the member, which is the whole
+// reason both functions exist.
+test "the cocoa view round trips through the window accessors" {
+    var sentinel: u8 = 0;
+    const view: *anyopaque = @ptrCast(&sentinel);
+
+    var window = std.mem.zeroes(c.clap_window_t);
+    window.api = &c.CLAP_WINDOW_API_COCOA;
+
+    try std.testing.expect(cocoaView(&window) == null);
+
+    setCocoaView(&window, view);
+    try std.testing.expect(cocoaView(&window) == view);
+
+    // The union sits beside `api` rather than over it, so writing one must not
+    // disturb the other. A host reading back a corrupted `api` would be a
+    // failure this project causes rather than one it reports.
+    try std.testing.expect(window.api == @as([*c]const u8, &c.CLAP_WINDOW_API_COCOA));
+
+    setCocoaView(&window, null);
+    try std.testing.expect(cocoaView(&window) == null);
 }
 
 // Layout of anything the host reads or writes must match the C headers exactly.

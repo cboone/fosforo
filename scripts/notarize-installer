@@ -3,7 +3,7 @@
 # Author: Christopher Boone
 # Date: 2026-07-30
 #
-# The third and last release step (ADR 0013). Separate from scripts/build-installer
+# The third and last release step (ADR 0014). Separate from scripts/build-installer
 # because notarization is slow and network-bound: a failed staple should not force a
 # rebuild, and a rejected submission is diagnosed from a log rather than from a
 # rebuild.

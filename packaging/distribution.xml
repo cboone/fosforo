@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  The installer definition for the release pkg (ADR 0013).
+  The installer definition for the release pkg (ADR 0014).
 
   @FOSFORO_VERSION@ is substituted by scripts/build-installer from the version in
   build.zig.zon, which is the single source of truth. Hardcoding it here would make

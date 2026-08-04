@@ -18,7 +18,7 @@
 credentials.json
 token.json
 
-# Release artifacts, signed and notarized locally (ADR 0013)
+# Release artifacts, signed and notarized locally (ADR 0014)
 dist/
 
 # Zig

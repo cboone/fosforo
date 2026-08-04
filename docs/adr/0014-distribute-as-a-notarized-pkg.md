@@ -1,4 +1,4 @@
-# 0013. Distribute as a signed, notarized pkg installer
+# 0014. Distribute as a signed, notarized pkg installer
 
 **Status:** Accepted
 

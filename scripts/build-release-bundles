@@ -3,7 +3,7 @@
 # Author: Christopher Boone
 # Date: 2026-07-30
 #
-# The first of the three release steps (ADR 0013). Produces the two bundles the
+# The first of the three release steps (ADR 0014). Produces the two bundles the
 # installer packages, signed so they will notarize:
 #
 #   zig-out/Fosforo.clap            the CLAP, built by zig build
@@ -113,7 +113,7 @@ function main() {
 
   if [[ -z "${identity}" ]]; then
     warn "FOSFORO_SIGNING_IDENTITY is unset"
-    warn "a release build has no ad-hoc fallback, deliberately: see ADR 0013"
+    warn "a release build has no ad-hoc fallback, deliberately: see ADR 0014"
     warn "list candidates with: security find-identity -v -p codesigning"
     return "${E_USAGE}"
   fi

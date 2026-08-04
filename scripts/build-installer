@@ -3,7 +3,7 @@
 # Author: Christopher Boone
 # Date: 2026-07-30
 #
-# The second of the three release steps (ADR 0013). Takes the bundles
+# The second of the three release steps (ADR 0014). Takes the bundles
 # scripts/build-release-bundles produced and turns them into one pkg that places
 # each in the directory its format is scanned from.
 #
