@@ -71,6 +71,12 @@ const Instance = struct {
     /// dereferences.
     log: log.Log = .{},
 
+    /// The host's side of `clap.gui`, resolved in `init` for the same reason
+    /// `log` is: host extensions do not exist before it. The editor reaches it
+    /// by pointer, which is safe because an `Instance` is heap-allocated and
+    /// outlives the editor inside it.
+    host_gui: gui.HostGui = .{},
+
     /// The two axes CLAP writes its threading contracts against, as in
     /// `[audio-thread & active & !processing]`. Tracked so a debug build traps
     /// a host driving the lifecycle out of order at the point it happens,
@@ -190,6 +196,13 @@ fn init(plugin: [*c]const c.clap_plugin_t) callconv(.c) bool {
     // stable because an `Instance` is heap-allocated and outlives the editor
     // inside it, which is the same reason the view may hold `&self.editor`.
     self.editor.log = &self.log;
+
+    // The editor enforces a minimum size, and `request_resize` is the only way
+    // to make a host honour one: CLAP has no field anywhere that carries a
+    // smallest editor, and REAPER shrinks its window past `adjust_size`'s
+    // answer regardless.
+    self.host_gui = gui.HostGui.init(self.host);
+    self.editor.host_gui = &self.host_gui;
 
     self.log.print(c.CLAP_LOG_DEBUG, "initialised against host {s} {s}", .{
         if (self.host.name) |name| std.mem.span(name) else "(unnamed)",

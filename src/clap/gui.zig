@@ -146,6 +146,52 @@ pub const Pending = struct {
     }
 };
 
+/// The host's side of `clap.gui`, looked up once.
+///
+/// Only one call is needed and it is the one that makes a minimum size real.
+/// CLAP has no field anywhere for a smallest editor: `clap_gui_resize_hints_t`
+/// carries resizability and an aspect ratio and nothing else, and `adjust_size`
+/// answers a question the host has to remember to ask. REAPER 7.78 does ask,
+/// and applies the answer to the plugin's view, and then shrinks its own window
+/// past it anyway, which leaves the drawable pinned at the minimum inside a
+/// window that keeps closing over it.
+///
+/// `request_resize` is the only way back. It is the plugin asking the host to
+/// size the client area, and it is what turns a clamp the host ignored into a
+/// window that will not go smaller.
+pub const HostGui = struct {
+    ext: ?*const c.clap_host_gui_t = null,
+    host: ?*const c.clap_host_t = null,
+
+    /// [main-thread] Host extensions are unreachable until `clap_plugin.init`.
+    ///
+    /// An absent extension is survivable rather than an error, on the same
+    /// reasoning `log.Log` applies: a host that does not implement it leaves
+    /// the editor working, with a minimum it can enforce for its own view and
+    /// not for the host's window.
+    pub fn init(host: *const c.clap_host_t) HostGui {
+        const get_extension = host.get_extension orelse return .{ .host = host };
+        const ptr = get_extension(host, &c.CLAP_EXT_GUI) orelse return .{ .host = host };
+
+        // A host that answers the id still owes a populated vtable, and one
+        // that hands back a struct with a null `request_resize` is easier to
+        // survive than to diagnose from a crash report.
+        const ext: *const c.clap_host_gui_t = @ptrCast(@alignCast(ptr));
+        if (ext.request_resize == null) return .{ .host = host };
+
+        return .{ .ext = ext, .host = host };
+    }
+
+    /// [main-thread] Ask the host to resize the client area.
+    ///
+    /// A false return is normal: the header says the host does not have to
+    /// honour it, and a host that refuses leaves the editor exactly as it was.
+    pub fn requestResize(self: HostGui, size: gpu.Size) bool {
+        const ext = self.ext orelse return false;
+        return ext.request_resize.?(self.host, size.width, size.height);
+    }
+};
+
 /// One instance's editor. Inert until the host calls `create`, and inert again
 /// after `destroy`, which is what makes both safe to call more than once.
 pub const Editor = struct {
@@ -202,6 +248,17 @@ pub const Editor = struct {
     /// picture is a flat colour.
     meter: Meter = .{},
     log: ?*const log_mod.Log = null,
+    host_gui: ?*const HostGui = null,
+
+    /// Guards against re-entering the resize path from inside itself.
+    ///
+    /// `request_resize` may be serviced synchronously, in which case the host
+    /// resizes the view before returning and AppKit delivers `setFrameSize:`
+    /// while this is still on the stack. The second pass would agree with the
+    /// first and stop, so the flag is not load-bearing for correctness; it is
+    /// there so a host that answers a request with a size that is *also* out of
+    /// bounds cannot bounce between the two.
+    resizing: bool = false,
 
     /// [main-thread] The only place the host's windowing API is judged, shared
     /// by `is_api_supported` and `create` so the two cannot disagree.
@@ -384,12 +441,37 @@ pub const Editor = struct {
         const clamped = clampSize(width, height);
         if (self.view) |v| {
             v.setSize(clamped.width, clamped.height);
+            // The view is now the clamped size, so `setFrameSize:` above saw no
+            // discrepancy and asked for nothing. The discrepancy is between the
+            // clamp and what the *host* asked for, and this is the only place
+            // that knows both.
+            self.pushBack(.{ .width = width, .height = height }, clamped);
         } else {
             // No view yet, so nothing will call back. Record it so the view is
             // created at this size when `set_parent` arrives.
             self.current = clamped;
         }
         return true;
+    }
+
+    /// [main-thread] Ask the host to correct a size this editor would not adopt.
+    ///
+    /// Only when the two differ, so a host sizing the editor legally is never
+    /// argued with. Without this the clamp protects the drawable and nothing
+    /// else: REAPER honours `adjust_size` for the plugin's view and keeps
+    /// shrinking its own window regardless, which reads to a user as an editor
+    /// with no minimum at all, its contents clipped by a window closing over
+    /// them.
+    fn pushBack(self: *Editor, requested: gpu.Size, clamped: gpu.Size) void {
+        if (requested.width == clamped.width and requested.height == clamped.height) return;
+        if (self.resizing) return;
+
+        const host_gui = self.host_gui orelse return;
+
+        self.resizing = true;
+        defer self.resizing = false;
+
+        _ = host_gui.requestResize(clamped);
     }
 
     /// [main-thread] The closest size this editor would actually adopt.
@@ -496,8 +578,14 @@ pub const Editor = struct {
     fn onResized(context: *anyopaque, width: u32, height: u32) void {
         const self: *Editor = @ptrCast(@alignCast(context));
 
-        self.current = clampSize(width, height);
-        self.pending.post(self.current, self.scale);
+        const clamped = clampSize(width, height);
+        self.current = clamped;
+        self.pending.post(clamped, self.scale);
+
+        // The host resized the parent and let the autoresizing mask carry it,
+        // which is the path a window drag takes and the one that never consults
+        // `adjust_size` about the result.
+        self.pushBack(.{ .width = width, .height = height }, clamped);
     }
 
     /// The backing scale, the window, or the display changed. Which of the
@@ -820,6 +908,102 @@ test "sizing is negotiable before create, the way get_size already is" {
 
     try testing.expect(editor.setSize(1280, 720));
     try testing.expectEqual(gpu.Size{ .width = 1280, .height = 720 }, editor.size());
+}
+
+/// Counts `request_resize` calls and records the last size asked for, so the
+/// pushback can be tested without a host.
+const TestHostGui = struct {
+    var calls: u32 = 0;
+    var last: gpu.Size = .{ .width = 0, .height = 0 };
+
+    fn requestResize(host: [*c]const c.clap_host_t, width: u32, height: u32) callconv(.c) bool {
+        _ = host;
+        calls += 1;
+        last = .{ .width = width, .height = height };
+        return true;
+    }
+
+    const ext: c.clap_host_gui_t = .{
+        .resize_hints_changed = null,
+        .request_resize = requestResize,
+        .request_show = null,
+        .request_hide = null,
+        .closed = null,
+    };
+
+    fn reset() void {
+        calls = 0;
+        last = .{ .width = 0, .height = 0 };
+    }
+};
+
+const test_host_gui: HostGui = .{ .ext = &TestHostGui.ext, .host = null };
+
+test "a size the editor will not adopt is pushed back to the host" {
+    var editor: Editor = .{};
+    defer editor.destroy();
+    try testing.expect(editor.create(&c.CLAP_WINDOW_API_COCOA, false));
+    editor.host_gui = &test_host_gui;
+
+    // REAPER honours `adjust_size` for the plugin's view and then shrinks its
+    // own window past it regardless, which leaves the drawable pinned at the
+    // minimum inside a window closing over it. `request_resize` is the only
+    // mechanism CLAP offers to answer that.
+    TestHostGui.reset();
+    Editor.onResized(&editor, 200, 100);
+    try testing.expectEqual(@as(u32, 1), TestHostGui.calls);
+    try testing.expectEqual(min_size, TestHostGui.last);
+
+    // And the editor's own record is the clamp, not what the host asked for.
+    try testing.expectEqual(min_size, editor.size());
+}
+
+test "a legal size is never argued with" {
+    var editor: Editor = .{};
+    defer editor.destroy();
+    try testing.expect(editor.create(&c.CLAP_WINDOW_API_COCOA, false));
+    editor.host_gui = &test_host_gui;
+
+    // The push-back fires only on a discrepancy. A host sizing the editor
+    // within bounds must not be answered back, or every ordinary drag turns
+    // into an argument between the two.
+    TestHostGui.reset();
+    Editor.onResized(&editor, 1280, 720);
+    Editor.onResized(&editor, min_size.width, min_size.height);
+    Editor.onResized(&editor, max_size.width, max_size.height);
+    try testing.expectEqual(@as(u32, 0), TestHostGui.calls);
+}
+
+test "the push-back cannot re-enter itself" {
+    var editor: Editor = .{};
+    defer editor.destroy();
+    try testing.expect(editor.create(&c.CLAP_WINDOW_API_COCOA, false));
+    editor.host_gui = &test_host_gui;
+
+    // A host that services `request_resize` synchronously delivers
+    // `setFrameSize:` while the first call is still on the stack. The guard is
+    // what stops a host answering an out-of-bounds size with another one from
+    // bouncing between the two.
+    TestHostGui.reset();
+    editor.resizing = true;
+    Editor.onResized(&editor, 10, 10);
+    try testing.expectEqual(@as(u32, 0), TestHostGui.calls);
+
+    editor.resizing = false;
+    Editor.onResized(&editor, 10, 10);
+    try testing.expectEqual(@as(u32, 1), TestHostGui.calls);
+}
+
+test "an editor with no host gui extension still clamps its own view" {
+    var editor: Editor = .{};
+    defer editor.destroy();
+    try testing.expect(editor.create(&c.CLAP_WINDOW_API_COCOA, false));
+
+    // A host that does not implement the extension leaves `host_gui` null. The
+    // minimum then holds for the drawable and not for the host's window, which
+    // is a degradation rather than a failure.
+    Editor.onResized(&editor, 200, 100);
+    try testing.expectEqual(min_size, editor.size());
 }
 
 test "a dimension that wrapped past zero collapses to the minimum" {
