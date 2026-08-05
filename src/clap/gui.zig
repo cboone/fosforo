@@ -471,7 +471,19 @@ pub const Editor = struct {
         self.resizing = true;
         defer self.resizing = false;
 
-        _ = host_gui.requestResize(clamped);
+        const accepted = host_gui.requestResize(clamped);
+
+        // Kept rather than removed with the instrumentation that found it. This
+        // fires only when a host proposes a size the editor will not adopt, so
+        // it is quiet in normal use, and it is the only place the host's answer
+        // to a bound is visible. A host that stops honouring this, or starts
+        // proposing sizes far below the minimum rather than a pixel or two
+        // under, shows up here and nowhere else.
+        if (self.log) |l| l.print(
+            c.CLAP_LOG_DEBUG,
+            "host asked for {d}x{d}, requested {d}x{d} instead: accepted={}",
+            .{ requested.width, requested.height, clamped.width, clamped.height, accepted },
+        );
     }
 
     /// [main-thread] The closest size this editor would actually adopt.

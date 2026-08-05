@@ -364,9 +364,19 @@ The harness is neither REAPER nor Logic, and three of the issue's verification s
 
 | Step                                            | Result                                                                                  |
 | ----------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| Dragging the window edge during playback        | **Not yet validly tested.** See below                                                   |
+| Dragging the window edge during playback        | **Passed** in REAPER 7.78, after three defects it exposed. See below                    |
 | Dragging across displays of differing scale     | **Untestable on this hardware.** See below                                              |
-| Several instances open at once, no dropouts     | Pending, in Logic                                                                       |
+| Several instances open at once, no dropouts     | Pending, in Logic, and blocked until the `show` fix landed                              |
+
+**The drag test found three defects, none of which a unit test could have.** Each was caught by instrumenting the `clap.gui` callbacks and reading what REAPER actually does rather than what the specification says it should.
+
+A dimension that wrapped past zero reached Metal. Dragging the bottom edge up past the top makes REAPER send heights of 4294967295 and 4294967274, which are -1 and -22: CLAP types them `u32`, AppKit computes them as signed `CGFloat`, and the clamp had only a lower bound. The mailbox saturated the value to 65535 and the renderer asked for a 960x131070 drawable, eighty times Metal's texture limit.
+
+The Audio Unit never rendered at all. clap-wrapper's AUv2 view has both of its `gui->show()` calls commented out, so gating the render loop on a positive `visible` left the display link created and never started. This predates the display link: the old code gated `drawOnce` identically, so the Audio Unit has never drawn in this project's history.
+
+And a clamp alone could not enforce a minimum. REAPER calls `adjust_size`, applies the answer to the plugin's view, and shrinks its own window past it regardless, so the drawable held at 480x270 inside a window closing over it. CLAP has no field anywhere carrying a smallest editor, so `clap_host_gui.request_resize` is the only answer, and REAPER accepts it: the sizes it proposes went from collapsing to 73x1 without the push-back to undershooting by a pixel or two with it.
+
+**One hypothesis was disproved rather than confirmed, which was the point of measuring.** The instrumentation was written to test whether `set_size` returning `true` for a clamped size was misleading the host. It was not: REAPER calls `adjust_size` first and asks for the size it was given, so the return value was honest every time.
 
 **The first attempt at the drag test proved nothing, and the reason is worth recording.** It was run against the bundle installed in `~/Library/Audio/Plug-Ins/`, which had been built from a different worktree on `chore/notarize-builds`: no `src/platform/displaylink.zig`, and `guiCanResize` returning false. That editor is a fixed 960x540 with no render loop, so the window edge was never draggable and an uneventful result was the only possible outcome. It read as a pass.
 
