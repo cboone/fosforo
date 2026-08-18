@@ -197,13 +197,29 @@ endif()
 #
 #   cmake -B build cmake/ -DFOSFORO_CODESIGN_IDENTITY="Developer ID Application: ..."
 #
-# That override alone does not make an artifact distributable. A signature that will
-# notarize also needs --timestamp, --options runtime, and possibly an entitlements
-# file, none of which is useful without a release process. See issue #24. build.zig
-# carries the same switch for the bundle it assembles, spelled
+# build.zig carries the same switch for the bundle it assembles, spelled
 # `zig build -Dcodesign-identity=`.
 set(FOSFORO_CODESIGN_IDENTITY "-" CACHE STRING
     "codesign identity for the built bundles; '-' signs ad-hoc")
+
+# A real identity additionally gets --timestamp and --options runtime, which
+# notarization rejects a submission for missing. Conditional on the identity rather
+# than separate switches, so a distributable signature cannot be half-configured.
+#
+# Neither belongs on the ad-hoc path, for two different reasons. --timestamp contacts
+# Apple's timestamp server, so it would make a plain `cmake --build` need the network,
+# and an ad-hoc signature has no certificate whose expiry a timestamp could outlive.
+# The hardened runtime is inert either way: entitlements and runtime restrictions
+# attach to a process, and a plugin is loaded into the host's, so the host's apply. It
+# is set because notarization checks for it, not because it changes how this runs.
+#
+# An empty list expands to nothing inside COMMAND, including under VERBATIM, so the
+# ad-hoc invocation is byte-identical to what it was before this existed.
+if(FOSFORO_CODESIGN_IDENTITY STREQUAL "-")
+    set(FOSFORO_CODESIGN_FLAGS "")
+else()
+    set(FOSFORO_CODESIGN_FLAGS --timestamp --options runtime)
+endif()
 
 # The linker ad-hoc signs the Mach-O binary on arm64, which is automatic and is why
 # these bundles load at all. It leaves the *bundle* unsigned: with no
@@ -227,7 +243,7 @@ set(FOSFORO_CODESIGN_IDENTITY "-" CACHE STRING
 function(fosforo_sign_bundle target)
     add_custom_command(TARGET ${target} POST_BUILD
         COMMAND /usr/bin/codesign --force --sign "${FOSFORO_CODESIGN_IDENTITY}"
-                "$<TARGET_BUNDLE_DIR:${target}>"
+                ${FOSFORO_CODESIGN_FLAGS} "$<TARGET_BUNDLE_DIR:${target}>"
         COMMENT "Signing the ${target} bundle"
         VERBATIM
     )

@@ -1,0 +1,246 @@
+#!/usr/bin/env bash
+# notarize-installer — submit the installer to Apple, staple the ticket, assess it
+# Author: Christopher Boone
+# Date: 2026-07-30
+#
+# The third and last release step (ADR 0014). Separate from scripts/build-installer
+# because notarization is slow and network-bound: a failed staple should not force a
+# rebuild, and a rejected submission is diagnosed from a log rather than from a
+# rebuild.
+#
+# Only the pkg is submitted, not the two bundles inside it. Files laid down by an
+# installer do not receive com.apple.quarantine, so the pkg's stapled ticket is the
+# one Gatekeeper consults; stapling the bundles separately would add a notarization
+# round trip for a ticket nothing reads.
+#
+# The credentials come from a keychain profile rather than a command line, so no
+# secret is ever an argument or a shell-history entry. Create one first:
+#
+#   xcrun notarytool store-credentials "fosforo-notary" \
+#     --key ~/path/AuthKey_XXXXXXXX.p8 --key-id XXXXXXXX --issuer XXXXXXXX-...
+#
+# Usage:
+#   notarize-installer <path/to/Fosforo-VERSION.pkg>
+#
+# Environment:
+#   FOSFORO_NOTARY_PROFILE   The notarytool keychain profile. Default fosforo-notary.
+#
+# Exit codes:
+#   0  - Notarized, stapled, and assessed as a notarized Developer ID package
+#  64  - Invalid arguments
+#  65  - Notarization was rejected, or the stapled package failed assessment
+#  66  - The package does not exist
+#  70  - A tool invocation failed
+
+set -euo pipefail
+
+if [[ -n "${TRACE:-}" ]]; then
+  set -x
+fi
+
+readonly E_USAGE=64
+readonly E_DATAERR=65
+readonly E_NOINPUT=66
+readonly E_SOFTWARE=70
+
+readonly PROGRAM_NAME="${0##*/}"
+readonly DEFAULT_PROFILE="fosforo-notary"
+
+# The certificate type that signs the package. Distinct from the Developer ID
+# *Application* certificate that signs the bundles inside it, which
+# scripts/assert-distributable-signature checks.
+readonly REQUIRED_AUTHORITY="Developer ID Installer:"
+
+# Write a message to stderr, prefixed with the program name.
+# Arguments:
+#   $@ - message parts
+function warn() {
+  echo "${PROGRAM_NAME}: ${*}" >&2
+}
+
+# Announce a step.
+# Arguments:
+#   $@ - message parts
+function step() {
+  echo "==> ${*}"
+}
+
+function usage() {
+  echo "Usage: ${PROGRAM_NAME} <path/to/package.pkg>" >&2
+}
+
+# Assert the package carries a Developer ID Installer signature before spending a
+# round trip.
+#
+# notarytool rejects a package signed with the wrong certificate, but it does so
+# after the upload. Checking locally turns a slow failure into an immediate one.
+#
+# "Signed" is not the same as "signed by the right thing", and the difference is the
+# whole reason scripts/assert-distributable-signature exists for the bundles: an
+# Apple Development certificate produces a signature that looks correct in every way
+# except the authority, and will never notarize. The same trap applies to the
+# package, so the same check applies here rather than merely asking whether some
+# signature is present.
+# Arguments:
+#   $1 - path to the package
+# Returns:
+#   0 when the package carries the required authority, non-zero otherwise
+function assert_package_signed() {
+  local package="${1}"
+  local description
+
+  if ! description=$(pkgutil --check-signature "${package}" 2>&1); then
+    warn "${package}: not signed"
+    warn "notarization requires a Developer ID Installer signature"
+    warn "rebuild without --unsigned: see scripts/build-installer"
+    return 1
+  fi
+
+  if ! echo "${description}" | grep -q "${REQUIRED_AUTHORITY}"; then
+    warn "${package}: not signed by a '${REQUIRED_AUTHORITY}' certificate"
+    warn "the signature below would upload and then be rejected:"
+    echo "${description}" >&2
+    return 1
+  fi
+}
+
+# Submit the package and wait for a verdict.
+# Arguments:
+#   $1 - path to the package
+#   $2 - keychain profile name
+#   $3 - path to write the JSON response to
+# Returns:
+#   0 when Apple accepted the submission, non-zero otherwise
+function submit() {
+  local package="${1}" profile="${2}" response="${3}"
+  local status id
+
+  if ! xcrun notarytool submit "${package}" \
+    --keychain-profile "${profile}" \
+    --output-format json \
+    --wait > "${response}"; then
+    warn "notarytool submit failed"
+    return 1
+  fi
+
+  # plutil reads JSON, so the response is parsed with a tool already used elsewhere
+  # in this repository rather than by pattern-matching the text.
+  status=$(plutil -extract status raw -o - -- "${response}")
+  id=$(plutil -extract id raw -o - -- "${response}")
+
+  echo "    submission ${id}: ${status}"
+
+  if [[ "${status}" != "Accepted" ]]; then
+    warn "notarization was ${status}"
+    warn "fetching the log, which names the offending path and rule:"
+    xcrun notarytool log "${id}" --keychain-profile "${profile}" >&2 || true
+    return 1
+  fi
+}
+
+# Assert Gatekeeper accepts the stapled package.
+#
+# --type install is the policy for an installer package; the default (execute) asks
+# a different question and would report a package as rejected for the wrong reason.
+#
+# Worth knowing what this does and does not prove. A locally built package has never
+# carried com.apple.quarantine, so this confirms the signature and ticket are sound
+# while saying nothing about the download path. The real check is to fetch the
+# package with a browser and assess that copy; see the release section of AGENTS.md.
+# Arguments:
+#   $1 - path to the package
+# Returns:
+#   0 when Gatekeeper reports a notarized Developer ID source, non-zero otherwise
+function assert_accepted() {
+  local package="${1}"
+  local assessment
+
+  assessment=$(spctl --assess --type install --verbose=4 "${package}" 2>&1) || {
+    warn "${package}: Gatekeeper rejected the package"
+    echo "${assessment}" >&2
+    return 1
+  }
+
+  echo "${assessment}"
+
+  if ! echo "${assessment}" | grep -q "source=Notarized Developer ID"; then
+    warn "${package}: accepted, but not as a notarized Developer ID package"
+    warn "a stapled ticket should read 'source=Notarized Developer ID'"
+    return 1
+  fi
+}
+
+function main() {
+  local package=""
+  local profile="${FOSFORO_NOTARY_PROFILE:-${DEFAULT_PROFILE}}"
+  local response
+
+  while [[ ${#} -gt 0 ]]; do
+    case "${1}" in
+      -*)
+        warn "unknown option '${1}'"
+        usage
+        return "${E_USAGE}"
+        ;;
+      *)
+        if [[ -n "${package}" ]]; then
+          warn "expected exactly one package"
+          usage
+          return "${E_USAGE}"
+        fi
+        package="${1}"
+        ;;
+    esac
+    shift
+  done
+
+  if [[ -z "${package}" ]]; then
+    usage
+    return "${E_USAGE}"
+  fi
+
+  if [[ ! -f "${package}" ]]; then
+    warn "cannot read '${package}'"
+    return "${E_NOINPUT}"
+  fi
+
+  step "Checking the package is signed"
+  if ! assert_package_signed "${package}"; then
+    return "${E_DATAERR}"
+  fi
+
+  response=$(mktemp)
+  # shellcheck disable=SC2064  # expand now: the path must survive this function.
+  trap "rm -f '${response}'" EXIT
+
+  step "Submitting to Apple as profile '${profile}' and waiting"
+  if ! submit "${package}" "${profile}" "${response}"; then
+    return "${E_DATAERR}"
+  fi
+
+  # Stapling attaches the ticket to the file, which is what lets Gatekeeper accept
+  # it with no network. Without it the first launch on a machine that has never seen
+  # this package requires Apple to be reachable.
+  step "Stapling the ticket"
+  if ! xcrun stapler staple "${package}"; then
+    warn "stapler failed"
+    return "${E_SOFTWARE}"
+  fi
+
+  step "Validating the stapled ticket"
+  if ! xcrun stapler validate "${package}"; then
+    warn "the ticket did not validate"
+    return "${E_DATAERR}"
+  fi
+
+  step "Asking Gatekeeper"
+  if ! assert_accepted "${package}"; then
+    return "${E_DATAERR}"
+  fi
+
+  step "Notarized and stapled: ${package}"
+  echo "    Verify properly by downloading it in a browser, confirming"
+  echo "    'xattr -p com.apple.quarantine' returns a value, and assessing that copy."
+}
+
+main "${@}"
