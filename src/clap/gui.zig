@@ -247,6 +247,21 @@ pub const Editor = struct {
     /// which is the only way to tell a healthy loop from a stopped one when the
     /// picture is a flat colour.
     meter: Meter = .{},
+
+    /// Set by the main thread to ask the render thread to restart the meter's
+    /// window, rather than restarting it there.
+    ///
+    /// `CVDisplayLinkStop` does not promise that a callback has finished, which
+    /// is the whole reason `Gate` exists, and `hide` deliberately does not pay
+    /// for that barrier: it runs whenever a user closes an editor, where
+    /// `destroy` runs once. So `stopLoop` cannot touch `meter` directly without
+    /// racing the tick that may still be inside `report`. Leaving a note
+    /// instead keeps `meter` owned by one thread, which is the same answer
+    /// `Pending` gives for the same question about size.
+    ///
+    /// Inert outside a debug build, because nothing reads the meter there.
+    meter_reset: std.atomic.Value(bool) = .init(false),
+
     log: ?*const log_mod.Log = null,
     host_gui: ?*const HostGui = null,
 
@@ -321,7 +336,11 @@ pub const Editor = struct {
         self.view = null;
 
         self.pending = .{};
+
+        // Written directly rather than requested, which is safe only here: the
+        // gate above has closed and drained, so no tick can be inside `report`.
         self.meter = .{};
+        self.meter_reset = .init(false);
         self.presented = .init(0);
         self.current = default_size;
         self.scale = 1.0;
@@ -542,14 +561,25 @@ pub const Editor = struct {
     }
 
     fn stopLoop(self: *Editor) void {
-        const l = self.link orelse return;
-        l.stop();
-
         // The meter's window is wall time, so one that spans a hidden editor
         // would report the stall as a slow second and read as a defect in the
         // loop. Restarting it means the first number after `show` describes the
         // loop rather than the pause before it.
-        self.meter = .{};
+        //
+        // Requested rather than performed. A tick may still be inside `report`
+        // touching the meter, and this is the main thread. Requested even when
+        // there is no link to stop, so the note does not depend on how far this
+        // function gets.
+        self.meter_reset.store(true, .release);
+
+        const l = self.link orelse return;
+        l.stop();
+    }
+
+    /// [render-thread] Whether the main thread has asked for the meter's window
+    /// to restart since the last tick, clearing the request as it answers.
+    fn takeMeterReset(self: *Editor) bool {
+        return self.meter_reset.swap(false, .acquire);
     }
 
     /// [render-thread] Debug builds only.
@@ -560,6 +590,10 @@ pub const Editor = struct {
     /// too, which is what makes a resize observable rather than inferred.
     fn report(self: *Editor) void {
         if (builtin.mode != .Debug) return;
+
+        // Every write to `meter` happens here, on this thread. That is what
+        // makes it safe to hold no lock around it.
+        if (self.takeMeterReset()) self.meter = .{};
 
         const rate = self.meter.observe(display_link.monotonicNanos()) orelse return;
         const l = self.log orelse return;
@@ -950,6 +984,52 @@ const TestHostGui = struct {
 };
 
 const test_host_gui: HostGui = .{ .ext = &TestHostGui.ext, .host = null };
+
+test "hiding asks the render thread to restart the meter rather than doing it" {
+    var editor: Editor = .{};
+    defer editor.destroy();
+    try testing.expect(editor.create(&c.CLAP_WINDOW_API_COCOA, false));
+
+    // `meter` belongs to the render thread. `CVDisplayLinkStop` does not
+    // promise a callback has finished, and `hide` deliberately does not pay for
+    // the `Gate` barrier that `destroy` does, so writing the meter here would
+    // race a tick still inside `report`.
+    try testing.expect(!editor.takeMeterReset());
+
+    try testing.expect(editor.setHidden(true));
+    try testing.expect(editor.meter_reset.load(.acquire));
+
+    // Consumed exactly once, so a single hide does not keep resetting the
+    // window out from under the loop after it resumes.
+    try testing.expect(editor.takeMeterReset());
+    try testing.expect(!editor.takeMeterReset());
+}
+
+test "the meter request survives a hide that had no link to stop" {
+    var editor: Editor = .{};
+    defer editor.destroy();
+    try testing.expect(editor.create(&c.CLAP_WINDOW_API_COCOA, false));
+
+    // `stopLoop` returns early when there is no display link, which is every
+    // test and any host that hides an editor it never parented. The request is
+    // made before that return so it does not depend on how far the function
+    // gets.
+    try testing.expect(editor.link == null);
+    try testing.expect(editor.setHidden(true));
+    try testing.expect(editor.takeMeterReset());
+}
+
+test "teardown clears a meter request rather than leaving it for the next editor" {
+    var editor: Editor = .{};
+    try testing.expect(editor.create(&c.CLAP_WINDOW_API_COCOA, false));
+    try testing.expect(editor.setHidden(true));
+
+    // `destroy` writes the meter directly, which is safe only because the gate
+    // has closed and drained by then. A request left set would fire once
+    // against a freshly created editor for no reason.
+    editor.destroy();
+    try testing.expect(!editor.takeMeterReset());
+}
 
 test "a size the editor will not adopt is pushed back to the host" {
     var editor: Editor = .{};
