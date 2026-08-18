@@ -85,10 +85,22 @@ extern "c" fn dispatch_semaphore_create(value: isize) ?*anyopaque;
 extern "c" fn dispatch_semaphore_wait(sema: *anyopaque, timeout: u64) isize;
 extern "c" fn dispatch_semaphore_signal(sema: *anyopaque) isize;
 
-/// `DISPATCH_TIME_FOREVER`. Blocking the display-link thread is the intended
-/// backpressure: CoreVideo drops the ticks that arrive while we are waiting,
-/// which is exactly the right response to a GPU that has fallen behind.
-const dispatch_time_forever: u64 = ~@as(u64, 0);
+/// `DISPATCH_TIME_NOW`. The wait below is a try-wait rather than a block, and
+/// the difference is a hang rather than a stutter.
+///
+/// Blocking here looked like the right backpressure, and it is what the
+/// canonical Metal pattern does, but that pattern assumes a render loop thread
+/// the program owns. This is CoreVideo's callback thread, and `Editor.tick`
+/// holds the gate across the whole call. A GPU that never signalled a
+/// completion handler would leave this wait unbounded, the gate never released,
+/// and `Gate.close` spinning on the host's main thread for as long as the
+/// process lived: an editor that will not close, in someone else's DAW.
+///
+/// Not waiting costs nothing that matters. If no slot is free at this instant
+/// the GPU is behind, and dropping the tick is what the loop would do a moment
+/// later anyway. It also returns the display-link callback promptly, which
+/// CoreVideo would rather have than a callback that runs long.
+const dispatch_time_now: u64 = 0;
 
 /// The block `addCompletedHandler:` takes, which is how a slot comes back.
 ///
@@ -97,8 +109,9 @@ const dispatch_time_forever: u64 = ~@as(u64, 0);
 /// runtime copies the block to the heap, and `addCompletedHandler:` does copy
 /// it. That retain is what makes `deinit` safe: releasing the semaphore while a
 /// command buffer is still executing would otherwise leave a queued handler
-/// signalling freed memory, and the alternative fix, draining every slot before
-/// releasing, can hang the host's main thread on a wedged GPU.
+/// signalling freed memory. The obvious alternative, draining every slot before
+/// releasing, would reintroduce on the teardown path exactly the unbounded wait
+/// that `dispatch_time_now` exists to keep off the render path.
 const Completion = objc.Block(struct { sema: objc.c.id }, .{objc.c.id}, void);
 
 fn signalCompleted(block: *const Completion.Context, buffer: objc.c.id) callconv(.c) void {
@@ -272,14 +285,18 @@ pub const Renderer = struct {
         const pool = objc.AutoreleasePool.init();
         defer pool.deinit();
 
+        // Taken before the `defer` below is registered, deliberately: a failed
+        // wait acquired nothing, and signalling on the way out would hand back
+        // a slot that was never held and let the semaphore climb past its
+        // starting value.
         const sema: *anyopaque = @ptrCast(self.in_flight.value.?);
-        _ = dispatch_semaphore_wait(sema, dispatch_time_forever);
+        if (dispatch_semaphore_wait(sema, dispatch_time_now) != 0) return .no_frame_slot;
 
         // Every early return below has to give the slot back. This is the
         // classic way the pattern fails: three skipped frames in a row would
-        // otherwise drain the semaphore to zero, and the next wait would block
-        // forever on a signal that is never coming, stopping the render loop
-        // for good rather than for a moment.
+        // otherwise drain the semaphore to zero, and every later frame would be
+        // refused a slot it could never get, stopping the render loop for good
+        // rather than for a moment.
         var handed_off = false;
         defer if (!handed_off) {
             _ = dispatch_semaphore_signal(sema);
