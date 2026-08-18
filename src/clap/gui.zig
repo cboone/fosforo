@@ -214,10 +214,23 @@ pub const Editor = struct {
     hidden: bool = false,
 
     /// The editor's size and backing scale as the main thread understands them.
-    /// The render thread never reads these; it reads whatever `Pending` last
-    /// carried across.
+    /// The render thread never reads these; it reads `applied` below, which is
+    /// its own copy of whatever `Pending` last carried across.
     current: gpu.Size = default_size,
     scale: f64 = 1.0,
+
+    /// The size and scale the render thread last acted on, owned by it.
+    ///
+    /// `report` needs a size to log, and reading `current` for it would be a
+    /// cross-thread read of a field the main thread rewrites on every frame of
+    /// a window drag. There is no need: the tick already has the authoritative
+    /// value in its hand when it drains the mailbox, so it keeps it.
+    ///
+    /// Seeded before the loop starts rather than left at the default, because a
+    /// host may size the editor before parenting it and the mailbox only
+    /// carries changes. Without that seed the first second of logging would
+    /// describe a size the editor never had.
+    applied: Pending.Update = .{ .size = default_size, .scale = 1.0 },
 
     view: ?view_mod.View = null,
     renderer: ?gpu.Renderer = null,
@@ -341,6 +354,7 @@ pub const Editor = struct {
         // gate above has closed and drained, so no tick can be inside `report`.
         self.meter = .{};
         self.meter_reset = .init(false);
+        self.applied = .{ .size = default_size, .scale = 1.0 };
         self.presented = .init(0);
         self.current = default_size;
         self.scale = 1.0;
@@ -411,6 +425,11 @@ pub const Editor = struct {
             self.renderer.?.deinit();
             self.renderer = null;
         }
+
+        // Before the loop can tick, which is what makes writing a
+        // render-thread-owned field from here safe. The link exists but has not
+        // been started, so no callback can be in flight.
+        self.seedApplied();
 
         self.link = display_link.DisplayLink.create(v.displayID(), tick, self) orelse
             return error.DisplayLinkCreationFailed;
@@ -535,7 +554,13 @@ pub const Editor = struct {
 
         const renderer = if (self.renderer) |*r| r else return;
 
-        if (self.pending.take()) |update| renderer.resize(update.size, update.scale);
+        if (self.pending.take()) |update| {
+            renderer.resize(update.size, update.scale);
+
+            // Kept, not just used. This is the render thread's own record of
+            // the geometry it is drawing at, and the only one `report` may read.
+            self.applied = update;
+        }
 
         // Counted, not merely performed. Monotonic and never reset, so a caller
         // that samples it twice can tell the loop advanced without having to
@@ -551,6 +576,18 @@ pub const Editor = struct {
     /// one ticking and drawing nothing. `src/smoke.zig` is the caller.
     pub fn framesPresented(self: *const Editor) u64 {
         return self.presented.load(.acquire);
+    }
+
+    /// [main-thread, before the loop starts] Hand the render thread its opening
+    /// view of the geometry.
+    ///
+    /// The mailbox only carries changes, and a host may size the editor before
+    /// parenting it, so the first drained update could be a long way off or
+    /// never come. Copying the main thread's values across once, at the one
+    /// moment no tick can be running, is what stops `report` opening with a
+    /// size the editor never had.
+    fn seedApplied(self: *Editor) void {
+        self.applied = .{ .size = self.current, .scale = self.scale };
     }
 
     /// [main-thread] Start and stop the display link. Both are no-ops before
@@ -600,9 +637,9 @@ pub const Editor = struct {
 
         l.print(c.CLAP_LOG_DEBUG, "rendering at {d:.1} Hz, {d}x{d} at {d:.2}x", .{
             rate,
-            self.current.width,
-            self.current.height,
-            self.scale,
+            self.applied.size.width,
+            self.applied.size.height,
+            self.applied.scale,
         });
     }
 
@@ -984,6 +1021,55 @@ const TestHostGui = struct {
 };
 
 const test_host_gui: HostGui = .{ .ext = &TestHostGui.ext, .host = null };
+
+test "the render thread opens with the size the host actually asked for" {
+    var editor: Editor = .{};
+    defer editor.destroy();
+    try testing.expect(editor.create(&c.CLAP_WINDOW_API_COCOA, false));
+
+    // A host may size the editor before parenting it, and the mailbox carries
+    // only changes. Without the seed the render thread would open reporting the
+    // default and stay wrong until something moved.
+    try testing.expect(editor.setSize(1280, 720));
+    editor.scale = 2.0;
+
+    editor.seedApplied();
+    try testing.expectEqual(gpu.Size{ .width = 1280, .height = 720 }, editor.applied.size);
+    try testing.expectEqual(@as(f64, 2.0), editor.applied.scale);
+}
+
+test "teardown returns the applied geometry to the default" {
+    var editor: Editor = .{};
+    try testing.expect(editor.create(&c.CLAP_WINDOW_API_COCOA, false));
+    try testing.expect(editor.setSize(1280, 720));
+    editor.seedApplied();
+
+    // An editor is reusable, and a stale size left here would be what the next
+    // one reported for its first second. Safe to write from the main thread
+    // only because the gate has closed and drained by this point.
+    editor.destroy();
+    try testing.expectEqual(default_size, editor.applied.size);
+    try testing.expectEqual(@as(f64, 1.0), editor.applied.scale);
+}
+
+test "what the render thread reports is what it drained, not what the host holds" {
+    var editor: Editor = .{};
+    defer editor.destroy();
+    try testing.expect(editor.create(&c.CLAP_WINDOW_API_COCOA, false));
+    editor.seedApplied();
+
+    // The main thread moves on, as it does on every frame of a window drag.
+    // `current` is its business and the render thread must not read it.
+    Editor.onResized(&editor, 1600, 900);
+    try testing.expectEqual(gpu.Size{ .width = 1600, .height = 900 }, editor.size());
+    try testing.expectEqual(default_size, editor.applied.size);
+
+    // The render thread learns about it by draining the mailbox, which is the
+    // one place the two threads meet, and records what it acted on.
+    const update = editor.pending.take().?;
+    editor.applied = update;
+    try testing.expectEqual(gpu.Size{ .width = 1600, .height = 900 }, editor.applied.size);
+}
 
 test "hiding asks the render thread to restart the meter rather than doing it" {
     var editor: Editor = .{};
