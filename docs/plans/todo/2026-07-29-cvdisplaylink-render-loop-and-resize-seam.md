@@ -367,6 +367,13 @@ The harness is neither REAPER nor Logic, and three of the issue's verification s
 | Dragging the window edge during playback        | **Passed** in REAPER 7.78, after three defects it exposed. See below                    |
 | Dragging across displays of differing scale     | **Untestable on this hardware.** See below                                              |
 | Several instances open at once, no dropouts     | Pending, in Logic, and blocked until the `show` fix landed                              |
+| The Audio Unit renders at all                   | **Passed**, by measurement rather than by eye. See below                                |
+
+**The Audio Unit renders, and confirming it needed a measurement.** After the `show` fix, a screenshot of the editor in Logic samples `RGB(5,4,8)` across the drawable, against `RGB(38,38,38)` for Logic's own chrome. `clear_fragment` writes `(0.02, 0.02, 0.03)` into a `BGRA8Unorm` drawable, which is byte `RGB(5,5,8)`, so the match is exact to within PNG compression. The decisive detail is the blue channel sitting two or three above red and green, mirroring the shader's `0.03` against `0.02`: an unrendered layer is `RGB(0,0,0)` and a host background is neither of those.
+
+This is the first frame the Audio Unit has ever presented in this project's history.
+
+It also retires a bad check. "It should look dim grey rather than black" was wrong, and worse than wrong: byte 5 is black to the eye, so the test returned the same answer whether the fix had worked or not. Phase 1's deliverable cannot be verified by looking at it, which is exactly why `Editor.framesPresented` exists and why `zig build smoke-appkit` asserts against it.
 
 **The drag test found three defects, none of which a unit test could have.** Each was caught by instrumenting the `clap.gui` callbacks and reading what REAPER actually does rather than what the specification says it should.
 
