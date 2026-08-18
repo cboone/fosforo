@@ -366,8 +366,12 @@ The harness is neither REAPER nor Logic, and three of the issue's verification s
 | ----------------------------------------------- | ----------------------------------------------------------------------------------------- |
 | Dragging the window edge during playback        | **Passed** in REAPER 7.78, after three defects it exposed. See below                    |
 | Dragging across displays of differing scale     | **Untestable on this hardware.** See below                                              |
-| Several instances open at once, no dropouts     | Pending, in Logic, and blocked until the `show` fix landed                              |
+| Several instances open at once, no dropouts     | **Passed** in Logic: 15 instances, 64-sample buffer, no System Overload. See below      |
 | The Audio Unit renders at all                   | **Passed**, by measurement rather than by eye. See below                                |
+
+**The dropout criterion is met, under conditions chosen so a clean result would mean something.** Fifteen instances, which is the most Logic will put on one track, every editor open, audio playing throughout, and the buffer at **64 samples** rather than the default. That last part is what makes it a test: at a default buffer a pass-through plus a clear-to-grey renderer has so much headroom that no arrangement of instances could fail, and a clean run would say nothing at all. At 64 samples the audio callback owes a block roughly every 1.3 to 1.5 ms depending on sample rate, while fifteen display links present something near 1800 frames per second between them. Logic reported no System Overload, which is an explicit dialog there rather than a judgement made by ear.
+
+Two earlier attempts at this test were void, and both for reasons worth keeping. The first ran against a bundle built from a different worktree. The second ran against a build where the Audio Unit never started its display link, so it measured fifteen idle instances; open editor windows are a sound proxy for running render loops only because clap-wrapper destroys an AU editor rather than hiding it.
 
 **The Audio Unit renders, and confirming it needed a measurement.** After the `show` fix, a screenshot of the editor in Logic samples `RGB(5,4,8)` across the drawable, against `RGB(38,38,38)` for Logic's own chrome. `clear_fragment` writes `(0.02, 0.02, 0.03)` into a `BGRA8Unorm` drawable, which is byte `RGB(5,5,8)`, so the match is exact to within PNG compression. The decisive detail is the blue channel sitting two or three above red and green, mirroring the shader's `0.03` against `0.02`: an unrendered layer is `RGB(0,0,0)` and a host background is neither of those.
 
