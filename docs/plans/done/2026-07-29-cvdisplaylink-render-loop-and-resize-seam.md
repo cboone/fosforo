@@ -14,18 +14,18 @@ Getting this wrong produces a use-after-free that only appears when a user drags
 
 ## Decisions already made
 
-| Question                            | Decision                                                                                                                             |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Display link API                    | `CVDisplayLink`. Deprecated in macOS 15 but the only option at the project's 11.0 deployment target, and Zig declares the externs    |
-| Where the display link lives        | `src/platform/displaylink.zig`, CoreVideo only. It names no Metal type and no AppKit type, and takes a comptime callback             |
-| Where the mailbox lives             | `src/clap/gui.zig`, above the seam. It is pure atomics with no platform dependency, which is what makes it properly testable         |
-| What the render thread may mutate   | The `CAMetalLayer`'s drawable configuration, which is Metal. The layer's `frame` stays on the main thread, which is AppKit geometry  |
-| Frames in flight                    | A `dispatch_semaphore` of 3, signalled from an `addCompletedHandler:` block, plus `maximumDrawableCount` of 3                        |
+| Question                             | Decision                                                                                                                            |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Display link API                     | `CVDisplayLink`. Deprecated in macOS 15 but the only option at the project's 11.0 deployment target, and Zig declares the externs   |
+| Where the display link lives         | `src/platform/displaylink.zig`, CoreVideo only. It names no Metal type and no AppKit type, and takes a comptime callback            |
+| Where the mailbox lives              | `src/clap/gui.zig`, above the seam. It is pure atomics with no platform dependency, which is what makes it properly testable        |
+| What the render thread may mutate    | The `CAMetalLayer`'s drawable configuration, which is Metal. The layer's `frame` stays on the main thread, which is AppKit geometry |
+| Frames in flight                     | A `dispatch_semaphore` of 3, signalled from an `addCompletedHandler:` block, plus `maximumDrawableCount` of 3                       |
 | How the block captures the semaphore | As an `objc.c.id`, so the block retains it. That is what makes `deinit` safe while a command buffer is still executing              |
-| Resize notifications                | A runtime `NSView` subclass overriding `setFrameSize:`, `viewDidChangeBackingProperties`, and `viewDidMoveToWindow`                  |
-| Resize bounds                       | Free on both axes, `preserve_aspect_ratio` false, clamped to a 480x270 minimum. No maximum                                          |
-| The 16:9 default                    | Stays 960x540 but is **not** enforced. The rationale for it is that a time axis wants room, which argues against locking the ratio   |
-| What tests may touch                | Unchanged: no test creates a view, a display link, or a Metal device. The mailbox and the size arithmetic are exercised directly     |
+| Resize notifications                 | A runtime `NSView` subclass overriding `setFrameSize:`, `viewDidChangeBackingProperties`, and `viewDidMoveToWindow`                 |
+| Resize bounds                        | Free on both axes, `preserve_aspect_ratio` false, clamped to a 480x270 minimum. No maximum                                          |
+| The 16:9 default                     | Stays 960x540 but is **not** enforced. The rationale for it is that a time axis wants room, which argues against locking the ratio  |
+| What tests may touch                 | Unchanged: no test creates a view, a display link, or a Metal device. The mailbox and the size arithmetic are exercised directly    |
 
 ## Changes
 
@@ -77,11 +77,11 @@ pub const Delegate = struct {
 
 Three overrides, each calling `super` first through `msgSendSuper`:
 
-| Selector                         | Why it is needed                                                                                     |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Selector                         | Why it is needed                                                                                                                                            |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `setFrameSize:`                  | The single funnel for a size change, whether it came from CLAP's `set_size` or from the host resizing the parent and letting the autoresizing mask carry it |
-| `viewDidChangeBackingProperties` | A window dragged between a Retina and a non-Retina display. Without it the drawable keeps the old scale, which issue #4's plan explicitly deferred to here |
-| `viewDidMoveToWindow`            | The window may now be on a different display, so the display link has to be retargeted or it keeps pacing to the old one's refresh rate |
+| `viewDidChangeBackingProperties` | A window dragged between a Retina and a non-Retina display. Without it the drawable keeps the old scale, which issue #4's plan explicitly deferred to here  |
+| `viewDidMoveToWindow`            | The window may now be on a different display, so the display link has to be retargeted or it keeps pacing to the old one's refresh rate                     |
 
 `setFrameSize:` also sets `[[self layer] setFrame:]`. That is a `CALayer` message and names no Metal type, so it is not the leak ADR 0005 forbids; it is geometry that belongs to the view hierarchy. It is insurance: AppKit may already track the layer's frame for a layer-hosting view, and setting it twice is harmless while not setting it at all is a layer that does not follow its view.
 
@@ -220,12 +220,12 @@ The rest:
 ### `src/clap/plugin.zig`: advertise a resizable editor
 
 | Callback           | Change                                                                                              |
-| ------------------ | ----------------------------------------------------------------------------------------------------- |
-| `can_resize`       | Now true. The comment pointing at issue #5 comes out                                                 |
-| `get_resize_hints` | Fills the struct: both axes true, `preserve_aspect_ratio` false, and returns true                    |
-| `adjust_size`      | Delegates to `Editor.adjustSize` rather than answering with the fixed size                           |
-| `set_size`         | Delegates to `Editor.setSize` rather than comparing against the only size there was                  |
-| `get_size`         | Unchanged in shape, but `Editor.size()` beneath it is now the current size rather than the constant  |
+| ------------------ | --------------------------------------------------------------------------------------------------- |
+| `can_resize`       | Now true. The comment pointing at issue #5 comes out                                                |
+| `get_resize_hints` | Fills the struct: both axes true, `preserve_aspect_ratio` false, and returns true                   |
+| `adjust_size`      | Delegates to `Editor.adjustSize` rather than answering with the fixed size                          |
+| `set_size`         | Delegates to `Editor.setSize` rather than comparing against the only size there was                 |
+| `get_size`         | Unchanged in shape, but `Editor.size()` beneath it is now the current size rather than the constant |
 
 `Instance.init` gains `self.editor.log = &self.log;`. `&self.log` is stable because `Instance` is heap-allocated and lives exactly as long as the editor inside it.
 
@@ -241,16 +241,16 @@ The rest:
 
 The rule from issue #4 holds without exception: **no test creates an `NSView`, a display link, or a Metal device.** What this change adds is mostly pure, which is why the mailbox went above the seam rather than into the backend.
 
-| Area           | Cases                                                                                                                          |
-| -------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| mailbox        | Post then take round trips; take on an empty mailbox is null; take twice yields null the second time; the last of several posts wins |
-| mailbox        | A zero width or height is not distinguishable from empty and is ignored; a size beyond `u16` saturates rather than wrapping     |
-| mailbox        | Scale quantisation is exact at 1.0, 2.0, and 3.0, and round trips within 1/256 elsewhere                                        |
-| sizing         | `setSize` clamps each axis independently against `min_size`; `adjustSize` answers the clamped size; `size()` follows `setSize`  |
-| sizing         | `get_size` reports the size a preceding `set_size` applied, rather than the default                                            |
-| hints          | `can_resize` is true and `get_resize_hints` fills both axes with `preserve_aspect_ratio` false                                  |
-| lifecycle      | `setHidden` and `destroy` are still reachable and idempotent with a null link, which is the state every test is in              |
-| seam           | The comptime signature assertion covers `resize`, so a backend that took an `objc.Object` stops compiling                       |
+| Area      | Cases                                                                                                                                |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| mailbox   | Post then take round trips; take on an empty mailbox is null; take twice yields null the second time; the last of several posts wins |
+| mailbox   | A zero width or height is not distinguishable from empty and is ignored; a size beyond `u16` saturates rather than wrapping          |
+| mailbox   | Scale quantisation is exact at 1.0, 2.0, and 3.0, and round trips within 1/256 elsewhere                                             |
+| sizing    | `setSize` clamps each axis independently against `min_size`; `adjustSize` answers the clamped size; `size()` follows `setSize`       |
+| sizing    | `get_size` reports the size a preceding `set_size` applied, rather than the default                                                  |
+| hints     | `can_resize` is true and `get_resize_hints` fills both axes with `preserve_aspect_ratio` false                                       |
+| lifecycle | `setHidden` and `destroy` are still reachable and idempotent with a null link, which is the state every test is in                   |
+| seam      | The comptime signature assertion covers `resize`, so a backend that took an `objc.Object` stops compiling                            |
 
 Two existing tests assert the state this change ends and are rewritten rather than extended: `src/clap/plugin.zig:983`, "the editor is a fixed size that set_size will only confirm", and the `can_resize` expectation inside it.
 
@@ -337,16 +337,16 @@ The frame-rate meter counted its own baseline call as a frame, and its window sp
 
 The runtime behaviour was verified with a temporary in-process harness, since all of it is runtime behaviour and none of the above touches it. Driving a real `NSApplication`, a real `NSWindow`, and the real vtable:
 
-| Check                                | Result                                                                                     |
-| ------------------------------------ | -------------------------------------------------------------------------------------------- |
-| Renders at display refresh           | 119.6 to 120.2 Hz sustained on a 120 Hz display, across every phase of the run              |
-| The mailbox drains                   | The reported drawable size tracked `set_size` through 960x540, 1600x900, and 480x270        |
-| `set_size` clamps rather than refuses | A 10x10 request produced 480x270, and `get_size` reported it back                          |
-| Hiding stops the loop                | No frames for the two seconds an editor was hidden, and 119.9 Hz on the second after `show` |
-| The teardown race                    | 100 open/close cycles by hand, then 400 under `zig build smoke-leaks`, clean                |
-| The thread rules hold                | Neither `assertMainThread` nor `assertNotMainThread` tripped in a debug build               |
-| Frames are actually presented        | Asserted per cycle by `zig build smoke-appkit`, and confirmed to fail when sabotaged        |
-| Hiding stops the loop                | The presented count does not advance for 50 ms after `hide`                                 |
+| Check                                 | Result                                                                                      |
+| ------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Renders at display refresh            | 119.6 to 120.2 Hz sustained on a 120 Hz display, across every phase of the run              |
+| The mailbox drains                    | The reported drawable size tracked `set_size` through 960x540, 1600x900, and 480x270        |
+| `set_size` clamps rather than refuses | A 10x10 request produced 480x270, and `get_size` reported it back                           |
+| Hiding stops the loop                 | No frames for the two seconds an editor was hidden, and 119.9 Hz on the second after `show` |
+| The teardown race                     | 100 open/close cycles by hand, then 400 under `zig build smoke-leaks`, clean                |
+| The thread rules hold                 | Neither `assertMainThread` nor `assertNotMainThread` tripped in a debug build               |
+| Frames are actually presented         | Asserted per cycle by `zig build smoke-appkit`, and confirmed to fail when sabotaged        |
+| Hiding stops the loop                 | The presented count does not advance for 50 ms after `hide`                                 |
 
 **The leak criterion is met, and is now enforced rather than measured once.** By hand, under `leaks --atExit` with `MallocStackLogging`, the total was flat at 286 leaked allocations for 1, 20, and 100 open/close cycles, all of it the `NSXPCConnection` chatter AppKit's LaunchServices creates. `zig build smoke-leaks`, which arrived from `main` mid-flight, reaches the same conclusion over 400 cycles with the render loop running: `nothing this project owns was leaked`. A per-cycle leak would compound four hundred times over and be unmissable.
 
@@ -362,12 +362,12 @@ zig build smoke-leaks   # 400 cycles under leaks --atExit
 
 The harness is neither REAPER nor Logic, and three of the issue's verification steps need one or the other.
 
-| Step                                            | Result                                                                                  |
-| ----------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| Dragging the window edge during playback        | **Passed** in REAPER 7.78, after three defects it exposed. See below                    |
-| Dragging across displays of differing scale     | **Untestable on this hardware.** See below                                              |
-| Several instances open at once, no dropouts     | **Passed** in Logic: 15 instances, 64-sample buffer, no System Overload. See below      |
-| The Audio Unit renders at all                   | **Passed**, by measurement rather than by eye. See below                                |
+| Step                                        | Result                                                                             |
+| ------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Dragging the window edge during playback    | **Passed** in REAPER 7.78, after three defects it exposed. See below               |
+| Dragging across displays of differing scale | **Untestable on this hardware.** See below                                         |
+| Several instances open at once, no dropouts | **Passed** in Logic: 15 instances, 64-sample buffer, no System Overload. See below |
+| The Audio Unit renders at all               | **Passed**, by measurement rather than by eye. See below                           |
 
 **The dropout criterion is met, under conditions chosen so a clean result would mean something.** Fifteen instances, which is the most Logic will put on one track, every editor open, audio playing throughout, and the buffer at **64 samples** rather than the default. That last part is what makes it a test: at a default buffer a pass-through plus a clear-to-grey renderer has so much headroom that no arrangement of instances could fail, and a clean run would say nothing at all. At 64 samples the audio callback owes a block roughly every 1.3 to 1.5 ms depending on sample rate, while fifteen display links present something near 1800 frames per second between them. Logic reported no System Overload, which is an explicit dialog there rather than a judgement made by ear.
 
@@ -423,15 +423,15 @@ Recorded so these read as deliberate omissions:
 
 ## Risks
 
-| Risk                                                                              | Mitigation                                                                                                                                          |
-| --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CVDisplayLink` is deprecated as of macOS 15                                      | Still the only option at the 11.0 deployment target, and Zig declares the externs itself so nothing warns. Revisit with the ADR that raises the target |
-| `CVDisplayLinkStop` is not documented to wait for a callback already in flight    | The `Gate` barrier in `destroy` makes the question moot rather than betting on the answer                                                             |
-| The cross-display paths cannot be exercised on the development machine           | Single display, so the backing-scale and display-retarget callbacks ship on reading alone. Neither failure is dangerous and a second monitor surfaces both at once. Stated in the verification section rather than left implied |
-| A skipped frame leaks its semaphore slot and stalls the loop after three          | One `defer` covering every early return, and the hand-off is the last thing `frame` does before committing                                            |
-| The completion block outlives the renderer                                        | The semaphore is captured as an `objc.c.id`, so the block retains it and `deinit` releasing is not the last reference                                 |
-| Two copies of the plugin in one process collide on the runtime class name         | An address-derived suffix per loaded image. Reusing the existing class would leave IMPs pointing into another copy's text segment                     |
-| AppKit may not track a layer-hosting view's layer frame                           | `setFrameSize:` sets it explicitly. Redundant if AppKit does it, load-bearing if it does not, and one message either way                              |
-| The render thread mutating `CAMetalLayer` properties off the main thread          | Only `contentsScale` and `drawableSize`, which are the drawable's Metal configuration. `frame` and the view hierarchy stay on the main thread         |
-| A `@`-encoded ivar holding a pointer that is not an object                        | A class from `objc_allocateClassPair` has a null strong-ivar layout, so `objc_destructInstance` releases nothing                                      |
-| `zig build test` picking up a dependency on a GPU or a window server              | Unchanged rule, and the mailbox went above the seam precisely so the new logic is testable without either                                             |
+| Risk                                                                           | Mitigation                                                                                                                                                                                                                      |
+| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CVDisplayLink` is deprecated as of macOS 15                                   | Still the only option at the 11.0 deployment target, and Zig declares the externs itself so nothing warns. Revisit with the ADR that raises the target                                                                          |
+| `CVDisplayLinkStop` is not documented to wait for a callback already in flight | The `Gate` barrier in `destroy` makes the question moot rather than betting on the answer                                                                                                                                       |
+| The cross-display paths cannot be exercised on the development machine         | Single display, so the backing-scale and display-retarget callbacks ship on reading alone. Neither failure is dangerous and a second monitor surfaces both at once. Stated in the verification section rather than left implied |
+| A skipped frame leaks its semaphore slot and stalls the loop after three       | One `defer` covering every early return, and the hand-off is the last thing `frame` does before committing                                                                                                                      |
+| The completion block outlives the renderer                                     | The semaphore is captured as an `objc.c.id`, so the block retains it and `deinit` releasing is not the last reference                                                                                                           |
+| Two copies of the plugin in one process collide on the runtime class name      | An address-derived suffix per loaded image. Reusing the existing class would leave IMPs pointing into another copy's text segment                                                                                               |
+| AppKit may not track a layer-hosting view's layer frame                        | `setFrameSize:` sets it explicitly. Redundant if AppKit does it, load-bearing if it does not, and one message either way                                                                                                        |
+| The render thread mutating `CAMetalLayer` properties off the main thread       | Only `contentsScale` and `drawableSize`, which are the drawable's Metal configuration. `frame` and the view hierarchy stay on the main thread                                                                                   |
+| A `@`-encoded ivar holding a pointer that is not an object                     | A class from `objc_allocateClassPair` has a null strong-ivar layout, so `objc_destructInstance` releases nothing                                                                                                                |
+| `zig build test` picking up a dependency on a GPU or a window server           | Unchanged rule, and the mailbox went above the seam precisely so the new logic is testable without either                                                                                                                       |
