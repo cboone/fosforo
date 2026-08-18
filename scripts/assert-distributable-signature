@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+# assert-distributable-signature — assert a bundle carries a signature that will notarize
+# Author: Christopher Boone
+# Date: 2026-07-30
+#
+# The exact inverse of scripts/assert-adhoc-signature, and the direction CI cannot
+# check because no runner has a certificate. Notarization refuses a submission that
+# is missing any one of these, and it refuses it after the upload rather than before,
+# so asserting locally turns a slow round trip into an immediate failure.
+#
+# The authority check is the one that catches a real mistake rather than a
+# hypothetical one. An Apple Development certificate signs, timestamps and hardens
+# exactly like a Developer ID Application one, produces a signature that passes
+# `codesign --verify --strict`, and will never notarize. Nothing short of reading the
+# authority distinguishes them.
+#
+# Usage:
+#   assert-distributable-signature <bundle> [<bundle>...]
+#
+# Exit codes:
+#   0  - Every bundle is Developer ID signed, hardened and securely timestamped
+#  64  - Invalid arguments
+#  65  - A bundle carries a signature that will not notarize
+#  66  - A bundle does not exist, or carries no signature at all
+
+set -euo pipefail
+
+if [[ -n "${TRACE:-}" ]]; then
+  set -x
+fi
+
+readonly E_USAGE=64
+readonly E_DATAERR=65
+readonly E_NOINPUT=66
+
+# What assert_distributable reports back, so main can honour the exit codes
+# documented above. A bundle carrying no valid signature at all means the build's
+# signing step did not run; a bundle carrying the wrong one means it ran with the
+# wrong identity or flags. Different causes, different fixes, different exit codes.
+readonly ASSERT_VIOLATION=1
+readonly ASSERT_NO_SIGNATURE=2
+
+readonly PROGRAM_NAME="${0##*/}"
+
+# The certificate type notarization requires for the code inside a package. The
+# installer package itself is signed with Developer ID *Installer*, a different
+# certificate; see scripts/build-installer.
+readonly REQUIRED_AUTHORITY="Developer ID Application:"
+
+# Write a message to stderr, prefixed with the program name.
+# Arguments:
+#   $@ - message parts
+function warn() {
+  echo "${PROGRAM_NAME}: ${*}" >&2
+}
+
+function usage() {
+  echo "Usage: ${PROGRAM_NAME} <bundle> [<bundle>...]" >&2
+}
+
+# Print a bundle's signature description.
+# codesign writes -dvv output to stderr, so it is redirected rather than captured
+# from stdout, which stays empty.
+# Arguments:
+#   $1 - path to the bundle
+# Outputs:
+#   The description on stdout
+function signature_description() {
+  local bundle="${1}"
+
+  /usr/bin/codesign --display --verbose=2 "${bundle}" 2>&1
+}
+
+# Assert that a bundle's signature satisfies every notarization precondition.
+# Arguments:
+#   $1 - path to the bundle
+# Outputs:
+#   One line per violation, to stderr
+# Returns:
+#   0 when the signature will notarize, ASSERT_NO_SIGNATURE when the bundle carries
+#   no valid signature, ASSERT_VIOLATION when it carries one that will not notarize
+function assert_distributable() {
+  local bundle="${1}"
+  local description flags
+  local -i violations=0
+
+  if ! /usr/bin/codesign --verify --strict "${bundle}" 2> /dev/null; then
+    warn "${bundle}: signature is not valid"
+    return "${ASSERT_NO_SIGNATURE}"
+  fi
+
+  # codesign exits non-zero on an unsigned bundle. Captured rather than allowed to
+  # fail the script, both because the diagnostic below is more useful than errexit's
+  # silence and because errexit would not fire here anyway: this function is only
+  # ever called from an `if !` condition, which suppresses it.
+  description=$(signature_description "${bundle}") || true
+
+  flags=$(echo "${description}" | sed -n 's/.*\(flags=[^ ]*\).*/\1/p')
+  if [[ -z "${flags}" ]]; then
+    warn "${bundle}: no signature at all"
+    return "${ASSERT_NO_SIGNATURE}"
+  fi
+
+  if [[ "${flags}" == *adhoc* ]]; then
+    warn "${bundle}: signed ad-hoc, which cannot be notarized (${flags})"
+    ((violations++)) || true
+  fi
+
+  if [[ "${flags}" != *runtime* ]]; then
+    warn "${bundle}: hardened runtime absent, needs --options runtime (${flags})"
+    ((violations++)) || true
+  fi
+
+  # Anchored, so this cannot match the `Signed Time=` line codesign emits instead
+  # when a signature carries only a local timestamp. A local timestamp is not a
+  # secure one and notarization does not accept it.
+  if ! echo "${description}" | grep -q '^Timestamp='; then
+    warn "${bundle}: no secure timestamp, needs --timestamp"
+    ((violations++)) || true
+  fi
+
+  if ! echo "${description}" | grep -q "^Authority=${REQUIRED_AUTHORITY}"; then
+    warn "${bundle}: not signed by a '${REQUIRED_AUTHORITY}' certificate"
+    echo "${description}" | sed -n 's/^Authority=/  found authority: /p' >&2
+    ((violations++)) || true
+  fi
+
+  if ((violations > 0)); then
+    return "${ASSERT_VIOLATION}"
+  fi
+}
+
+function main() {
+  local -a bundles=()
+  local bundle
+  local -i failures=0
+
+  while [[ ${#} -gt 0 ]]; do
+    case "${1}" in
+      -*)
+        warn "unknown option '${1}'"
+        usage
+        return "${E_USAGE}"
+        ;;
+      *)
+        bundles+=("${1}")
+        ;;
+    esac
+    shift
+  done
+
+  if [[ ${#bundles[@]} -eq 0 ]]; then
+    usage
+    return "${E_USAGE}"
+  fi
+
+  for bundle in "${bundles[@]}"; do
+    if [[ ! -e "${bundle}" ]]; then
+      warn "cannot read '${bundle}'"
+      return "${E_NOINPUT}"
+    fi
+  done
+
+  local -i unsigned=0
+  local -i result
+
+  for bundle in "${bundles[@]}"; do
+    result=0
+    assert_distributable "${bundle}" || result="${?}"
+
+    case "${result}" in
+      0) echo "${bundle}: Developer ID signed, hardened, securely timestamped" ;;
+      "${ASSERT_NO_SIGNATURE}") ((unsigned++)) || true ;;
+      *) ((failures++)) || true ;;
+    esac
+  done
+
+  # A missing or invalid signature outranks a wrong one. It means the build's signing
+  # step did not run at all, which is the more fundamental failure and the one to fix
+  # first.
+  if ((unsigned > 0)); then
+    return "${E_NOINPUT}"
+  fi
+
+  if ((failures > 0)); then
+    return "${E_DATAERR}"
+  fi
+}
+
+main "${@}"
