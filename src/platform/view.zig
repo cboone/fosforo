@@ -281,11 +281,37 @@ fn setFrameSize(target: c.id, sel: c.SEL, size: CGSize) callconv(.c) void {
     }
 
     const delegate = delegateOf(target) orelse return;
-    delegate.resized(
-        delegate.context,
-        @intFromFloat(@max(0, size.width)),
-        @intFromFloat(@max(0, size.height)),
-    );
+    delegate.resized(delegate.context, points(size.width), points(size.height));
+}
+
+/// A Cocoa dimension as whole logical points, refusing anything that is not a
+/// size.
+///
+/// `@intFromFloat` is illegal behaviour on a NaN, on an infinity, and on
+/// anything outside the destination's range. In a debug build that is a trap,
+/// and in a release build it is a silently wrong number, which is the worse of
+/// the two: this runs inside someone else's DAW.
+///
+/// `@max(0, value)` alone was not enough, because it answers only the negative
+/// case. An infinite or merely enormous width still reached the conversion, and
+/// this is a trust boundary rather than a value this file controls: the same
+/// host that sends heights of -1 and -22 while a window is dragged past its own
+/// top is the one supplying these.
+///
+/// The ceiling is `i32`'s maximum rather than `u32`'s, so the result lands
+/// where `Editor.clampAxis` reads it as an absurd-but-positive size and answers
+/// with the largest editor it allows. One step higher and that same function
+/// would read it as a wrapped negative and answer with the smallest, which is
+/// the opposite of what an enormous window means.
+fn points(value: platform.CGFloat) u32 {
+    // Written as a refuted positive so a NaN takes this branch: every
+    // comparison against a NaN is false, including the one this negates.
+    if (!(value > 0)) return 0;
+
+    const ceiling: platform.CGFloat = @floatFromInt(std.math.maxInt(i32));
+    if (value >= ceiling) return std.math.maxInt(i32);
+
+    return @intFromFloat(value);
 }
 
 /// A window dragged between a Retina and a non-Retina display. Without this the
@@ -332,4 +358,40 @@ test {
     // in `gui.zig`.
     testing.refAllDecls(@This());
     testing.refAllDecls(View);
+}
+
+test "a Cocoa dimension converts only when it is a size" {
+    // The ordinary case, and the boundary either side of it.
+    try testing.expectEqual(@as(u32, 960), points(960));
+    try testing.expectEqual(@as(u32, 1), points(1));
+
+    // Truncation rather than rounding, because a view is never fractionally
+    // sized and the consumer clamps anyway.
+    try testing.expectEqual(@as(u32, 960), points(960.7));
+
+    // Everything that is not a positive size answers zero, which
+    // `Editor.clampSize` turns into the smallest editor allowed.
+    try testing.expectEqual(@as(u32, 0), points(0));
+    try testing.expectEqual(@as(u32, 0), points(-1));
+    try testing.expectEqual(@as(u32, 0), points(-2147483648));
+
+    // A NaN takes the same path. Every comparison against one is false,
+    // including the negated one guarding the conversion.
+    try testing.expectEqual(@as(u32, 0), points(std.math.nan(platform.CGFloat)));
+    try testing.expectEqual(@as(u32, 0), points(-std.math.nan(platform.CGFloat)));
+}
+
+test "an unrepresentable dimension is bounded rather than converted" {
+    // `@intFromFloat` is illegal behaviour on any of these: a trap in a debug
+    // build and a silently wrong number in a release one, inside someone else's
+    // DAW. None of them may reach it.
+    const ceiling: u32 = std.math.maxInt(i32);
+
+    try testing.expectEqual(ceiling, points(std.math.inf(platform.CGFloat)));
+    try testing.expectEqual(ceiling, points(1e300));
+    try testing.expectEqual(ceiling, points(@floatFromInt(std.math.maxInt(u32))));
+    try testing.expectEqual(ceiling, points(@floatFromInt(std.math.maxInt(i32))));
+
+    // Just under the ceiling still converts, so the bound is not overreaching.
+    try testing.expectEqual(ceiling - 1, points(@as(platform.CGFloat, @floatFromInt(ceiling - 1))));
 }
