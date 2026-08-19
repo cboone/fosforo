@@ -201,7 +201,7 @@ Two were planned. Six landed, and the four unplanned ones all came from asking w
 2. `docs: record the history buffer in the changelog and structure` — `CHANGELOG.md` and `AGENTS.md`.
 3. `test: cover the two read paths the docstring claimed but nothing exercised` — a read longer than the whole capacity against a full ring, and the degenerate capacity of one. Both passed first time; they moved two claims from traced-by-hand to executed. This commit also carries the `EmptyCapacity` comment correction below, which its message does not mention.
 4. `docs: correct what the default test and build paths actually do` — `zig build test` is Debug rather than ReleaseFast, an error this file's module comment had inherited from `src/clap/state.zig`. Plus the AGENTS.md gotcha for that and for the test-only import that a plain `zig build` never type-checks.
-5. `chore: stop typos reading abbreviated git SHAs as words` — the pin `91f9abd` contains `abd`, in two completed plans that are records rather than prose to correct.
+5. `chore: stop typos reading abbreviated git SHAs as words` — the last three characters of the pin `91f9abd` read as a misspelling of "and", in two completed plans that are records rather than prose to correct.
 6. `docs: record the verification gaps this issue leaves to #37` — the section above.
 
 The two decisions the issue asked for were settled before any code was written, and neither moved. What moved was the confidence attached to the result, which is the part worth noticing: every check was green at commit 2, and three of the four findings above were still there.
