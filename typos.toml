@@ -1,3 +1,18 @@
+[default]
+# Abbreviated git SHAs are hexadecimal, and hexadecimal spells words. The
+# reusable-workflow pin `91f9abd` contains `abd`, which reads as a misspelling
+# of "and", and the two plans that record it are historical documents rather
+# than prose to be corrected.
+#
+# Deliberately scoped to a backtick-delimited hex run, which is how every SHA
+# in this repository is written, rather than to bare hex. An unscoped
+# `[0-9a-f]{7,40}` would also swallow ordinary words spelled entirely in hex
+# letters, "defaced" among them, and a spell checker that silently stops
+# checking words is worse than one that needs an occasional exception. The
+# `regex` crate has no lookahead, so "hex with at least one digit" is not
+# expressible; the backticks are the available discriminator.
+extend-ignore-re = ['`[0-9a-f]{7,40}`']
+
 [default.extend-words]
 # "precessing" is correct: a phase-space loop that slowly rotates exhibits
 # precession. Not a misspelling of "processing", despite the audio context.
