@@ -51,8 +51,11 @@ pub const Ring = struct {
     pub const InitError = error{
         /// A ring with no slots has no trailing window to return. Refused
         /// rather than asserted: `std.math.ceilPowerOfTwo` asserts against zero
-        /// itself, and an assertion is compiled out of exactly the
-        /// `ReleaseFast` build this project ships and tests under.
+        /// itself, and that assertion is at its most convincing exactly where
+        /// it does the least good. `zig build test` takes no `-Doptimize`, so
+        /// it is a Debug build and the assertion is live; the `--release=fast`
+        /// build that ships is the one where it is gone and a host's bad value
+        /// would run on unchecked.
         EmptyCapacity,
         /// The capacity, once rounded up, does not fit in a `usize`.
         Overflow,
@@ -361,6 +364,46 @@ test "a cursor that has lapped many times still returns the newest window" {
     // The cursor counts samples rather than indexing the array, so it keeps
     // saying how far the stream has run after the storage has wrapped.
     try testing.expect(ring.written() > ring.capacity());
+}
+
+test "a read longer than the whole capacity is padded to the difference" {
+    var ring = try Ring.init(testing.allocator, 8);
+    defer ring.deinit(testing.allocator);
+
+    var block: [100]f32 = undefined;
+    ramp(&block, 0);
+    ring.write(&block);
+
+    // `read`'s docstring claims the front pad covers a window longer than the
+    // capacity as well as one longer than what has been written, and those are
+    // two different paths through it. The other has an empty ring behind it and
+    // copies nothing; this one has a full ring behind it, so a maximum-length
+    // copy and a non-empty pad have to coexist and agree about where they meet.
+    var window: [12]f32 = @splat(7);
+    try testing.expect(ring.read(&window));
+    try expectSamples(&[_]f32{ 0, 0, 0, 0, 92, 93, 94, 95, 96, 97, 98, 99 }, &window);
+}
+
+test "a capacity of one holds the newest sample and nothing else" {
+    var ring = try Ring.init(testing.allocator, 1);
+    defer ring.deinit(testing.allocator);
+
+    // The degenerate shape, and the only one where the mask is zero, so every
+    // index collapses to the same slot and an error in the arithmetic has
+    // nowhere to show. Not a realistic capacity; it is here because it is the
+    // boundary of the one the plugin will actually ask for.
+    var newest: [1]f32 = @splat(7);
+    try testing.expect(ring.read(&newest));
+    try expectSamples(&[_]f32{0}, &newest);
+
+    ring.write(&[_]f32{ 1, 2, 3 });
+    try testing.expectEqual(@as(u64, 3), ring.written());
+    try testing.expect(ring.read(&newest));
+    try expectSamples(&[_]f32{3}, &newest);
+
+    var wide: [3]f32 = @splat(7);
+    try testing.expect(ring.read(&wide));
+    try expectSamples(&[_]f32{ 0, 0, 3 }, &wide);
 }
 
 test "a write longer than the capacity keeps only its newest samples" {
