@@ -140,10 +140,12 @@ All in `src/dsp/ring.zig` under the `// Tests` banner the other modules use, wit
 | Wrapping at the seam                                 | A write straddling the end of the backing array reads back contiguous      |
 | A read longer than what has been written             | Zeroes at the front, samples at the back, oldest first                     |
 | A read of exactly the capacity                       | The boundary case where the pad is empty and the copy is the whole array   |
+| A read longer than the whole capacity                | A non-empty pad and a full-capacity copy agreeing about where they meet    |
 | A cursor advanced past the capacity many times over  | The newest window is correct after many laps, and `written` agrees         |
 | A write longer than the capacity                     | Only the newest `capacity` samples survive, and the cursor advances by all |
+| A capacity of one                                    | The degenerate shape, where the mask is zero and every index collapses     |
 | `init` rounds a non-power-of-two request up          | `capacity` reports what was allocated, not what was asked for              |
-| `init` refuses a zero request and an overflowing one | Refusal rather than an assertion compiled out of the release build         |
+| `init` refuses a zero request and an overflowing one | Refusal rather than an assertion the shipped build would not carry         |
 | A read of a fresh ring                               | All zeroes, and reported coherent                                          |
 | A zero-length write and a zero-length read           | Both no-ops, and neither disturbs the cursor                               |
 | `coherent` at and past its boundary                  | Equality is coherent; one sample past it is not                            |
@@ -166,11 +168,22 @@ No new ADR. ADR 0010 already decided this and nothing here supersedes it; the th
 zig build test
 zig fmt --check build.zig src/
 markdownlint-cli2
+typos
 ```
 
-`zig build test` covers all of it. No host, no GPU, no window; that is the reason this issue exists as its own unit.
+`zig build test` covers everything this issue can cover without a caller. No host, no GPU, no window; that is the reason it exists as its own unit.
 
 **Verify the instrument before trusting the result.** A module that nothing imports contributes no tests and reports no failure, so a green `zig build test` is not by itself evidence that any of the above ran. Break one assertion in `src/dsp/ring.zig` deliberately, confirm `zig build test` goes red, and restore it. That is the same reasoning that made `Editor.framesPresented` necessary: a check nobody has watched fail is not a check.
+
+### What `zig build test` does not reach, and where it gets reached
+
+Three gaps, recorded rather than papered over.
+
+**The memory ordering is verified by reading.** Every test here is single-threaded, so nothing executes `write` and `read` on two threads at once. The tests therefore cannot discriminate a correct ordering from an incorrect one: replacing the `.release` store in `write` with a `.monotonic` one passes all of them, and would very likely pass in a host too, surfacing much later as rare visual corruption. Thread Sanitizer is not the way out either. Zig 0.16 accepts `-fsanitize-thread` and links a binary on `aarch64-macos` that segfaults on startup, so it is unavailable here rather than merely awkward. **This is deferred to [#37](https://github.com/cboone/fosforo/issues/37)**, where a known signal drawn on screen during playback is the first check that can tell the two apart. A threaded stress test is still the wrong answer, for the reason above: it would assert the scheduler.
+
+**A plain `zig build` never analyzes this module.** The only import is inside a `test` block, and Zig analyzes those only in a test build. Verified rather than assumed, because a build-cache manifest records the files the compiler *read* and cannot distinguish those from the ones it *checked*: an isolated two-file reproduction compiles a binary successfully with a type error sitting in a test-only import. So the `Build`, `clap-validator`, and `clap-wrapper` CI jobs give `src/dsp/ring.zig` no coverage at all, and only the `Test` job does. This stops being true when [#36](https://github.com/cboone/fosforo/issues/36) imports it from `src/clap/plugin.zig`.
+
+**The real-time discipline is a claim about the call graph.** `write` allocates nothing, takes no lock, and makes no syscall, and nothing asserts that; reading it is the available check. [#36](https://github.com/cboone/fosforo/issues/36) is where the property becomes load-bearing, since that is where `process` starts calling it.
 
 ## Out of scope
 
