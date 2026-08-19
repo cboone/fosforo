@@ -81,6 +81,13 @@ extern "c" fn MTLCreateSystemDefaultDevice() ?*anyopaque;
 /// libdispatch. Declared rather than translated for the same reason Metal's
 /// enums are restated: the headers are full of macros and attributes that
 /// `translate-c` has no use for, and these three functions are a stable ABI.
+///
+/// **Not one of the primitives ADR 0015 governs.** `std` did not hide this one,
+/// and `std.Io.Semaphore` could not replace it in any case: it offers `wait` and
+/// `waitUncancelable` and no try-wait at all, both routed through `Io.Mutex` and
+/// `Io.Condition` to `futexWait`. The wait below is deliberately bounded, for the
+/// reason `dispatch_time_now` gives, so a blocking-only semaphore is the one
+/// shape this call site cannot use.
 extern "c" fn dispatch_semaphore_create(value: isize) ?*anyopaque;
 extern "c" fn dispatch_semaphore_wait(sema: *anyopaque, timeout: u64) isize;
 extern "c" fn dispatch_semaphore_signal(sema: *anyopaque) isize;

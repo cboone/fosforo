@@ -700,9 +700,14 @@ pub const Editor = struct {
 /// so there is no window between checking and entering for `close` to slip
 /// into.
 ///
-/// Deliberately not a mutex. Zig 0.16 has no blocking mutex that does not want
-/// an `Io` instance, and reaching for a pthread here would put a platform
-/// dependency in the one file whose whole design is that it has none.
+/// Deliberately not a mutex, and **not one of the primitives ADR 0015 governs**.
+/// `platform/io.zig` owns an `Io`, so `Io.Mutex` is available and is still the
+/// wrong answer twice over: a mutex would reintroduce the check-then-enter
+/// window that the single word above closes, and its contended path calls
+/// `io.futexWait`, an unbounded wait. `Editor.tick` holds this gate across its
+/// whole body, so any unbounded wait reachable from a tick becomes one the
+/// host's main thread can enter in `Gate.close` when an editor closes. This is a
+/// better structure than the mutex it replaced rather than a stand-in for one.
 const Gate = struct {
     /// Bit 0 is the closed flag; everything above it counts ticks inside.
     state: std.atomic.Value(u32) = .init(0),
