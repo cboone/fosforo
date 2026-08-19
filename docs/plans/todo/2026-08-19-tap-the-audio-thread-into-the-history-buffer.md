@@ -306,10 +306,33 @@ rather than let a larger green count imply otherwise, and should state what was 
 no-locks, no-syscalls claim: `tap` calls `Ring.write` and `Ring.clear`, which between them reach
 `@memcpy`, `@memset` and `std.atomic.Value` load and store, and nothing else.
 
-One manual run in REAPER is worth it, for a reason no automated check covers: this is the first code
-here to run on a real audio thread doing more than a `@memcpy` between the host's own buffers, and a
-dropout is audible where nothing in CI can hear it. Install with `zig build install-plugins` and trust
-the hashes it prints, not the build you think you made.
+### What was run in REAPER, and what was deliberately deferred
+
+One manual run is worth it for a reason no automated check covers: this is the first code here to run
+on a real audio thread doing more than a `@memcpy` between the host's own buffers, and a dropout is
+audible where nothing in CI can hear it. Install with `zig build install-plugins` and trust the hashes
+it prints, not the build you think you made.
+
+**Run, against the Debug build at `bbeab3c26442`, hash-confirmed against `zig-out`:** the pass-through
+is still transparent, which is what `passThrough` changing signature to return the tapped slice put at
+risk. And repeated transport locates during playback produce no clicks or dropouts, which is the only
+genuinely new audio-thread cost in this issue: `reset` memsets 256 KiB at 48 kHz.
+
+**Deferred to later in the phase, deliberately rather than forgotten.** None of it guards a risk this
+issue introduces on its own, which is why it can wait, but the list should not evaporate:
+
+| Deferred | What it would cover |
+| --------------------------------------------- | ------------------------------------------------------------------------- |
+| 32- or 64-frame blocks, and 96 kHz             | The `reset` memset against the tightest deadline and at double the size    |
+| Ten or more device changes, watching RSS       | `activate`/`deactivate` on `c_allocator`, which no test reaches            |
+| A mono track                                   | The narrower-input path and the `out.channel_count` guard, in a real host  |
+| Ten or more instances, then removing them all  | Per-instance allocation and teardown at scale                              |
+| An offline render                              | A second activation at a different block size                              |
+| A `--release=fast` pass                        | The build that ships, where every assertion above is gone                  |
+
+The leak-checking gap is the one worth remembering: `zig build test` uses `testing.allocator` and the
+plugin uses `std.heap.c_allocator`, so the production allocator is covered by nothing in this
+repository, and a `deactivate` that forgot to free would pass every check that currently exists.
 
 ## Out of scope
 
