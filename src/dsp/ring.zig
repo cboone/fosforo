@@ -33,10 +33,11 @@
 //! sites. That ADR asks each such site to say so where it is, so the convention
 //! cannot be over-applied by someone who found only the ADR.
 //!
-//! This file has no caller yet. `src/clap/plugin.zig` becomes the producer and
-//! `src/clap/gui.zig` the consumer, in that order, and keeping the container
-//! separate from both is what makes it the one part of the signal path that is
-//! testable with no host, no GPU, and no window server.
+//! `src/clap/plugin.zig` is the producer, writing the tapped channel from
+//! `process` and clearing the history from `reset`. `src/clap/gui.zig` becomes
+//! the consumer. Keeping the container separate from both is what makes it the
+//! one part of the signal path testable with no host, no GPU, and no window
+//! server.
 
 const std = @import("std");
 
@@ -163,6 +164,37 @@ pub const Ring = struct {
         // Release, paired with the acquire load in `read`: a consumer that
         // observes this cursor observes every sample written above it.
         self.cursor.store(at + input.len, .release);
+    }
+
+    /// [audio-thread] Publish a whole capacity of silence, so every sample a
+    /// reader can still reach is zero.
+    ///
+    /// This is `write` of a capacity-length block of zeroes, with the wrap
+    /// collapsed because a uniform fill does not care where the seam falls.
+    ///
+    /// **Writing it that way rather than as a `@memset` with the cursor left
+    /// alone is the whole point, and the simplification is a trap.** A fill
+    /// that did not advance the cursor would write *behind* it, into exactly
+    /// the slots `read` copies from, and `coherent` cannot see that: it has
+    /// only cursor movement to go on, so a reader caught mid-copy would come
+    /// away with a half-zeroed window and be told it was coherent. That is the
+    /// one failure this whole module exists to make impossible. Advancing by
+    /// the capacity instead makes a clear indistinguishable from the producer
+    /// writing one full-capacity block, which is a case `write` already covers
+    /// and `coherent` already reports, so the reader sees the lap and skips the
+    /// frame.
+    ///
+    /// The cursor stays monotonic, which is what `coherent`'s unsaturated
+    /// subtraction rests on, and `written` stays honest, because these zeroes
+    /// really were written.
+    pub fn clear(self: *Ring) void {
+        // Unsynchronised for the same reason `write`'s load is: this thread is
+        // the only writer of it.
+        const at = self.cursor.load(.monotonic);
+
+        @memset(self.samples, 0);
+
+        self.cursor.store(at + self.samples.len, .release);
     }
 
     /// [render-thread] Fill `dst` with the most recent `dst.len` samples,
@@ -444,6 +476,56 @@ test "a write longer than the capacity keeps only its newest samples" {
     try expectSamples(&[_]f32{ 14, 15, 16, 17, 18, 19, 20, 21 }, &window);
 }
 
+test "clear publishes a whole capacity of silence" {
+    var ring = try Ring.init(testing.allocator, 8);
+    defer ring.deinit(testing.allocator);
+
+    var block: [8]f32 = undefined;
+    ramp(&block, 1);
+    ring.write(&block);
+
+    ring.clear();
+
+    // The cursor advanced by the capacity rather than standing still, because a
+    // clear is a full-capacity block of zeroes going past rather than a hole
+    // punched in what the reader is already holding.
+    try testing.expectEqual(@as(u64, 16), ring.written());
+
+    var window: [8]f32 = undefined;
+    try testing.expect(ring.read(&window));
+    try expectSamples(&@as([8]f32, @splat(0)), &window);
+
+    // A shorter window is zeroes too, rather than the pad `read` produces
+    // before the ring has filled. Those are two different paths to the same
+    // picture and only one of them is this one.
+    var narrow: [4]f32 = @splat(7);
+    try testing.expect(ring.read(&narrow));
+    try expectSamples(&@as([4]f32, @splat(0)), &narrow);
+
+    // And the stream carries on from there, so the trace fills back in from the
+    // right instead of restarting.
+    ring.write(&[_]f32{ 9, 10 });
+    try testing.expectEqual(@as(u64, 18), ring.written());
+    try testing.expect(ring.read(&narrow));
+    try expectSamples(&[_]f32{ 0, 0, 9, 10 }, &narrow);
+}
+
+test "clear leaves nothing of the samples it overwrote" {
+    // A capacity of one, where the mask is zero and a wrap that got the seam
+    // wrong has nowhere to hide.
+    var ring = try Ring.init(testing.allocator, 1);
+    defer ring.deinit(testing.allocator);
+
+    ring.write(&[_]f32{5});
+    ring.clear();
+
+    try testing.expectEqual(@as(u64, 2), ring.written());
+
+    var newest: [1]f32 = @splat(7);
+    try testing.expect(ring.read(&newest));
+    try expectSamples(&[_]f32{0}, &newest);
+}
+
 test "an empty write and an empty read change nothing" {
     var ring = try Ring.init(testing.allocator, 8);
     defer ring.deinit(testing.allocator);
@@ -498,4 +580,12 @@ test "the coherence check is exact at its boundary" {
 
     // An empty window cannot be torn, however far the producer ran.
     try testing.expect(coherent(100, 1_000_000, 8, 0));
+
+    // A `clear` advances by the whole capacity, so it tears any window with
+    // even one sample in it. That is the property that makes publishing the
+    // silence correct and memsetting behind the cursor wrong: this is what the
+    // reader gets told, and the version that leaves the cursor alone would
+    // report the first line above instead, on a window it had just overwritten.
+    try testing.expect(!coherent(100, 108, 8, 1));
+    try testing.expect(coherent(100, 108, 8, 0));
 }
