@@ -62,9 +62,6 @@ test {
     _ = @import("clap/gui.zig");
     _ = @import("clap/log.zig");
     _ = @import("clap/state.zig");
-    // Reached from nowhere at all yet: the history buffer lands before either
-    // of its callers does, and an unimported module contributes no tests and
-    // reports no failure.
     _ = @import("dsp/ring.zig");
     _ = @import("gpu/iface.zig");
     _ = @import("gpu/metal/renderer.zig");

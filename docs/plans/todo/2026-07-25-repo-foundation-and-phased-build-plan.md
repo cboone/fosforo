@@ -179,7 +179,7 @@ Filed against the [Phase 2 milestone](https://github.com/cboone/fosforo/mileston
 | Issue                                              | Step | Work                                                                                                                                                |
 | -------------------------------------------------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [#35](https://github.com/cboone/fosforo/issues/35) | 1    | `src/dsp/ring.zig`, the buffer alone with no caller. The only part of the phase needing no GPU, no window, and no host, which is why it is separate |
-| [#36](https://github.com/cboone/fosforo/issues/36) | 2    | `process` writes the tapped channel into the ring, sized in `activate` and freed in `deactivate`                                                    |
+| [#36](https://github.com/cboone/fosforo/issues/36) | 2    | `process` writes the tapped **left output** channel into the ring, sized in `activate` **from the sample rate** and freed in `deactivate`           |
 | [#37](https://github.com/cboone/fosforo/issues/37) | 3    | The trailing-window read in `Editor.tick`, a per-frame vertex buffer ring behind the seam, and one new operation on `gpu/iface.zig`                 |
 | [#38](https://github.com/cboone/fosforo/issues/38) | 4    | The trace itself: a line strip in `shaders/scope.metal`, drawn over the existing clear                                                              |
 

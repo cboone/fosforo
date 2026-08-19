@@ -278,9 +278,9 @@ fn activate(
         return false;
     };
 
-    // A refused activation is not followed by `deactivate` — the host is
-    // entitled to believe nothing was taken — so this failure path has to be
-    // its own undo. Restoring the empty slice matters as much as the free: a
+    // A refused activation is not followed by `deactivate`, since the host is
+    // entitled to believe nothing was taken, so this failure path has to be its
+    // own undo. Restoring the empty slice matters as much as the free: a
     // later `activate` assigns straight over `self.scratch`, so a dangling one
     // left here would be leaked rather than merely stale.
     //
@@ -543,7 +543,7 @@ fn tap(allocator: std.mem.Allocator, history: *ring.Ring, emitted: []const f32) 
     // Verbatim, including a channel the host flagged constant. That flag says
     // every sample in the block holds the same value, and the header is
     // explicit that checking it is optional, "and this implies that the buffer
-    // must be filled with the constant value" — so there are always
+    // must be filled with the constant value", so there are always
     // `frames_count` real samples there. Skipping the write would freeze the
     // trace whenever a track went quiet, and worse, would stop the cursor
     // advancing with the stream, so every window read afterwards would be
@@ -965,8 +965,13 @@ const test_frames = 8;
 ///
 /// Shaped like what a host actually passes rather than the minimum that
 /// compiles: `process` reads all of it now, and a fixture that cut corners would
-/// quietly stop testing anything the moment the signal tap in phase 2 starts
-/// reading a field it had left null.
+/// quietly stop testing anything the moment the signal tap started reading a
+/// field it had left null. That prediction came true: the tap is the first code
+/// here to assume output channel 0 exists, and "an output bus declaring no
+/// channels leaves the history where it was" is the case that catches it. Note
+/// what makes that test worth its lines: the fixture holds live pointers, so a
+/// missing guard would not crash here. It would silently record a channel the
+/// host never offered and crash only in a real host.
 ///
 /// A null `transport` is legal and means free-running, which is the case
 /// `clap-validator`'s `transport-null` test covers.
@@ -1832,9 +1837,9 @@ test "an output bus declaring no channels leaves the history where it was" {
 
     // This checks a guard, not a crash. `passThrough`'s loops are both bounded
     // by `out.channel_count`, so the tap is the first code here to assume
-    // channel 0 exists, and the fixture happens to hold two live pointers — so
-    // a missing guard would silently record a channel the host never offered
-    // and would crash only in a real host.
+    // channel 0 exists, and the fixture happens to hold two live pointers, so a
+    // missing guard would silently record a channel the host never offered and
+    // would crash only in a real host.
     try testing.expectEqual(@as(u64, 0), self.history.written());
 }
 
