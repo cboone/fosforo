@@ -43,7 +43,7 @@ unusable input still produces a moving timeline of the silence the track actuall
 than a trace frozen on the last good block. With `in_place_pair` taken up the two sides are the same
 memory anyway.
 
-### A reset publishes a capacity of silence
+### A reset clears the history, as a sequence of ordinary writes
 
 CLAP's own header defines `reset` as "Clears all buffers, performs a full reset of the processing
 state", so clearing is the documented contract rather than a judgment call. A scope that keeps a
@@ -51,22 +51,38 @@ stale window across a transport locate is showing audio from a different part of
 phase 4's trigger scans backward sample by sample and would find threshold crossings on the far side
 of the jump.
 
-**The obvious implementation is wrong, and the shape is the whole point.** A `@memset` of the stored
-samples with the cursor left alone writes *behind* the cursor, into exactly the slots `read` copies
-from, and `coherent` cannot see it: that function has only cursor movement to go on
-(`src/dsp/ring.zig:236`), so a reader caught mid-copy would get a half-zeroed window and be told it
-was coherent. That is the one failure the ring exists to make impossible.
+**The shape is the decision, not the clearing, and the first attempt at it was wrong.** It shipped as
+one `@memset` of the storage followed by one cursor store advancing by the capacity, on the reasoning
+that a reader would then see a full lap and report its window torn. Copilot caught the hole in review,
+correctly.
 
-Advancing the cursor by the capacity fixes it by construction. `clear` becomes `write` of a
-capacity-length block of zeroes, with the wrap collapsed because a uniform fill does not care where
-the seam falls, and it is then indistinguishable to a reader from the producer writing one
-full-capacity block: a case `write` already covers and `coherent` already reports as torn, so the
-reader skips the frame. `Ring.cursor` stays monotonic, which is what `coherent`'s unsaturated
-subtraction depends on, and `written()` stays honest, because those zeroes really were written.
+`coherent` compares the cursor before and after the reader's copy, so it can only detect tearing that
+cursor **movement** reveals. A reader whose entire copy lands inside the memset window observes the
+same cursor twice, is told its window is coherent, and comes away with a window that was rewritten
+underneath it. Publishing after the fill does not fix that, and publishing before it just moves the
+same hole to readers that snapshot during the fill. One store cannot bracket a write as wide as the
+whole buffer, and no ordering of one store and one memset is safe.
 
-The cost is one full-buffer `@memset`, 256 KiB at 48 kHz, on a call that fires at transport locate
-rather than per block. That is a few microseconds against the 2.7 ms deadline of a 128-frame block,
-and it allocates nothing, takes no lock and makes no syscall, so ADR 0010 is satisfied.
+`write` is not exposed to this, because it writes *ahead* of the cursor while a reader reads behind
+it, so the two only overlap when the producer laps, and lapping is exactly what the cursor shows.
+The fix is therefore to make the clear literally a sequence of `write` calls over a static block of
+silence, rather than something merely shaped like one. That inherits `write`'s property instead of
+approximating it, which is what the first attempt was doing: every slot the clear touches is ahead of
+a cursor that has already been published.
+
+The chunk is 256 samples, a typical audio block, chosen so the residual uncertainty in `coherent` is
+one unpublished chunk wide. A clear is then no worse for a concurrent reader than a host handing over
+a block of that size, which is the risk ADR 0010 already accepts and rests its margin argument on.
+
+The cost is a full-buffer fill, 256 KiB at 48 kHz, plus one release store per chunk, on a call that
+fires at transport locate rather than per block. That is a few microseconds against the 2.7 ms
+deadline of a 128-frame block, and it allocates nothing, takes no lock and makes no syscall, so
+ADR 0010 is satisfied.
+
+**The lesson worth keeping**, since it generalizes past this function: an analogy to a safe operation
+is not the safety of that operation. The first version's docstring said it was "`write` of a
+capacity-length block of zeroes, with the wrap collapsed"; the collapsing is exactly what removed the
+property being relied on.
 
 ### Capacity is a second, derived from the sample rate
 
@@ -106,10 +122,11 @@ heap call on the audio thread. The docstring has to stop saying phase 2 will fix
 
 ### `src/dsp/ring.zig`
 
-1. Add `pub fn clear(self: *Ring) void` beside `write`: load the cursor `.monotonic`, `@memset` the
-   whole backing array, then `cursor.store(at + self.samples.len, .release)`. The docstring carries
-   the reasoning above, in particular why it is not a `@memset` with the cursor left alone, since
-   that is the version a later reader will be tempted to simplify it into.
+1. Add `pub fn clear(self: *Ring) void` beside `write`, looping over a file-scope `silence: [256]f32`
+   and calling `write` with it until a whole capacity has gone past. The docstring carries the
+   reasoning above, in particular why this is not one `@memset` under one cursor store, since that is
+   the version a later reader will be tempted to simplify it into and it is the version that shipped
+   first and was wrong.
 2. Update the module docstring at `src/dsp/ring.zig:36`. "This file has no caller yet" is now false,
    and the following sentence is half in the wrong tense.
 
@@ -173,10 +190,15 @@ thread, and `Ring.read` takes `*const Ring`, so no new API is needed to observe 
 - `clear publishes a whole capacity of silence` — write a ramp into a capacity of 8, `clear`, then
   `written()` has advanced by 8 and every window reads as zeroes; a following write of two samples
   reads back `{0, 0, 9, 10}`.
+- `clear spans a capacity larger than one chunk` — a ring four chunks wide, so the loop runs more
+  than once. Every other capacity here is under one chunk, so without this the loop is only ever
+  exercised with a single iteration and a clear that stopped after its first chunk would pass.
+- `clear leaves nothing of the samples it overwrote` — a capacity of one, the degenerate mask.
 - Extend `the coherence check is exact at its boundary` with the clear's shape:
-  `!coherent(100, 108, 8, 1)`. A clear advances by the whole capacity, so any non-empty concurrent
-  read is reported torn, which is the property that makes this implementation correct and the naive
-  one wrong.
+  `!coherent(100, 108, 8, 1)`. A clear's total advance is the whole capacity, so a reader that
+  observes the whole of one is reported torn. Note what this test does **not** show, which is the
+  trap the first implementation fell into: it says nothing about a reader that observes no cursor
+  movement at all, which is why the clear has to publish as it goes rather than once at the end.
 
 ### In `src/clap/plugin.zig`
 

@@ -169,32 +169,44 @@ pub const Ring = struct {
     /// [audio-thread] Publish a whole capacity of silence, so every sample a
     /// reader can still reach is zero.
     ///
-    /// This is `write` of a capacity-length block of zeroes, with the wrap
-    /// collapsed because a uniform fill does not care where the seam falls.
+    /// **This is repeated `write` of silence, and it has to be literally that
+    /// rather than merely shaped like it.** The tempting implementation is one
+    /// `@memset` of the storage followed by one cursor store advancing by the
+    /// capacity, on the reasoning that a reader then sees a full lap and
+    /// reports its window torn. That reasoning has a hole, and the hole is the
+    /// whole reason this loop exists.
     ///
-    /// **Writing it that way rather than as a `@memset` with the cursor left
-    /// alone is the whole point, and the simplification is a trap.** A fill
-    /// that did not advance the cursor would write *behind* it, into exactly
-    /// the slots `read` copies from, and `coherent` cannot see that: it has
-    /// only cursor movement to go on, so a reader caught mid-copy would come
-    /// away with a half-zeroed window and be told it was coherent. That is the
-    /// one failure this whole module exists to make impossible. Advancing by
-    /// the capacity instead makes a clear indistinguishable from the producer
-    /// writing one full-capacity block, which is a case `write` already covers
-    /// and `coherent` already reports, so the reader sees the lap and skips the
-    /// frame.
+    /// `coherent` compares the cursor before and after the reader's copy, so it
+    /// can only detect tearing that cursor *movement* reveals. A reader whose
+    /// entire copy lands inside the memset window observes the same cursor
+    /// twice, is told its window is coherent, and comes away with a window that
+    /// was rewritten underneath it. Publishing after the fill does not fix that;
+    /// publishing before it just moves the same hole to readers that snapshot
+    /// during the fill. One store cannot bracket a write this wide.
+    ///
+    /// `write` is not exposed to this, because it writes *ahead* of the cursor
+    /// while a reader reads behind it, so the two only overlap when the producer
+    /// laps, and lapping is exactly what the cursor shows. Doing the clear as a
+    /// sequence of ordinary writes inherits that property instead of
+    /// approximating it: every slot this touches is ahead of a cursor that has
+    /// already been published, so a reader is exposed to no more than it already
+    /// is during ordinary processing, and to no less.
+    ///
+    /// The chunk is a typical audio block for the same reason: the residual
+    /// uncertainty in `coherent` is one unpublished chunk wide, so a clear is no
+    /// worse than a host handing over a block of that size, which is the risk
+    /// ADR 0010 already accepts and rests its margin argument on.
     ///
     /// The cursor stays monotonic, which is what `coherent`'s unsaturated
-    /// subtraction rests on, and `written` stays honest, because these zeroes
-    /// really were written.
+    /// subtraction rests on, and advances by exactly the capacity, because that
+    /// is how many zeroes really were written.
     pub fn clear(self: *Ring) void {
-        // Unsynchronised for the same reason `write`'s load is: this thread is
-        // the only writer of it.
-        const at = self.cursor.load(.monotonic);
-
-        @memset(self.samples, 0);
-
-        self.cursor.store(at + self.samples.len, .release);
+        var remaining = self.samples.len;
+        while (remaining > 0) {
+            const n = @min(remaining, silence.len);
+            self.write(silence[0..n]);
+            remaining -= n;
+        }
     }
 
     /// [render-thread] Fill `dst` with the most recent `dst.len` samples,
@@ -248,6 +260,14 @@ pub const Ring = struct {
         return @intCast(at & (@as(u64, self.samples.len) - 1));
     }
 };
+
+/// The source `clear` writes from, one chunk at a time.
+///
+/// A static block rather than a `@memset` of the storage, because the point of
+/// `clear` is to reach the ring through `write` rather than around it. 256
+/// samples is a typical audio block, which is what bounds `clear`'s exposure to
+/// a concurrent reader at what ordinary processing already costs; see `clear`.
+const silence: [256]f32 = @splat(0);
 
 /// Whether a window ending at `snapshot` survived a copy that finished with the
 /// producer at `now`.
@@ -508,6 +528,31 @@ test "clear publishes a whole capacity of silence" {
     try testing.expectEqual(@as(u64, 18), ring.written());
     try testing.expect(ring.read(&narrow));
     try expectSamples(&[_]f32{ 0, 0, 9, 10 }, &narrow);
+}
+
+test "clear spans a capacity larger than one chunk" {
+    // The capacities the tests above use are smaller than `silence`, so they
+    // run the loop in `clear` exactly once and say nothing about it. A ring
+    // several chunks wide is what exercises the wrap and the accounting: the
+    // capacity is always a power of two and so is the chunk, so a capacity is
+    // either under one chunk or an exact multiple, and both shapes are covered
+    // between here and the tests above.
+    var ring = try Ring.init(testing.allocator, silence.len * 4);
+    defer ring.deinit(testing.allocator);
+
+    var block: [silence.len * 4]f32 = undefined;
+    ramp(&block, 1);
+    ring.write(&block);
+    try testing.expectEqual(@as(u64, silence.len * 4), ring.written());
+
+    ring.clear();
+
+    // Exactly one capacity, not one chunk and not a chunk short.
+    try testing.expectEqual(@as(u64, silence.len * 8), ring.written());
+
+    var window: [silence.len * 4]f32 = undefined;
+    try testing.expect(ring.read(&window));
+    try expectSamples(&@as([silence.len * 4]f32, @splat(0)), &window);
 }
 
 test "clear leaves nothing of the samples it overwrote" {
