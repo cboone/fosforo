@@ -33,10 +33,11 @@
 //! sites. That ADR asks each such site to say so where it is, so the convention
 //! cannot be over-applied by someone who found only the ADR.
 //!
-//! This file has no caller yet. `src/clap/plugin.zig` becomes the producer and
-//! `src/clap/gui.zig` the consumer, in that order, and keeping the container
-//! separate from both is what makes it the one part of the signal path that is
-//! testable with no host, no GPU, and no window server.
+//! `src/clap/plugin.zig` is the producer, writing the tapped channel from
+//! `process` and clearing the history from `reset`. `src/clap/gui.zig` becomes
+//! the consumer. Keeping the container separate from both is what makes it the
+//! one part of the signal path testable with no host, no GPU, and no window
+//! server.
 
 const std = @import("std");
 
@@ -165,6 +166,49 @@ pub const Ring = struct {
         self.cursor.store(at + input.len, .release);
     }
 
+    /// [audio-thread] Publish a whole capacity of silence, so every sample a
+    /// reader can still reach is zero.
+    ///
+    /// **This is repeated `write` of silence, and it has to be literally that
+    /// rather than merely shaped like it.** The tempting implementation is one
+    /// `@memset` of the storage followed by one cursor store advancing by the
+    /// capacity, on the reasoning that a reader then sees a full lap and
+    /// reports its window torn. That reasoning has a hole, and the hole is the
+    /// whole reason this loop exists.
+    ///
+    /// `coherent` compares the cursor before and after the reader's copy, so it
+    /// can only detect tearing that cursor *movement* reveals. A reader whose
+    /// entire copy lands inside the memset window observes the same cursor
+    /// twice, is told its window is coherent, and comes away with a window that
+    /// was rewritten underneath it. Publishing after the fill does not fix that;
+    /// publishing before it just moves the same hole to readers that snapshot
+    /// during the fill. One store cannot bracket a write this wide.
+    ///
+    /// `write` is not exposed to this, because it writes *ahead* of the cursor
+    /// while a reader reads behind it, so the two only overlap when the producer
+    /// laps, and lapping is exactly what the cursor shows. Doing the clear as a
+    /// sequence of ordinary writes inherits that property instead of
+    /// approximating it: every slot this touches is ahead of a cursor that has
+    /// already been published, so a reader is exposed to no more than it already
+    /// is during ordinary processing, and to no less.
+    ///
+    /// The chunk is a typical audio block for the same reason: the residual
+    /// uncertainty in `coherent` is one unpublished chunk wide, so a clear is no
+    /// worse than a host handing over a block of that size, which is the risk
+    /// ADR 0010 already accepts and rests its margin argument on.
+    ///
+    /// The cursor stays monotonic, which is what `coherent`'s unsaturated
+    /// subtraction rests on, and advances by exactly the capacity, because that
+    /// is how many zeroes really were written.
+    pub fn clear(self: *Ring) void {
+        var remaining = self.samples.len;
+        while (remaining > 0) {
+            const n = @min(remaining, silence.len);
+            self.write(silence[0..n]);
+            remaining -= n;
+        }
+    }
+
     /// [render-thread] Fill `dst` with the most recent `dst.len` samples,
     /// oldest first, allocating nothing.
     ///
@@ -216,6 +260,14 @@ pub const Ring = struct {
         return @intCast(at & (@as(u64, self.samples.len) - 1));
     }
 };
+
+/// The source `clear` writes from, one chunk at a time.
+///
+/// A static block rather than a `@memset` of the storage, because the point of
+/// `clear` is to reach the ring through `write` rather than around it. 256
+/// samples is a typical audio block, which is what bounds `clear`'s exposure to
+/// a concurrent reader at what ordinary processing already costs; see `clear`.
+const silence: [256]f32 = @splat(0);
 
 /// Whether a window ending at `snapshot` survived a copy that finished with the
 /// producer at `now`.
@@ -444,6 +496,81 @@ test "a write longer than the capacity keeps only its newest samples" {
     try expectSamples(&[_]f32{ 14, 15, 16, 17, 18, 19, 20, 21 }, &window);
 }
 
+test "clear publishes a whole capacity of silence" {
+    var ring = try Ring.init(testing.allocator, 8);
+    defer ring.deinit(testing.allocator);
+
+    var block: [8]f32 = undefined;
+    ramp(&block, 1);
+    ring.write(&block);
+
+    ring.clear();
+
+    // The cursor advanced by the capacity rather than standing still, because a
+    // clear is a full-capacity block of zeroes going past rather than a hole
+    // punched in what the reader is already holding.
+    try testing.expectEqual(@as(u64, 16), ring.written());
+
+    var window: [8]f32 = undefined;
+    try testing.expect(ring.read(&window));
+    try expectSamples(&@as([8]f32, @splat(0)), &window);
+
+    // A shorter window is zeroes too, rather than the pad `read` produces
+    // before the ring has filled. Those are two different paths to the same
+    // picture and only one of them is this one.
+    var narrow: [4]f32 = @splat(7);
+    try testing.expect(ring.read(&narrow));
+    try expectSamples(&@as([4]f32, @splat(0)), &narrow);
+
+    // And the stream carries on from there, so the trace fills back in from the
+    // right instead of restarting.
+    ring.write(&[_]f32{ 9, 10 });
+    try testing.expectEqual(@as(u64, 18), ring.written());
+    try testing.expect(ring.read(&narrow));
+    try expectSamples(&[_]f32{ 0, 0, 9, 10 }, &narrow);
+}
+
+test "clear spans a capacity larger than one chunk" {
+    // The capacities the tests above use are smaller than `silence`, so they
+    // run the loop in `clear` exactly once and say nothing about it. A ring
+    // several chunks wide is what exercises the wrap and the accounting: the
+    // capacity is always a power of two and so is the chunk, so a capacity is
+    // either under one chunk or an exact multiple, and both shapes are covered
+    // between here and the tests above.
+    var ring = try Ring.init(testing.allocator, silence.len * 4);
+    defer ring.deinit(testing.allocator);
+
+    var block: [silence.len * 4]f32 = undefined;
+    ramp(&block, 1);
+    ring.write(&block);
+    try testing.expectEqual(@as(u64, silence.len * 4), ring.written());
+
+    ring.clear();
+
+    // Exactly one capacity, not one chunk and not a chunk short.
+    try testing.expectEqual(@as(u64, silence.len * 8), ring.written());
+
+    var window: [silence.len * 4]f32 = undefined;
+    try testing.expect(ring.read(&window));
+    try expectSamples(&@as([silence.len * 4]f32, @splat(0)), &window);
+}
+
+test "clear leaves nothing of the samples it overwrote" {
+    // A capacity of one, where the mask is zero and a wrap that got the seam
+    // wrong has nowhere to hide.
+    var ring = try Ring.init(testing.allocator, 1);
+    defer ring.deinit(testing.allocator);
+
+    ring.write(&[_]f32{5});
+    ring.clear();
+
+    try testing.expectEqual(@as(u64, 2), ring.written());
+
+    var newest: [1]f32 = @splat(7);
+    try testing.expect(ring.read(&newest));
+    try expectSamples(&[_]f32{0}, &newest);
+}
+
 test "an empty write and an empty read change nothing" {
     var ring = try Ring.init(testing.allocator, 8);
     defer ring.deinit(testing.allocator);
@@ -498,4 +625,12 @@ test "the coherence check is exact at its boundary" {
 
     // An empty window cannot be torn, however far the producer ran.
     try testing.expect(coherent(100, 1_000_000, 8, 0));
+
+    // A `clear` advances by the whole capacity, so it tears any window with
+    // even one sample in it. That is the property that makes publishing the
+    // silence correct and memsetting behind the cursor wrong: this is what the
+    // reader gets told, and the version that leaves the cursor alone would
+    // report the first line above instead, on a window it had just overwritten.
+    try testing.expect(!coherent(100, 108, 8, 1));
+    try testing.expect(coherent(100, 108, 8, 0));
 }
