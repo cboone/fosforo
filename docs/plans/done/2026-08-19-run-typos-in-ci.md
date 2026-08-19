@@ -273,3 +273,24 @@ The plan file moves to `docs/plans/done/` as part of the pull request, following
 ## Issue housekeeping
 
 Before the first commit, self-assign #28 and add the `in progress` label. Leave the label in place after the work lands locally; it comes off when the pull request merges, not when the branch is pushed.
+
+## Outcome
+
+Everything above landed as planned, in four commits rather than three: the plan file took its own, so that every commit leaves the tree clean under the check the second one introduces.
+
+Every control returned what the plan predicted, and the two that could have gone the other way did not.
+
+<!-- prettier-ignore -->
+| Control                                                     | Result                                                                |
+| ----------------------------------------------------------- | --------------------------------------------------------------------- |
+| Negative, before the config change                          | Exit 2, nine findings across the done plan and this one               |
+| Whole tree, after it                                        | Silent, exit 0                                                        |
+| Sample with a short pin, a full pin and one misspelling     | Only the misspelling reported: it narrows without blinding            |
+| Marked span, unmarked copy, unclosed marker                 | Silent, reported, reported. The unclosed case fails safe              |
+| `typos --isolated` against the design document              | `precessing` reported, and silent with the config, so it is read      |
+| `actionlint` on the new workflow and a broken one           | Silent, then a finding, so its silence means something                |
+| Download, sum check and `tar -xzf typos.tar.gz ./typos`     | Verified against the pinned asset: a static x86-64 Linux binary       |
+
+`zig build test`, `zig fmt --check`, `shfmt`, `shellcheck` and `markdownlint-cli2` were all clean afterwards.
+
+Two things are still owed and cannot be settled from here. The `timeout-minutes: 3` is still borrowed from `shell` rather than measured, and gets replaced once this pull request's runs supply a figure and a sample size. And the docs-only trigger case, which is the whole reason this workflow stands apart from `ci.yml`, is only confirmed by a later docs-only pull request showing `typos` present and `ci` absent.
