@@ -46,6 +46,7 @@ src/
   clap/gui.zig              the editor's lifecycle, the resize mailbox, the tick
   clap/state.zig            the versioned save/load format and its stream loops
   clap/log.zig              diagnostics routed through the host's clap.log
+  dsp/ring.zig              the lock-free history buffer the two threads share
   gpu/iface.zig             THE SEAM. No Metal type may be named above this file
   gpu/metal/renderer.zig    the one backend: device, pipeline, layer, one frame
   platform/objc.zig         Core Graphics types and the thread assertions
