@@ -321,14 +321,14 @@ genuinely new audio-thread cost in this issue: `reset` memsets 256 KiB at 48 kHz
 **Deferred to later in the phase, deliberately rather than forgotten.** None of it guards a risk this
 issue introduces on its own, which is why it can wait, but the list should not evaporate:
 
-| Deferred | What it would cover |
+| Deferred                                      | What it would cover                                                       |
 | --------------------------------------------- | ------------------------------------------------------------------------- |
-| 32- or 64-frame blocks, and 96 kHz             | The `reset` memset against the tightest deadline and at double the size    |
-| Ten or more device changes, watching RSS       | `activate`/`deactivate` on `c_allocator`, which no test reaches            |
-| A mono track                                   | The narrower-input path and the `out.channel_count` guard, in a real host  |
-| Ten or more instances, then removing them all  | Per-instance allocation and teardown at scale                              |
-| An offline render                              | A second activation at a different block size                              |
-| A `--release=fast` pass                        | The build that ships, where every assertion above is gone                  |
+| 32- or 64-frame blocks, and 96 kHz            | The `reset` memset against the tightest deadline and at double the size   |
+| Ten or more device changes, watching RSS      | `activate`/`deactivate` on `c_allocator`, which no test reaches           |
+| A mono track                                  | The narrower-input path and the `out.channel_count` guard, in a real host |
+| Ten or more instances, then removing them all | Per-instance allocation and teardown at scale                             |
+| An offline render                             | A second activation at a different block size                             |
+| A `--release=fast` pass                       | The build that ships, where every assertion above is gone                 |
 
 The leak-checking gap is the one worth remembering: `zig build test` uses `testing.allocator` and the
 plugin uses `std.heap.c_allocator`, so the production allocator is covered by nothing in this
