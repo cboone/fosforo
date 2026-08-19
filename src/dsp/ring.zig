@@ -22,6 +22,17 @@
 //! storage is allocated once by its owner and never resized, which is what lets
 //! `write` be reachable from `process`.
 //!
+//! **Not a `std.Io` case, deliberately** (ADR 0015). `Io.Mutex` is reachable
+//! through `src/platform/io.zig` and would be wrong here twice over. The
+//! producer runs on the audio thread, where ADR 0010 forbids taking a lock at
+//! all; the consumer runs inside `Editor.tick`, which holds a gate that
+//! teardown spins on, so a contended `futexWait` there becomes a wait the
+//! host's main thread can enter when an editor closes. The single atomic cursor
+//! is the structure rather than a stand-in for a lock it could not use, which
+//! is the same thing `Gate` and the frame semaphore say at their own call
+//! sites. That ADR asks each such site to say so where it is, so the convention
+//! cannot be over-applied by someone who found only the ADR.
+//!
 //! This file has no caller yet. `src/clap/plugin.zig` becomes the producer and
 //! `src/clap/gui.zig` the consumer, in that order, and keeping the container
 //! separate from both is what makes it the one part of the signal path that is
