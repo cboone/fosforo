@@ -146,9 +146,14 @@ pub const TestStream = struct {
     /// Overflowing here is a bug in the calling test, not a stream condition, so
     /// it fails immediately and says so. `@panic` rather than
     /// `std.debug.assert`: the assert is compiled out under `-Doptimize=
-    /// ReleaseFast`, which this project runs its tests under, and that is the
-    /// build where the bounds check is also gone and the copy would quietly
-    /// corrupt the test runner.
+    /// ReleaseFast`, and that is the build where the bounds check is also gone
+    /// and the copy would quietly corrupt the test runner.
+    ///
+    /// A plain `zig build test` passes no `-Doptimize` and `standardOptimizeOption`
+    /// declares no default, so the usual test run is Debug and an assert would
+    /// have held there. That is the argument for `@panic` rather than against
+    /// it: the check has to survive the run where it is the only thing left,
+    /// not the run that would have caught the overflow twice over.
     pub fn seed(self: *TestStream, bytes: []const u8) void {
         if (bytes.len > self.buffer.len) @panic("TestStream.seed: input larger than the fixture buffer");
 
