@@ -129,29 +129,43 @@ Two steps landed differently from how they were planned, both deliberately:
 
 Phase 0 also absorbed work scheduled for Phase 1: the CMake integration builds `Fosforo.component` (AUv2) and `Fosforo.clap` end to end, retiring the "linking a Zig static archive from CMake is unproven" risk. Three undocumented clap-wrapper integration requirements were found and are recorded inline in `cmake/CMakeLists.txt`: the consumer must set `CMAKE_OSX_DEPLOYMENT_TARGET` and `CMAKE_CXX_STANDARD`, and must enable `OBJC`/`OBJCXX` in its own project.
 
-## Phase 1: walking skeleton
+## Phase 1: walking skeleton (complete)
 
 **Goal:** a plugin that loads and renders a dim cleared drawable. This proves the whole CLAP plus Objective-C plus wrapper chain end to end so it never needs debugging again.
 
-Steps 1 and 3 of the original plan (the static library and the clap-wrapper integration) landed in Phase 0, so what remains is tracked as issues under the [Phase 1 milestone](https://github.com/cboone/fosforo/milestone/1):
+Steps 1 and 3 of the original plan (the static library and the clap-wrapper integration) landed in Phase 0, so what remained was tracked as issues under the [Phase 1 milestone](https://github.com/cboone/fosforo/milestone/1), all five now closed:
 
-| Issue                                            | Work                                                                      |
-| ------------------------------------------------ | ------------------------------------------------------------------------- |
-| [#2](https://github.com/cboone/fosforo/issues/2) | Plugin factory and descriptor. **Chooses the permanent CLAP plugin `id`** |
-| [#3](https://github.com/cboone/fosforo/issues/3) | Stereo `audio-ports`, pass-through `process`, `state`, `log`              |
-| [#4](https://github.com/cboone/fosforo/issues/4) | CLAP GUI extension: `NSView` hosting a `CAMetalLayer`                     |
-| [#5](https://github.com/cboone/fosforo/issues/5) | `CVDisplayLink` render loop and the resize seam                           |
-| [#1](https://github.com/cboone/fosforo/issues/1) | Narrow the over-broad AU sandbox `resourceUsage` claims                   |
+| Issue                                            | Work                                                                      | Status |
+| ------------------------------------------------ | ------------------------------------------------------------------------- | ------ |
+| [#2](https://github.com/cboone/fosforo/issues/2) | Plugin factory and descriptor. **Chooses the permanent CLAP plugin `id`** | Done   |
+| [#3](https://github.com/cboone/fosforo/issues/3) | Stereo `audio-ports`, pass-through `process`, `state`, `log`              | Done   |
+| [#4](https://github.com/cboone/fosforo/issues/4) | CLAP GUI extension: `NSView` hosting a `CAMetalLayer`                     | Done   |
+| [#5](https://github.com/cboone/fosforo/issues/5) | `CVDisplayLink` render loop and the resize seam                           | Done   |
+| [#1](https://github.com/cboone/fosforo/issues/1) | Narrow the over-broad AU sandbox `resourceUsage` claims                   | Done   |
 
 **Exit criteria:** loads in REAPER and Logic; `clap-validator` reports more than the current 3 passing tests once a factory exists; `auval -v aufx Fsfr Ctmn` passes; open, close, and resize during playback are clean.
+
+Met, with one criterion retired rather than satisfied:
+
+| Criterion                           | Result                                                                                                                                                                                                                                     |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Loads in REAPER and Logic           | Passed in both, and the Audio Unit's first presented frame was confirmed by sampling a pixel rather than by eye                                                                                                                            |
+| `clap-validator` beyond 3 tests     | 21 passed, 0 failed, against **both** bundles in CI                                                                                                                                                                                        |
+| `auval -v aufx Fsfr Ctmn`           | **Retired as untestable.** `auval` and `AudioComponentFindNext` enumerate only Apple's built-in components on this OS, while Logic sees the plugin. A null result there is not evidence, so loading in Logic is the check that replaced it |
+| Open, close, resize during playback | Passed in REAPER 7.78, after exposing three defects: a `u32` dimension that had wrapped past zero, an Audio Unit that never started its display link, and a view and drawable that disagreed without `Editor.pushBack`                     |
+| No dropouts with several instances  | Passed in Logic: 15 instances, every editor open, 64-sample buffer, no System Overload                                                                                                                                                     |
+
+**One path shipped unverified and is tracked as [#34](https://github.com/cboone/fosforo/issues/34).** The development machine has a single display, so `viewDidChangeBackingProperties` and `DisplayLink.setDisplay` have never executed. Neither failure is dangerous, both are quality defects a second monitor surfaces immediately, and neither is reachable from `zig build test` or `src/smoke.zig`. It stays a manual check, filed so it does not decay into an assumed pass.
 
 ### How work is tracked
 
 This document holds the reasoning, architecture, and sequencing. GitHub issues hold actionable units, one milestone per phase.
 
-Issues are filed **just in time**, for whichever phase is next, rather than up front for all six. Phases 2 onward deliberately have no issues yet: ADR 0012 defers those decisions until the phosphor scope ships and gets reassessed, and filing them now would manufacture a backlog of choices that have not been made. File a phase's issues when it becomes the next phase, and link them back here.
+Issues are filed **just in time**, for whichever phase is next, rather than up front for all six. Phases 3 onward deliberately have no issues yet: ADR 0012 defers those decisions until the phosphor scope ships and gets reassessed, and filing them now would manufacture a backlog of choices that have not been made. File a phase's issues when it becomes the next phase, and link them back here.
 
-## Phase 2: signal path
+Phase 2's issues were filed on that rule, when phase 1 closed. Phase 3's are not filed and should not be until phase 2 closes.
+
+## Phase 2: signal path (next)
 
 **Goal:** a visible trace that follows audio.
 
@@ -159,6 +173,27 @@ Issues are filed **just in time**, for whichever phase is next, rather than up f
 2. Audio-thread tap handed a fixed-buffer allocator sized at `activate` time, so "does the audio path touch the heap" becomes a fact about the call graph rather than a convention that was hopefully honored.
 3. Render thread reads a trailing window relative to an acquire load of the cursor.
 4. Crude aliased single trace, no persistence.
+
+Filed against the [Phase 2 milestone](https://github.com/cboone/fosforo/milestone/2), one issue per step, sequenced so each depends only on the one above it:
+
+| Issue                                              | Step | Work                                                                                                                                                |
+| -------------------------------------------------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [#35](https://github.com/cboone/fosforo/issues/35) | 1    | `src/dsp/ring.zig`, the buffer alone with no caller. The only part of the phase needing no GPU, no window, and no host, which is why it is separate |
+| [#36](https://github.com/cboone/fosforo/issues/36) | 2    | `process` writes the tapped channel into the ring, sized in `activate` and freed in `deactivate`                                                    |
+| [#37](https://github.com/cboone/fosforo/issues/37) | 3    | The trailing-window read in `Editor.tick`, a per-frame vertex buffer ring behind the seam, and one new operation on `gpu/iface.zig`                 |
+| [#38](https://github.com/cboone/fosforo/issues/38) | 4    | The trace itself: a line strip in `shaders/scope.metal`, drawn over the existing clear                                                              |
+
+**Two mechanisms this phase needs already exist,** built ahead of their caller in phase 1, and the issues say so explicitly to stop them being rebuilt:
+
+- **The real-time allocation discipline.** `activate` already allocates `Instance.scratch`, `deactivate` frees it, and `process` already wraps it in a `FixedBufferAllocator`, hands that down, and asserts `fba.end_index == 0`. `passThrough` already takes an allocator it does not use, so the call graph proves the property rather than a comment claiming it. What is stubbed is `scratchBytes`, which returns 0 because nothing downstream needs scratch yet. Step 2 is therefore about *using* this path, not creating it.
+- **The in-flight frame semaphore.** [#5](https://github.com/cboone/fosforo/issues/5) put the ring of per-frame dynamic buffers out of scope on the grounds that there was nothing dynamic to buffer until this phase, and that the semaphore is what this phase would find already in place. Step 3 is that caller arriving.
+
+**Two open chores are folded into this phase** rather than left to drift, both moved onto the milestone:
+
+| Issue                                              | Work                                                                   | Why here                                                                                                                                                                                                                 |
+| -------------------------------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [#22](https://github.com/cboone/fosforo/issues/22) | Make dev builds identifiable and stop worktrees overwriting each other | This is the first phase whose results can only be judged in a running host, which is exactly where an ambiguous installed build does damage. It has already voided two verification runs                                 |
+| [#29](https://github.com/cboone/fosforo/issues/29) | Decide how to handle the primitives Zig 0.16 moved behind `std.Io`     | The issue predicts a fourth local workaround will be added by whoever next needs a timer or a lock. Step 3's `deactivate` race is that moment, so the convention should be settled just before it rather than just after |
 
 **Exit criteria:** the trace tracks audio, and `process` performs no allocation, lock, or syscall.
 
@@ -224,16 +259,16 @@ Recorded so these read as deliberate omissions rather than oversights:
 
 ## Verification
 
-| Layer      | Check                                                                                |
-| ---------- | ------------------------------------------------------------------------------------ |
-| Build      | `zig build` produces `Fosforo.clap`; `zig fmt --check` clean                         |
-| Bindings   | Comptime `@sizeOf` and `@offsetOf` assertions for every CLAP struct crossing the ABI |
-| Shaders    | `zig build validate-shaders` pipes each shader through `metal -fsyntax-only`         |
-| Plugin     | `clap-validator validate` passes for **both** `.clap` bundles, enforced in CI        |
-| Audio Unit | `auval -v aufx <subtype> <manufacturer>` passes. Still manual                        |
-| Hosts      | Loads in REAPER, Logic Pro, and standalone; open, close, resize during playback      |
-| Real-time  | Debug-build assertion that `process` performs no allocation                          |
-| CI         | Green on `macos-latest`; `clap-validator` clean; gitleaks and TruffleHog clean       |
+| Layer      | Check                                                                                                                  |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Build      | `zig build` produces `Fosforo.clap`; `zig fmt --check` clean                                                           |
+| Bindings   | Comptime `@sizeOf` and `@offsetOf` assertions for every CLAP struct crossing the ABI                                   |
+| Shaders    | `zig build validate-shaders` pipes each shader through `metal -fsyntax-only`                                           |
+| Plugin     | `clap-validator validate` passes for **both** `.clap` bundles, enforced in CI                                          |
+| Audio Unit | **No automated check exists.** `auval` cannot enumerate this component at all, so loading it in Logic is the only test |
+| Hosts      | Loads in REAPER, Logic Pro, and standalone; open, close, resize during playback                                        |
+| Real-time  | Debug-build assertion that `process` performs no allocation                                                            |
+| CI         | Green on `macos-latest`; `clap-validator` clean; gitleaks and TruffleHog clean                                         |
 
 ## Items to confirm during execution
 
@@ -261,4 +296,4 @@ Convention is reverse-DNS, which leaves the choice of authority. The value track
 
 **Free to change.** The AU manufacturer *name* ("Catamount") and the display name ("Fósforo") are metadata. No host keys off them. One caveat: the manufacturer name must keep the `"Vendor: Product"` shape, because hosts split on the colon to group plugins by vendor in their browsers. Every AU surveyed follows this without exception. Hosts may also show a stale name until `~/Library/Caches/AudioUnitCache` is cleared.
 
-- **CI is unverified.** The workflows are lint-clean via `actionlint` but have never executed. Expect the first push to need a fixup, particularly around whether the `macos-latest` runner image already carries the Metal toolchain.
+- **CI is unverified.** Resolved: the workflows run green on every push, and the `macos-latest` image does carry the Metal toolchain. What the first runs changed is recorded in the completed CI plans under `docs/plans/done/`.
