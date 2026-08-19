@@ -257,11 +257,19 @@ fn activate(
 
     // The contract says the host guarantees a positive sample rate and a frame
     // range within [1, INT32_MAX]. This is still a trust boundary, and unlike
-    // most of them `activate` has a documented way to refuse. Everything
-    // downstream divides by `sample_rate` and sizes its buffers from
-    // `max_frames_count`, so a bad value accepted here does not fail here: it
-    // surfaces later as a division by zero or an undersized buffer on the audio
-    // thread, which is the one place with no way to report anything.
+    // most of them `activate` has a documented way to refuse. A bad value
+    // accepted here would not fail here: it would surface on the audio thread,
+    // which is the one place with no way to report anything.
+    //
+    // Sizing the history does not make the rate check redundant, though it is
+    // worth knowing that it very nearly does: measured through `historySamples`
+    // and `Ring.init`, every value these reject is one the buffer would reject
+    // too, with zero, negatives, `nan` and subhertz rates all arriving as
+    // `EmptyCapacity` and `inf` as `Overflow`. What the check buys is that
+    // `self.sample_rate` is **stored** below and outlives this call, so it is
+    // the difference between refusing a rate and keeping a `nan` that phase 3
+    // divides by. It also names the real fault in the log rather than reporting
+    // a plausible rate as an impossible capacity.
     //
     // Rejecting is deliberately narrower than the spec's stated bounds. A
     // `min_frames_count` of 0 is out of spec but harmless, because nothing
