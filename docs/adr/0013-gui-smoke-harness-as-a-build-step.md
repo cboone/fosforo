@@ -32,7 +32,7 @@ Keep the harness, as `src/smoke.zig`, behind its own build steps, and never wire
 
 The GPU half is required in CI. The AppKit half runs there under `continue-on-error` until an actual run settles whether a hosted runner grants an unbundled process a window-server connection.
 
-**The GPU half reaches the device through the seam**, as `Renderer.probe`, a fourth operation beside `init`, `deinit`, and `frame` in `src/gpu/iface.zig`. `Renderer.init` cannot run without a window, because its last step attaches a `CAMetalLayer` to an `NSView`. `probe` is everything before that step, sharing `buildPipeline` with `init` rather than paraphrasing it, so a pass means the shipping path compiled the shader. It names no Metal type above the seam, which [ADR 0005](./0005-metal-behind-a-renderer-seam.md) requires and the comptime block in that file enforces.
+**The GPU half reaches the device through the seam**, as `Renderer.probe`, one of the operations declared beside `init`, `deinit`, `resize`, and `frame` in `src/gpu/iface.zig`. `Renderer.init` cannot run without a window, because its last step attaches a `CAMetalLayer` to an `NSView`. `probe` is everything before that step, sharing `buildPipeline` with `init` rather than paraphrasing it, so a pass means the shipping path compiled the shader. It names no Metal type above the seam, which [ADR 0005](./0005-metal-behind-a-renderer-seam.md) requires and the comptime block in that file enforces.
 
 **Leak checking stays outside the process**, in `scripts/smoke-leak-check` behind `zig build smoke-leaks`. A leak the harness could observe about itself is one it has not leaked.
 
@@ -48,10 +48,26 @@ The GPU half is required in CI. The AppKit half runs there under `continue-on-er
 
 ### What it does not cover, stated so it is not assumed
 
-**It cannot prove a frame was presented.** `Renderer.frame` returns nothing by design: a nil drawable is a skipped tick rather than an error, which is the right behaviour for the render loop issue #5 introduces. So a build where `nextDrawable` returned nil on every call would pass the AppKit half. Closing that needs a frame-outcome signal on the seam, and it belongs with the display link rather than here.
-
 **It does not catch a reversed teardown order**, which is one of the four failures named in the context above. Verified rather than assumed: reversing `Editor.destroy` to release the view before the renderer passes both the tests and the harness, and leaks nothing. The retain counts balance either way, because the renderer holds its own reference to the layer and releases exactly that one. The ordering in `Editor.destroy` remains correct as a defensive convention and as the order that stays correct if the renderer ever touches its layer during teardown; it is simply not a defect this project can currently detect.
 
-**Neither half runs an event loop.** The window is ordered front and `show` draws once. That covers embedding and teardown and stops short of what a user sees.
+**Neither half runs an event loop.** The window is ordered front and the AppKit half waits on the display link's own thread rather than pumping the main run loop. That covers embedding, drawing, resizing, and teardown, and stops short of anything driven by user input.
+
+## Amended by issue #5: proving a frame was presented
+
+This ADR originally recorded that the harness **could not prove a frame was presented**, because `Renderer.frame` returned nothing: a build in which `nextDrawable` returned nil on every call would have passed the AppKit half. It said closing that needed a frame-outcome signal on the seam and belonged with the display link. [Issue #5](https://github.com/cboone/fosforo/issues/5) is that work, and it closed the gap rather than inheriting it.
+
+The reason it could not be deferred is that #5 turned the gap into a total loss of coverage. `show` used to draw a frame synchronously, so every cycle exercised the render path exactly once. Once `show` starts a `CVDisplayLink` instead, the harness's `show` and `hide` run back to back and CoreVideo's first callback never arrives between them. Measured, not assumed: instrumenting the tick and running `zig build smoke-appkit` counted **zero** entries to `Renderer.frame` across ten cycles, in a run that reported `smoke: appkit ok`.
+
+Three pieces close it:
+
+- `frame` returns an `Outcome` (`presented`, `no_drawable`, `no_command_buffer`, `no_encoder`) rather than `void`. It is not an error set: every value but the first is a normal response to load, and modelling them as errors would push a caller toward escalating something whose only correct answer is to skip the tick.
+- `Editor` counts presented frames in an atomic and exposes `framesPresented()`. `plugin.editorOf` reaches it, which is the one deliberate exception to `Instance` staying private, because CLAP has no callback that reports whether anything was drawn.
+- Each AppKit cycle waits for a frame, resizes to 1280x720, waits for two more, then hides and asserts the counter **stopped** advancing.
+
+That last assertion is new coverage rather than restored coverage: it is what keeps `hide` from silently becoming a no-op, which would cost every host with a closed editor a GPU frame every vsync.
+
+**Both failure modes were verified by planting them.** Making `show` not start the loop, and making `nextDrawable` always report `no_drawable`, each produce `smoke: appkit FAILED: NoFramePresented`. The second is precisely the case this ADR named as undetectable.
+
+**What it still does not prove is what the frame contained.** The counter says the pipeline ran, the drawable was acquired, and the command buffer was committed. A shader writing the wrong colour presents exactly as readily as one writing the right colour. Closing that needs a readback of the drawable and a comparison against an expected value, which is worth doing when there is something in the picture worth comparing: today it is a flat colour, and in phase 3 it will not be.
 
 **`probe` and `init` are not the same path.** `probe` stops before `attachLayer`, so a defect confined to layer attachment is caught only by the AppKit half, which is the half that might not run in CI.

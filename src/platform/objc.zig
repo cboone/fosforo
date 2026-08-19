@@ -51,16 +51,36 @@ pub fn utf8(string: objc.Object) []const u8 {
 /// Trap an AppKit mutation that reached the wrong thread.
 ///
 /// The view lifecycle belongs to the host's main thread, and the render loop
-/// arriving in issue #5 runs on a display-link thread that must never touch it.
-/// Writing that as an assertion rather than a comment is what makes it possible
-/// to find the violation at the point it happens instead of inferring it later
-/// from a corrupted view hierarchy.
+/// runs on a display-link thread that must never touch it. Writing that as an
+/// assertion rather than a comment is what makes it possible to find the
+/// violation at the point it happens instead of inferring it later from a
+/// corrupted view hierarchy.
 ///
 /// Debug builds only. It is a message send, and a release build should not pay
 /// for one on every editor callback.
 pub fn assertMainThread() void {
     if (builtin.mode != .Debug) return;
-    std.debug.assert(objc.getClass("NSThread").?.msgSend(bool, "isMainThread", .{}));
+    std.debug.assert(isMainThread());
+}
+
+/// The other half of the same rule, from the other side.
+///
+/// ADR 0010 says the render thread touches Metal only and never mutates AppKit
+/// state. The way that stays true is for the render path to be unreachable from
+/// the main thread in the first place, so a `frame` or a `resize` that somebody
+/// wired back into a lifecycle callback trips here rather than working by
+/// accident until two threads happen to overlap.
+///
+/// This is only sound because the display link is the sole caller of the render
+/// path. Anything that wants to draw from the main thread has to go through the
+/// mailbox instead, which is the point.
+pub fn assertNotMainThread() void {
+    if (builtin.mode != .Debug) return;
+    std.debug.assert(!isMainThread());
+}
+
+fn isMainThread() bool {
+    return objc.getClass("NSThread").?.msgSend(bool, "isMainThread", .{});
 }
 
 // The whole calling convention below depends on these, and every one of them is

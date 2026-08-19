@@ -8,8 +8,10 @@
 //!
 //! The interface is shaped to this project's algorithm rather than to graphics
 //! in general, which is what keeps it small. It also stays honest about what
-//! exists: there is no `resize` and no texture creation here, because nothing
-//! calls them yet. Operations arrive with the phase that has a caller for them.
+//! exists: there is no texture creation here, because nothing calls it yet.
+//! Operations arrive with the phase that has a caller for them, which is how
+//! `resize` arrived: the display link gave the backend a second thread, and a
+//! resizable editor gave that thread something to service.
 
 const std = @import("std");
 
@@ -43,6 +45,50 @@ pub const Error = error{
     PipelineCreationFailed,
     /// A drawable surface could not be created or attached to the view.
     SurfaceCreationFailed,
+};
+
+/// What became of one tick.
+///
+/// `frame` reports this rather than returning nothing, because a skipped frame
+/// and a presented one are indistinguishable from outside and the difference is
+/// the whole question a smoke test is asking. ADR 0013 records the gap this
+/// closes: a build in which `nextDrawable` returned nil on every call drew
+/// nothing, and passed every check this project had.
+///
+/// Not an error set. Every value but the first is a normal outcome under load
+/// rather than a fault, and modelling them as errors would push a caller toward
+/// escalating something whose only correct response is to let the tick go.
+pub const Outcome = enum {
+    /// Encoded, presented, and committed.
+    presented,
+
+    /// The compositor was holding every drawable. Normal under load, and the
+    /// reason the render loop must not treat a skip as a failure.
+    no_drawable,
+
+    /// Every frame slot was still in flight on the GPU, so this tick was
+    /// dropped rather than waited out.
+    ///
+    /// Distinct from `no_drawable` because it means something different about
+    /// the machine: the compositor is holding drawables in one case and the GPU
+    /// has not finished with them in the other. A run of these is the signal
+    /// that the render is too expensive for the display's refresh rate, which
+    /// is worth telling apart from a busy compositor when phase 3 makes that a
+    /// live question.
+    no_frame_slot,
+
+    /// The command queue would not produce a buffer, which is memory pressure
+    /// or device loss rather than anything this frame did.
+    no_command_buffer,
+
+    /// The buffer would not produce an encoder, on the same reasoning.
+    no_encoder,
+
+    /// Whether this tick put anything on screen. The distinctions above are for
+    /// a human reading a log; this is what a caller counts.
+    pub fn drew(self: Outcome) bool {
+        return self == .presented;
+    }
 };
 
 /// A fixed buffer the backend writes a human-readable line into.
@@ -103,7 +149,12 @@ pub const Renderer = @import("metal/renderer.zig").Renderer;
 comptime {
     assertSignature("init", @TypeOf(Renderer.init), fn (NativeView, Size, f64, *Diagnostics) Error!Renderer);
     assertSignature("deinit", @TypeOf(Renderer.deinit), fn (*Renderer) void);
-    assertSignature("frame", @TypeOf(Renderer.frame), fn (*Renderer) void);
+    // Both `[render-thread]`, and the reason `Size` is in this file's
+    // vocabulary rather than the backend's: a resize crosses from the host's
+    // main thread to the render thread through a mailbox above this seam, so
+    // the size has to be expressible without naming anything Metal owns.
+    assertSignature("resize", @TypeOf(Renderer.resize), fn (*Renderer, Size, f64) void);
+    assertSignature("frame", @TypeOf(Renderer.frame), fn (*Renderer) Outcome);
     assertSignature("probe", @TypeOf(Renderer.probe), fn (*Diagnostics) Error!void);
 }
 
@@ -124,6 +175,28 @@ const testing = std.testing;
 // `zig build test` runs in CI on a runner whose Metal support is not something
 // this project should depend on (ADR 0009). The backend is verified by running
 // the plugin in a host; what is testable without one is tested here.
+
+test "only a presented frame counts as having drawn" {
+    // The distinctions between the skips are for a human reading a log; this is
+    // what `Editor` counts, and what `src/smoke.zig` asserts against. A skip
+    // miscounted as a draw would let a build that renders nothing pass the one
+    // check written to catch exactly that (ADR 0013).
+    try testing.expect(Outcome.presented.drew());
+
+    for ([_]Outcome{ .no_drawable, .no_frame_slot, .no_command_buffer, .no_encoder }) |skipped| {
+        try testing.expect(!skipped.drew());
+    }
+}
+
+test "every outcome is either a draw or a skip" {
+    // Walks the enum rather than listing it, so a value added later has to be
+    // classified here instead of silently defaulting to one side.
+    var drew: usize = 0;
+    inline for (@typeInfo(Outcome).@"enum".fields) |field| {
+        if (@field(Outcome, field.name).drew()) drew += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), drew);
+}
 
 test "diagnostics start empty and can be read unconditionally" {
     const diags: Diagnostics = .{};

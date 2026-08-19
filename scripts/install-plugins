@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# install-plugins — copy the built bundles into the user's plug-in folders and prove which build landed
+# Author: Christopher Boone
+# Date: 2026-08-05
+#
+# Building and installing are separate acts, and only the second decides what a
+# host loads. `zig build` and `cmake --build` write into the worktree; REAPER and
+# Logic read ~/Library/Audio/Plug-Ins. Nothing connects the two but a copy
+# someone remembers to make, and this repository is normally checked out as
+# several worktrees on several branches that all compete for that one location,
+# so the installed bundle belongs to whichever of them copied last.
+#
+# That failure is silent and reads as a pass. A branch adding a resizable editor
+# was once "verified" against an installed build whose `can_resize` returned
+# false: the window edge could not be dragged, so an uneventful result was the
+# only outcome available, and it looked like success.
+#
+# So this does not merely copy. It copies and then compares hashes, and says
+# which build is now installed. An install that cannot be confirmed is worth no
+# more than one that never happened.
+#
+# The Audio Unit is the easier half to get wrong, because `zig build
+# install-clap` has no counterpart for it and that copy has always been manual.
+# It is skipped with an explanation rather than an error when CMake has not run,
+# since the day-to-day loop deliberately never invokes CMake.
+#
+# Usage:
+#   install-plugins [--clap-only]
+#
+#   --clap-only   Skip the Audio Unit even if it has been built.
+#
+# Exit codes:
+#   0  - Everything installed was verified against the build it came from
+#  64  - Invalid arguments
+#  65  - A bundle was installed and did not match its source afterwards
+#  66  - Nothing was available to install
+
+set -euo pipefail
+
+readonly E_USAGE=64
+readonly E_DATAERR=65
+readonly E_NOINPUT=66
+
+readonly PROGRAM_NAME="${0##*/}"
+
+readonly CLAP_DEST="${HOME}/Library/Audio/Plug-Ins/CLAP"
+readonly AU_DEST="${HOME}/Library/Audio/Plug-Ins/Components"
+
+readonly CLAP_BUNDLE="Fosforo.clap"
+readonly AU_BUNDLE="Fosforo.component"
+
+# The Mach-O inside each bundle rather than the bundle directory, because that is
+# the file whose contents differ between builds and the only one worth hashing.
+readonly CLAP_BINARY="Contents/MacOS/Fosforo"
+readonly AU_BINARY="Contents/MacOS/Fosforo"
+
+function warn() {
+  echo "${PROGRAM_NAME}: ${*}" >&2
+}
+
+function usage() {
+  cat >&2 << 'USAGE'
+usage: install-plugins [--clap-only]
+
+  --clap-only   Skip the Audio Unit even if it has been built.
+USAGE
+}
+
+# The first twelve hex digits, which is plenty to tell two builds apart and short
+# enough to read at a glance.
+function short_hash() {
+  local path="${1}"
+  local sum
+
+  sum="$(shasum -a 256 "${path}")"
+  echo "${sum:0:12}"
+}
+
+# Copy one bundle and then prove the copy is the build it came from.
+#
+# `rm -rf` before `cp -R` rather than copying over the top: a bundle left from a
+# different branch may carry files this one does not, and merging the two
+# produces something that matches neither.
+function install_bundle() {
+  local label="${1}"
+  local source="${2}"
+  local dest_dir="${3}"
+  local binary="${4}"
+
+  local installed
+  installed="${dest_dir}/$(basename "${source}")"
+
+  mkdir -p "${dest_dir}"
+  rm -rf "${installed}"
+  cp -R "${source}" "${dest_dir}/"
+
+  local built_hash
+  local installed_hash
+  built_hash="$(short_hash "${source}/${binary}")"
+  installed_hash="$(short_hash "${installed}/${binary}")"
+
+  if [[ "${built_hash}" != "${installed_hash}" ]]; then
+    warn "${label}: installed ${installed_hash} does not match built ${built_hash}"
+    return "${E_DATAERR}"
+  fi
+
+  warn "${label}: ${installed_hash}  ${installed}"
+}
+
+function main() {
+  local clap_only=false
+
+  while [[ "${#}" -gt 0 ]]; do
+    case "${1}" in
+      --clap-only)
+        clap_only=true
+        shift
+        ;;
+      -h | --help)
+        usage
+        return 0
+        ;;
+      *)
+        warn "unknown argument: ${1}"
+        usage
+        return "${E_USAGE}"
+        ;;
+    esac
+  done
+
+  local root
+  root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+  local clap_source="${root}/zig-out/${CLAP_BUNDLE}"
+  local au_source="${root}/build/assets/${AU_BUNDLE}"
+
+  local installed_any=false
+
+  if [[ -d "${clap_source}" ]]; then
+    install_bundle "clap" "${clap_source}" "${CLAP_DEST}" "${CLAP_BINARY}"
+    installed_any=true
+  else
+    warn "no ${CLAP_BUNDLE} in zig-out; run \`zig build\` first"
+  fi
+
+  if [[ "${clap_only}" == true ]]; then
+    warn "audio unit: skipped by --clap-only"
+  elif [[ -d "${au_source}" ]]; then
+    install_bundle "audio unit" "${au_source}" "${AU_DEST}" "${AU_BINARY}"
+    installed_any=true
+  else
+    # Not an error. The day-to-day loop never invokes CMake, so an absent
+    # component usually means the fast path was taken deliberately.
+    warn "no ${AU_BUNDLE}; run \`cmake -B build cmake/ && cmake --build build --target fosforo_all\` to build it"
+  fi
+
+  if [[ "${installed_any}" != true ]]; then
+    warn "nothing to install"
+    return "${E_NOINPUT}"
+  fi
+
+  warn "a host will now load the hashes above; compare them before trusting any result it gives you"
+}
+
+main ${1+"$@"}

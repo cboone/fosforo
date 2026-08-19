@@ -54,6 +54,24 @@ const c = clap.c;
 /// unmissable against the `NSXPCConnection` chatter AppKit produces on its own.
 const default_cycles = 10;
 
+/// How long a cycle will wait for the render loop to put a frame on screen.
+///
+/// Generous by two orders of magnitude: a 60 Hz display owes a frame every
+/// 16 ms, and the first tick after `CVDisplayLinkStart` arrives within one
+/// refresh period. The margin is for a loaded CI runner, not for a loop that is
+/// working. Anything approaching this ceiling is the defect, not the timeout.
+const frame_timeout_us: u64 = 2 * std.time.us_per_s;
+
+/// How often the wait below re-reads the counter. Short enough that a healthy
+/// loop is confirmed almost immediately, long enough not to spin a core.
+const frame_poll_us: u32 = 1 * std.time.us_per_ms;
+
+/// Declared rather than taken from `std`, which moved every sleep behind an
+/// `Io` instance in 0.16, the same reason `platform/displaylink.zig` declares
+/// its own clock. A harness that waits for another thread needs to wait, and
+/// owning an event loop to do it would be a strange price.
+extern "c" fn usleep(microseconds: u32) c_int;
+
 /// AppKit constants, restated here for the reason `platform/objc.zig` restates
 /// `NSView.autoresizingMask`: the headers are Objective-C and `translate-c`
 /// cannot read them. Two is the whole list, because a borderless window is
@@ -334,11 +352,53 @@ fn oneCycle(
     // the layer off the view. Its diagnostic arrives through `clap.log` above.
     if (!editor.set_parent.?(p, &window)) return error.SetParentFailed;
 
-    // `show` draws the frame. It cannot report having drawn one, by design, so
-    // what this asserts is that the call graph survives rather than that a
-    // picture appeared. See ADR 0013 on that limit.
+    // `show` starts the display link, which draws on CoreVideo's thread rather
+    // than on this one. Nothing has been drawn by the time it returns, and
+    // waiting for a frame is therefore the whole point rather than a courtesy:
+    // before this wait existed, `show` and `hide` ran back to back and the
+    // render path was never entered once in a passing run.
     if (!editor.show.?(p)) return error.ShowFailed;
+
+    const instance = plugin.editorOf(p);
+    const before = instance.framesPresented();
+    try waitForFrames(instance, before + 1);
+
+    // A resize while the loop is running, which is the one interleaving the
+    // mailbox exists for and the one that cannot be reached from a unit test.
+    // The frames after it went through `Renderer.resize` on the render thread.
+    if (!editor.set_size.?(p, 1280, 720)) return error.SetSizeFailed;
+    try waitForFrames(instance, instance.framesPresented() + 2);
+
     if (!editor.hide.?(p)) return error.HideFailed;
 
+    // Hiding stops the loop. Asserting that it stayed stopped is what keeps
+    // `hide` from silently becoming a no-op, which would cost every host with a
+    // closed editor a GPU frame every vsync.
+    const at_hide = instance.framesPresented();
+    _ = usleep(50 * std.time.us_per_ms);
+    if (instance.framesPresented() != at_hide) return error.LoopRanWhileHidden;
+
     if (tear_down_editor) editor.destroy.?(p);
+}
+
+/// Block until the editor has presented `target` frames, or give up.
+///
+/// Polls rather than waiting on a condition variable, because the counter is
+/// written by CoreVideo's thread and this is a smoke test: a millisecond of
+/// latency costs nothing and a second synchronisation primitive is one more
+/// thing that can be the reason a run hangs.
+fn waitForFrames(editor: *const gui.Editor, target: u64) !void {
+    var waited_us: u64 = 0;
+    while (editor.framesPresented() < target) {
+        if (waited_us >= frame_timeout_us) {
+            say("  waited {d}ms for frame {d}, saw {d}", .{
+                frame_timeout_us / std.time.us_per_ms,
+                target,
+                editor.framesPresented(),
+            });
+            return error.NoFramePresented;
+        }
+        _ = usleep(frame_poll_us);
+        waited_us += frame_poll_us;
+    }
 }

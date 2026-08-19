@@ -150,6 +150,24 @@ fn installClapBundle(b: *std.Build, plugin: *std.Build.Step.Compile) void {
 
     signClapBundle(b, binary, plist);
 
+    // Both bundles, verified. Separate from `install-clap` because it spans two
+    // build systems: the Audio Unit is a CMake artifact this build knows nothing
+    // about, and the script skips it with an explanation rather than failing
+    // when CMake has not run.
+    //
+    // The verification is the point rather than a courtesy. A host loads what is
+    // installed, several worktrees compete for one install location, and a stale
+    // bundle produces results that read as passes. See the script's header.
+    const install_both = b.step(
+        "install-plugins",
+        "Install both bundles into ~/Library/Audio/Plug-Ins and verify which build landed",
+    );
+    const install_script = b.addSystemCommand(&.{"./scripts/install-plugins"});
+    install_script.step.dependOn(b.getInstallStep());
+    install_script.stdio = .inherit;
+    install_script.has_side_effects = true;
+    install_both.dependOn(&install_script.step);
+
     const install_local = b.step("install-clap", "Copy the .clap into ~/Library/Audio/Plug-Ins/CLAP");
     const copy = b.addSystemCommand(&.{
         "sh", "-c",

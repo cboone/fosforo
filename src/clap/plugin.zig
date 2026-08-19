@@ -71,6 +71,12 @@ const Instance = struct {
     /// dereferences.
     log: log.Log = .{},
 
+    /// The host's side of `clap.gui`, resolved in `init` for the same reason
+    /// `log` is: host extensions do not exist before it. The editor reaches it
+    /// by pointer, which is safe because an `Instance` is heap-allocated and
+    /// outlives the editor inside it.
+    host_gui: gui.HostGui = .{},
+
     /// The two axes CLAP writes its threading contracts against, as in
     /// `[audio-thread & active & !processing]`. Tracked so a debug build traps
     /// a host driving the lifecycle out of order at the point it happens,
@@ -98,6 +104,18 @@ const Instance = struct {
         return @ptrCast(@alignCast(plugin.*.plugin_data.?));
     }
 };
+
+/// The editor behind a plugin the host is holding.
+///
+/// `Instance` stays private, because everything a host needs is reachable
+/// through the vtable and a second way in would be a second thing to keep
+/// correct. This is the one exception, and it exists for `src/smoke.zig`: CLAP
+/// has no callback that reports whether a frame was drawn, by design, so the
+/// only way to assert the render loop is doing anything is to read the counter
+/// the editor keeps. See ADR 0013.
+pub fn editorOf(plugin: [*c]const c.clap_plugin_t) *const gui.Editor {
+    return &Instance.from(plugin).editor;
+}
 
 /// Split out from `createPlugin` so tests can supply a checked allocator and
 /// catch a leak that the C entry point would otherwise hide.
@@ -173,6 +191,19 @@ fn init(plugin: [*c]const c.clap_plugin_t) callconv(.c) bool {
     const self = Instance.from(plugin);
 
     self.log = log.Log.init(self.host);
+
+    // The editor's render loop reports through the same channel. `&self.log` is
+    // stable because an `Instance` is heap-allocated and outlives the editor
+    // inside it, which is the same reason the view may hold `&self.editor`.
+    self.editor.log = &self.log;
+
+    // The editor enforces a minimum size, and `request_resize` is the only way
+    // to make a host honour one: CLAP has no field anywhere that carries a
+    // smallest editor, and REAPER shrinks its window past `adjust_size`'s
+    // answer regardless.
+    self.host_gui = gui.HostGui.init(self.host);
+    self.editor.host_gui = &self.host_gui;
+
     self.log.print(c.CLAP_LOG_DEBUG, "initialised against host {s} {s}", .{
         if (self.host.name) |name| std.mem.span(name) else "(unnamed)",
         if (self.host.version) |v| std.mem.span(v) else "(no version)",
@@ -529,33 +560,50 @@ fn guiGetSize(
     return true;
 }
 
-/// False until issue #5, which adds resizing together with the mailbox that
-/// makes it safe against the render thread it also introduces. Resizing a
-/// drawable out from under a render loop is a use-after-free that only appears
-/// when someone drags the window during playback, so the two land together or
-/// not at all.
 fn guiCanResize(plugin: [*c]const c.clap_plugin_t) callconv(.c) bool {
     _ = plugin;
-    return false;
+    return true;
 }
 
+/// Both axes, freely. The 16:9 default is a starting size and not a constraint:
+/// the argument for it is that a scope's time axis wants room, which is exactly
+/// what locking the ratio would stop someone buying more of.
+///
+/// There is no minimum in this struct to report. CLAP puts that in
+/// `adjust_size`, which is where `Editor.adjustSize` answers it.
 fn guiGetResizeHints(
     plugin: [*c]const c.clap_plugin_t,
     hints: [*c]c.clap_gui_resize_hints_t,
 ) callconv(.c) bool {
     _ = plugin;
-    _ = hints;
-    return false;
+    if (hints == null) return false;
+
+    // Built locally and assigned once, so the host never sees a partially
+    // filled struct and the zeroing covers any field a CLAP bump adds.
+    var filled = std.mem.zeroes(c.clap_gui_resize_hints_t);
+    filled.can_resize_horizontally = true;
+    filled.can_resize_vertically = true;
+    filled.preserve_aspect_ratio = false;
+
+    hints.* = filled;
+    return true;
 }
 
-/// The closest usable size is the only size, which is a truthful answer rather
-/// than a refusal: the host asked what it would get, and it would get this.
+/// The closest size the editor would actually adopt, which is the honest answer
+/// to what the host asked. Each axis is clamped on its own, so a tall narrow
+/// request comes back tall and narrow.
 fn guiAdjustSize(
     plugin: [*c]const c.clap_plugin_t,
     width: [*c]u32,
     height: [*c]u32,
 ) callconv(.c) bool {
-    return guiGetSize(plugin, width, height);
+    const self = Instance.from(plugin);
+    if (width == null or height == null) return false;
+
+    const adjusted = self.editor.adjustSize(width.*, height.*);
+    width.* = adjusted.width;
+    height.* = adjusted.height;
+    return true;
 }
 
 fn guiSetSize(
@@ -563,9 +611,7 @@ fn guiSetSize(
     width: u32,
     height: u32,
 ) callconv(.c) bool {
-    const self = Instance.from(plugin);
-    const size = self.editor.size();
-    return width == size.width and height == size.height;
+    return Instance.from(plugin).editor.setSize(width, height);
 }
 
 /// The one callback that can fail for reasons outside this process, and so the
@@ -990,7 +1036,7 @@ test "the gui reports the one windowing api it can embed in" {
     try testing.expect(!is_floating);
 }
 
-test "the editor is a fixed size that set_size will only confirm" {
+test "the editor opens at its default size and follows set_size from there" {
     const self = try create(testing.allocator, &test_host);
     defer self.plugin.destroy.?(&self.plugin);
     const plugin = &self.plugin;
@@ -1001,18 +1047,54 @@ test "the editor is a fixed size that set_size will only confirm" {
     try testing.expectEqual(gui.default_size.width, width);
     try testing.expectEqual(gui.default_size.height, height);
 
-    // Not resizable until issue #5, so the only size `set_size` accepts is the
-    // one it already is, and `adjust_size` answers with that same size.
-    try testing.expect(!plugin_gui.can_resize.?(plugin));
-    try testing.expect(plugin_gui.set_size.?(plugin, width, height));
-    try testing.expect(!plugin_gui.set_size.?(plugin, width + 1, height));
-    try testing.expect(!plugin_gui.set_size.?(plugin, width, height * 2));
+    try testing.expect(plugin_gui.can_resize.?(plugin));
 
-    var adjusted_width: u32 = 12_345;
-    var adjusted_height: u32 = 6;
-    try testing.expect(plugin_gui.adjust_size.?(plugin, &adjusted_width, &adjusted_height));
-    try testing.expectEqual(width, adjusted_width);
-    try testing.expectEqual(height, adjusted_height);
+    // `get_size` is how a host learns what `set_size` actually applied, which
+    // matters because `set_size` clamps rather than refusing.
+    try testing.expect(plugin_gui.set_size.?(plugin, 1280, 720));
+    try testing.expect(plugin_gui.get_size.?(plugin, &width, &height));
+    try testing.expectEqual(@as(u32, 1280), width);
+    try testing.expectEqual(@as(u32, 720), height);
+
+    try testing.expect(plugin_gui.set_size.?(plugin, 1, 1));
+    try testing.expect(plugin_gui.get_size.?(plugin, &width, &height));
+    try testing.expectEqual(gui.min_size.width, width);
+    try testing.expectEqual(gui.min_size.height, height);
+}
+
+test "adjust_size clamps each axis on its own rather than preserving a ratio" {
+    const self = try create(testing.allocator, &test_host);
+    defer self.plugin.destroy.?(&self.plugin);
+    const plugin = &self.plugin;
+
+    var width: u32 = 300;
+    var height: u32 = 900;
+    try testing.expect(plugin_gui.adjust_size.?(plugin, &width, &height));
+    try testing.expectEqual(gui.min_size.width, width);
+    try testing.expectEqual(@as(u32, 900), height);
+
+    // A size the editor would adopt unchanged comes back unchanged.
+    width = 1600;
+    height = 900;
+    try testing.expect(plugin_gui.adjust_size.?(plugin, &width, &height));
+    try testing.expectEqual(@as(u32, 1600), width);
+    try testing.expectEqual(@as(u32, 900), height);
+}
+
+test "the gui reports hints for an editor that resizes on both axes" {
+    const self = try create(testing.allocator, &test_host);
+    defer self.plugin.destroy.?(&self.plugin);
+
+    var hints: c.clap_gui_resize_hints_t = undefined;
+    try testing.expect(plugin_gui.get_resize_hints.?(&self.plugin, &hints));
+
+    try testing.expect(hints.can_resize_horizontally);
+    try testing.expect(hints.can_resize_vertically);
+
+    // The 16:9 default is a starting size, not a constraint. Locking it would
+    // stop someone widening the editor to buy more time axis, which is the
+    // reason the default is wide in the first place.
+    try testing.expect(!hints.preserve_aspect_ratio);
 }
 
 test "the gui callbacks refuse null out-parameters rather than writing through them" {
@@ -1025,6 +1107,8 @@ test "the gui callbacks refuse null out-parameters rather than writing through t
     try testing.expect(!plugin_gui.get_size.?(plugin, &value, null));
     try testing.expect(!plugin_gui.get_size.?(plugin, null, &value));
     try testing.expect(!plugin_gui.adjust_size.?(plugin, null, null));
+    try testing.expect(!plugin_gui.adjust_size.?(plugin, &value, null));
+    try testing.expect(!plugin_gui.get_resize_hints.?(plugin, null));
     try testing.expect(!plugin_gui.set_parent.?(plugin, null));
 
     var api: [*c]const u8 = null;
@@ -1041,9 +1125,6 @@ test "the gui refuses what it does not implement" {
     // Cocoa is a logical-pixel API, so ignoring the host's scale is the
     // documented behaviour rather than a shortcut.
     try testing.expect(!plugin_gui.set_scale.?(plugin, 2.0));
-
-    var hints: c.clap_gui_resize_hints_t = undefined;
-    try testing.expect(!plugin_gui.get_resize_hints.?(plugin, &hints));
 
     // Floating mode is refused, so these are unreachable through a
     // well-behaved host and must still not crash.
