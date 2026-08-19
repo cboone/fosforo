@@ -1,0 +1,100 @@
+name: typos
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# Deliberately its own workflow rather than a job in ci.yml. That workflow
+# ignores `*.md`, `docs/**`, `LICENSE` and the agent config files on both
+# triggers, which is right for a set of macOS builds and exactly wrong for a
+# spell checker: the files this job exists to check are the files that would
+# skip it, so a job added there would be green on every pull request that could
+# have failed it. `paths-ignore` is workflow-level rather than job-level, so
+# there is no way to exempt one job from it, and dropping `docs/**` from those
+# lists would instead run the CMake build on every typo fix.
+#
+# This workflow therefore carries no `paths-ignore` at all, on the precedent
+# that keeps `.editorconfig` out of ci.yml's lists: a check must not be able to
+# skip the change that governs it, and both typos.toml and this file live in the
+# set it scans.
+#
+# Ubuntu rather than macOS, matching the `shell` job: this is platform-
+# independent static analysis and the macOS runner bills at ten times the rate.
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # Borrowed rather than measured, because this job has never run. 3 comes
+    # from `shell`, which is the same Ubuntu checkout plus a pinned download
+    # plus a tree walk and peaks at 8s over 9 runs. Replace it with a real
+    # figure and sample size once this pull request's runs supply one, the way
+    # every other ceiling here was set (#17).
+    timeout-minutes: 3
+    env:
+      # Pinned for the reason the shell tools are, and for one more: a
+      # dictionary ships inside the binary, so a new release can introduce
+      # findings with no change on this side. A version in a URL is not a pin,
+      # because a release asset can be replaced in place under the same tag; the
+      # sum is the pin, and the job refuses to install anything that does not
+      # match. Bump the two together, with `shasum -a 256` on the asset.
+      TYPOS_VERSION: "1.49.0"
+      TYPOS_SHA256: "48bd2d58e02ce713b8c0f1aa239e68ee4f7d8c551013135806e6aed3938d9e10"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # Into RUNNER_TEMP rather than the workspace, unlike the `shell` job. That
+      # one selects files through `git ls-files`, so an untracked download beside
+      # the checkout is invisible to it; this one walks the working tree, and a
+      # tarball left in the checkout would be one more thing the run depends on
+      # typos choosing to skip.
+      #
+      # Downloaded to a file rather than piped into tar, so nothing consumes the
+      # bytes before the sum has verified them. Upstream publishes no checksum
+      # manifest, and fetching one from the host that serves the asset would
+      # verify transport rather than provenance.
+      - name: Install typos
+        run: |
+          cd "${RUNNER_TEMP}"
+          curl -sSfL -o typos.tar.gz \
+            "https://github.com/crate-ci/typos/releases/download/v${TYPOS_VERSION}/typos-v${TYPOS_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          echo "${TYPOS_SHA256}  typos.tar.gz" | sha256sum --check --strict -
+          tar -xzf typos.tar.gz ./typos
+          sudo install typos /usr/local/bin/typos
+
+      # Confirms the pin resolved to the intended version, so a sum bumped
+      # without its version, or the reverse, fails here rather than silently
+      # checking against a different dictionary than the tree was cleared with.
+      - name: Report tool version
+        run: typos --version
+
+      # No arguments: typos defaults to `.`, finds typos.toml by walking up from
+      # there, and respects .gitignore. It exits 2 on a finding, which is what
+      # gates the job. Nothing asserts that the config was read, because that
+      # failure is loud rather than quiet: without it, both the allowlisted word
+      # and every documented pin start reporting.
+      - name: Check spelling
+        id: typos
+        run: typos
+
+      # Only on the failing path, matching the clap-validator jobs, so the
+      # passing path pays nothing for it. The default output is already legible
+      # in the log; this lifts it into the run summary, where it is readable
+      # without opening one.
+      - name: Summarize the findings
+        if: failure() && steps.typos.outcome == 'failure'
+        run: |
+          {
+            echo "### typos"
+            echo
+            echo '```text'
+            typos --format brief || true
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"

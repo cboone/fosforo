@@ -12,6 +12,26 @@
 # `regex` crate has no lookahead, so "hex with at least one digit" is not
 # expressible; the backticks are the available discriminator.
 extend-ignore-re = ['`[0-9a-f]{7,40}`']
+[default]
+extend-ignore-re = [
+  # Every GitHub Action here is pinned by commit and the pins get explained in
+  # prose, so short SHAs appear throughout this repository's Markdown. typos
+  # already skips 40-character hex strings and not 7-character ones, which
+  # makes `91f9abd` read as a misspelling of "and". This suppresses the class
+  # rather than the two occurrences that exist today: it recurs on every
+  # documented pin. Anchored on the backticks rather than on a word boundary,
+  # because an unanchored version would also swallow hex-alphabet words in
+  # running text.
+  "`[0-9a-f]{7,40}`",
+
+  # The escape hatch a document needs in order to quote what this tool catches.
+  # typos has no inline directive at 1.49.0, so a plan or a gotcha that spells
+  # a misspelling out, which is the only way to explain one, fails the check it
+  # is explaining. A marked span is narrower than excluding the file: it is
+  # visible in the diff, it names itself, and it ends. An unclosed `off` marker
+  # suppresses nothing rather than everything after it.
+  "(?s)<!-- spellchecker:off -->.*?<!-- spellchecker:on -->",
+]
 
 [default.extend-words]
 # "precessing" is correct: a phase-space loop that slowly rotates exhibits
