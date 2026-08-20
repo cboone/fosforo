@@ -98,18 +98,23 @@ const Instance = struct {
     /// The signal the editor draws, written by the audio thread and by nothing
     /// else. The cursor inside it is the whole synchronisation (ADR 0010).
     ///
-    /// Its storage belongs to the **activation** rather than to the instance,
-    /// because the capacity is a second of audio at a sample rate that only
-    /// exists between `activate` and `deactivate`. The empty default is the
-    /// same value `Ring.deinit` leaves behind, so a never-activated instance
-    /// and a deactivated one agree about the shape.
+    /// **Its storage belongs to the instance rather than to the activation,**
+    /// which is how #37 answered the race it inherited. `deactivate` runs on
+    /// the main thread and a host may call it with the editor open, which REAPER
+    /// and Logic both do when a track is disabled. Freeing here would then be
+    /// freeing memory the render thread is midway through copying out of.
     ///
-    /// That lifetime has a consequence nothing here can settle: `deactivate`
-    /// frees this on the main thread, and once the render thread starts reading
-    /// it there is a race between the two. Issue #37 owns it, and floats giving
-    /// the storage the instance's lifetime instead, which makes the race
-    /// disappear rather than managing it. There is no reader yet, so there is
-    /// nothing to race with today.
+    /// The race is deleted rather than managed. `create` allocates this and
+    /// `destroy` frees it, and `destroy` calls `editor.destroy` first, which
+    /// closes the `Gate` and spins until no tick is inside. By the time the free
+    /// runs there is no reader and can be none, on exactly the reasoning that
+    /// gate already encodes for the renderer's own teardown. The alternative was
+    /// a second gate around `Ring.read`, which needed a `reopen` the type does
+    /// not have, a home reachable from both this file and `gui.zig`, and a
+    /// main-thread spin on every track disable rather than only on editor close.
+    ///
+    /// The cost is that the capacity can no longer be derived from the sample
+    /// rate, because `create` runs before one exists. See `history_samples`.
     history: ring.Ring = .{ .samples = &.{} },
 
     /// The editor, inert until the host asks for one. Lives here rather than
@@ -139,6 +144,15 @@ pub fn editorOf(plugin: [*c]const c.clap_plugin_t) *const gui.Editor {
 /// catch a leak that the C entry point would otherwise hide.
 fn create(allocator: std.mem.Allocator, host: *const c.clap_host_t) !*Instance {
     const self = try allocator.create(Instance);
+    errdefer allocator.destroy(self);
+
+    // The history is taken here rather than in `activate` so that nothing frees
+    // it while the render thread may be reading; see `Instance.history`. That
+    // makes it the one allocation this function owes an undo for, which is what
+    // the `errdefer` above is: without it a refused sizing would leak the
+    // instance rather than the ring.
+    const history = try ring.Ring.init(allocator, history_samples);
+
     self.* = .{
         .plugin = .{
             .desc = &descriptor,
@@ -156,6 +170,7 @@ fn create(allocator: std.mem.Allocator, host: *const c.clap_host_t) !*Instance {
         },
         .allocator = allocator,
         .host = host,
+        .history = history,
     };
     return self;
 }
@@ -222,6 +237,12 @@ fn init(plugin: [*c]const c.clap_plugin_t) callconv(.c) bool {
     self.host_gui = gui.HostGui.init(self.host);
     self.editor.host_gui = &self.host_gui;
 
+    // The read side of ADR 0010's protocol, wired the same way and safe for the
+    // same reason: an `Instance` is heap-allocated and outlives the editor
+    // inside it, and this ring's storage now outlives every activation too, so
+    // the pointer stays good for as long as any tick can run.
+    self.editor.history = &self.history;
+
     self.log.print(c.CLAP_LOG_DEBUG, "initialised against host {s} {s}", .{
         if (self.host.name) |name| std.mem.span(name) else "(unnamed)",
         if (self.host.version) |v| std.mem.span(v) else "(no version)",
@@ -236,10 +257,17 @@ fn init(plugin: [*c]const c.clap_plugin_t) callconv(.c) bool {
 /// supposed to call `gui.destroy` first, and one that does not should still not
 /// leave an `NSView` and a Metal device behind. `Editor.destroy` is idempotent,
 /// so the well-behaved case costs three null checks.
+///
+/// **The order of the two lines below is load-bearing.** `Editor.destroy` closes
+/// the gate and spins until no tick is inside it, which is what establishes that
+/// the render thread is not partway through `Ring.read`. Freeing the history
+/// before that reintroduces exactly the use-after-free `Instance.history`
+/// describes, in the one window where the editor is still ticking.
 fn destroy(plugin: [*c]const c.clap_plugin_t) callconv(.c) void {
     const self = Instance.from(plugin);
     std.debug.assert(!self.active);
     self.editor.destroy();
+    self.history.deinit(self.allocator);
     self.allocator.destroy(self);
 }
 
@@ -261,15 +289,14 @@ fn activate(
     // accepted here would not fail here: it would surface on the audio thread,
     // which is the one place with no way to report anything.
     //
-    // Sizing the history does not make the rate check redundant, though it is
-    // worth knowing that it very nearly does: measured through `historySamples`
-    // and `Ring.init`, every value these reject is one the buffer would reject
-    // too, with zero, negatives, `nan` and subhertz rates all arriving as
-    // `EmptyCapacity` and `inf` as `Overflow`. What the check buys is that
-    // `self.sample_rate` is **stored** below and outlives this call, so it is
-    // the difference between refusing a rate and keeping a `nan` that phase 3
-    // divides by. It also names the real fault in the log rather than reporting
-    // a plausible rate as an impossible capacity.
+    // The history used to be sized from this rate, which very nearly made the
+    // check redundant: every value rejected below is one `Ring.init` would have
+    // rejected too. #37 moved that allocation to `create`, so nothing downstream
+    // refuses a bad rate any more and this check is now the only thing standing
+    // between a host and a stored `nan`. It was always carrying that weight,
+    // because `self.sample_rate` is **stored** below and outlives this call, and
+    // phase 3 divides by it; what changed is that it is no longer carrying it
+    // alongside a second line of defence.
     //
     // Rejecting is deliberately narrower than the spec's stated bounds. A
     // `min_frames_count` of 0 is out of spec but harmless, because nothing
@@ -277,7 +304,7 @@ fn activate(
     // working host for no gain. The inversion check is the one that matters:
     // a maximum below the minimum means `process` could be handed more frames
     // than anything sized from `max_frames` allocated for.
-    if (!std.math.isFinite(sample_rate) or sample_rate <= 0) return false;
+    if (!std.math.isFinite(sample_rate) or sample_rate < min_sample_rate or sample_rate > max_sample_rate) return false;
     if (max_frames_count == 0 or max_frames_count > std.math.maxInt(i32)) return false;
     if (max_frames_count < min_frames_count) return false;
 
@@ -286,24 +313,23 @@ fn activate(
         return false;
     };
 
-    // A refused activation is not followed by `deactivate`, since the host is
-    // entitled to believe nothing was taken, so this failure path has to be its
-    // own undo. Restoring the empty slice matters as much as the free: a
-    // later `activate` assigns straight over `self.scratch`, so a dangling one
-    // left here would be leaked rather than merely stale.
+    // Cleared rather than reallocated, because the storage outlives this call
+    // now. `Ring.deinit` deliberately leaves the cursor alone, and freshness
+    // across an activation cycle used to hold only because this line assigned a
+    // whole new `Ring`; with the storage persisting, the guarantee has to be
+    // made rather than inherited. A previous activation's audio was captured at
+    // a rate this one need not share, so drawing it would be drawing the wrong
+    // time base.
     //
-    // `print` rather than `message` because the two ways this fails want
-    // opposite responses from whoever reads the host log. `Overflow` says the
-    // rate is nonsense; `OutOfMemory` says the machine is full.
-    self.history = ring.Ring.init(self.allocator, historySamples(sample_rate)) catch |err| {
-        self.allocator.free(self.scratch);
-        self.scratch = &.{};
-        self.log.print(c.CLAP_LOG_ERROR, "activate failed: could not size the history buffer for {d} Hz: {s}", .{
-            sample_rate,
-            @errorName(err),
-        });
-        return false;
-    };
+    // `clear` publishes a capacity of silence through `write` rather than
+    // blanking behind the cursor, which is the shape `reset` already relies on:
+    // the version that leaves the cursor alone is invisible to `coherent`.
+    self.history.clear();
+
+    // The editor reads this many samples per tick, and zero until now. Published
+    // here because it is the only place the rate is known, and cleared in
+    // `deactivate` for the same reason.
+    self.editor.setWindow(gui.windowSamples(sample_rate));
 
     self.sample_rate = sample_rate;
     self.max_frames = max_frames_count;
@@ -335,47 +361,73 @@ fn scratchBytes(max_frames: u32) usize {
     return 0;
 }
 
-/// How far back the history reaches, in seconds.
-const history_seconds: f64 = 1;
+/// The sample rates `activate` will agree to, in hertz.
+///
+/// **These used to be enforced by accident, and that is why they are here now.**
+/// The history was sized from the rate, so `Ring.init` refused anything that
+/// rounded down to no slots or saturated a `usize`, and `activate`'s own check
+/// only had to keep `nan` out. Moving that allocation to `create` took the
+/// accident away. A trust boundary this project treats explicitly everywhere
+/// else, `max_size` being the closest parallel, should not be left resting on a
+/// side effect that no longer happens.
+///
+/// Deliberately wide rather than a list of rates real devices offer. One hertz
+/// is below anything an audio device produces, and three megahertz is above
+/// DSD64's 2.8224 MHz and four times the 768 kHz that tops out PCM, so nothing a
+/// host could legitimately negotiate is refused. What they exclude is a rate
+/// that makes
+/// `sample_rate` useless to the things that divide by it, which phase 3 does,
+/// and that `windowSamples` would answer with a window of nothing.
+const min_sample_rate: f64 = 1;
+const max_sample_rate: f64 = 3_000_000;
 
-/// Samples of history to keep, from the rate the host activated at.
+/// Samples of history to keep.
 ///
-/// A second, which is the ratio ADR 0010 rests on: a capacity on the order of a
-/// second against a display window of tens of milliseconds is what lets
-/// `Ring.read` check for a torn window instead of retrying in a loop.
-/// `Ring.init` rounds up to a power of two, so 48 kHz actually buys 1.365
-/// seconds and 256 KiB, next to phase 3's accumulation textures at megabytes
-/// each.
+/// **A constant rather than a function of the sample rate**, which is the price
+/// of the lifetime `Instance.history` describes: `create` allocates this and no
+/// rate exists there. What ADR 0010 actually rests on is a ratio, a capacity on
+/// the order of a second against a display window of tens of milliseconds, and
+/// that is what this preserves. It buys at least a full second at every rate
+/// through 262 kHz, and 5.46 seconds at 48 kHz.
 ///
-/// **Saturating rather than `@intFromFloat`**, which is illegal behaviour out of
-/// range: `activate` has established that `sample_rate` is finite and positive
-/// and nothing more, so a host claiming 1e300 Hz reaches this. `lossyCast`
-/// clamps it to `maxInt(usize)`, which `ceilPowerOfTwo` rejects before
-/// allocating anything, and `activate` refuses and says why. A bare cast would
-/// instead panic in the one function whose whole design is to refuse.
+/// The margin the ratio exists for is what lets `Ring.read` report a torn window
+/// instead of retrying in a loop, and it is enormous at every rate: a 20 ms
+/// window at 192 kHz is 3840 samples against 262144, which leaves `coherent`
+/// more than a second of the producer's progress to spend on a copy that takes
+/// microseconds.
 ///
-/// Zero is a legal answer, for a sample rate below 1 Hz. `Ring.init` refuses it
-/// as `error.EmptyCapacity`, which is the right answer for a rate no audio
-/// device has.
+/// A rate above 262 kHz shortens the history rather than being refused, which is
+/// the right failure for a rate no device offers: `Ring.write` is total, the
+/// window still fits many times over, and nothing here is load-bearing enough to
+/// justify turning a working session away.
 ///
-/// **The floor is deliberately not `max_frames`.** Nothing needs the ring to
-/// hold a whole block: `Ring.write` is total against a block longer than its
-/// capacity and tested for it, and taking that floor would turn a host
-/// declaring an absurd block size from a harmless truncation into an
-/// eight-gigabyte allocation and a refused activation.
-fn historySamples(sample_rate: f64) usize {
-    return std.math.lossyCast(usize, sample_rate * history_seconds);
-}
+/// One mebibyte per instance, held whether or not the instance is ever
+/// activated. That is the cost of deleting the race rather than managing it, and
+/// it sits next to phase 3's accumulation textures at several megabytes per open
+/// editor.
+///
+/// Already a power of two, so `Ring.init` rounds it to itself.
+const history_samples: usize = 1 << 18;
 
 /// [main-thread & active] The mirror of `activate`, and the only other place
 /// the audio path's memory may move.
+///
+/// **The history is deliberately not freed here.** It has the instance's
+/// lifetime precisely so that this callback, which a host may make with the
+/// editor open and rendering, cannot pull memory out from under the render
+/// thread. See `Instance.history`.
 fn deactivate(plugin: [*c]const c.clap_plugin_t) callconv(.c) void {
     const self = Instance.from(plugin);
     std.debug.assert(self.active and !self.processing);
 
     self.allocator.free(self.scratch);
     self.scratch = &.{};
-    self.history.deinit(self.allocator);
+
+    // Nothing is producing samples any more, so the editor stops asking for
+    // them. The storage stays, and so does whatever it last held; what a zero
+    // window means is that the render thread reads nothing rather than reading
+    // a window whose rate no longer describes anything.
+    self.editor.setWindow(0);
 
     self.active = false;
 }
@@ -438,8 +490,8 @@ fn process(
     // precisely the build where a misbehaving host does damage.
     //
     // Nothing below is sized from `max_frames`: the scratch buffer is empty and
-    // the history is sized from the sample rate, which `Ring.write` is total
-    // against for a block longer than its capacity. What this refuses is a host
+    // the history has a fixed capacity that `Ring.write` is total against, even
+    // for a block longer than the whole ring. What this refuses is a host
     // that has broken the one bound it negotiated, because the very next thing
     // `process` does is read `frames_count` samples out of that host's own
     // buffers on its word that they are that long.
@@ -1081,6 +1133,18 @@ fn testTapped(self: *Instance, window: []f32) !void {
     try testing.expect(self.history.read(window));
 }
 
+/// Samples the tap has published since this activation began.
+///
+/// The cursor does not start an activation at zero any more. `activate` clears
+/// by publishing a whole capacity of silence, which is what gives the storage
+/// its freshness now that it outlives the activation, so the cursor starts at
+/// exactly `capacity()`. Subtracting that baseline in one place keeps every
+/// assertion below stating what the tap wrote, which is what they are about,
+/// rather than restating an implementation detail of `activate` a dozen times.
+fn testWritten(self: *const Instance) u64 {
+    return self.history.written() - self.history.capacity();
+}
+
 /// The ramp `TestBuses.fillInput` writes, as a value to compare against, so a
 /// test spanning several blocks does not spell out two dozen literals.
 fn testRamp(comptime n: usize, base: f32) [n]f32 {
@@ -1175,36 +1239,31 @@ test "activate refuses a malformed sample rate or frame range" {
     plugin.deactivate.?(plugin);
 }
 
-test "activate sizes the history from the sample rate and reports the rounded capacity" {
+test "the history is sized once, at create, and every activation shares it" {
     const self = try create(testing.allocator, &test_host);
     defer self.plugin.destroy.?(&self.plugin);
     const plugin = &self.plugin;
 
-    // 96 kHz rather than the obvious 44.1: that rate rounds to 65536 as well,
-    // so a build that ignored `sample_rate` and hardcoded one second at 48 kHz
-    // would pass a 44.1 kHz check. This is the lowest common rate whose
-    // capacity differs, which makes it the one that discriminates.
+    // Before any activation, which is the whole point of the lifetime: the
+    // storage exists from `create`, so the render thread has something valid to
+    // read whatever the host has or has not done about processing.
+    try testing.expectEqual(history_samples, self.history.capacity());
+
+    // The rate no longer sizes anything, which is what makes the race
+    // impossible. Two rates an order of magnitude apart used to produce two
+    // capacities; now they produce the same one.
     for ([_]f64{ 48_000, 96_000 }) |rate| {
         try testing.expect(plugin.activate.?(plugin, rate, 1, test_frames));
-
-        // The contract, rather than the arithmetic: the buffer holds at least
-        // the second it was asked for.
-        try testing.expect(@as(f64, @floatFromInt(self.history.capacity())) >= rate);
-        try testing.expectEqual(@as(u64, 0), self.history.written());
-
+        try testing.expectEqual(history_samples, self.history.capacity());
         plugin.deactivate.?(plugin);
     }
 
-    try testing.expect(plugin.activate.?(plugin, 48_000, 1, test_frames));
-    try testing.expectEqual(@as(usize, 65_536), self.history.capacity());
-    plugin.deactivate.?(plugin);
-
-    try testing.expect(plugin.activate.?(plugin, 96_000, 1, test_frames));
-    try testing.expectEqual(@as(usize, 131_072), self.history.capacity());
-    plugin.deactivate.?(plugin);
+    // And it is still there afterwards, which `deactivate` used to be the thing
+    // that ended.
+    try testing.expectEqual(history_samples, self.history.capacity());
 }
 
-test "deactivate frees the history and a later activate starts it over" {
+test "deactivate keeps the storage and the next activate clears what it held" {
     const self = try create(testing.allocator, &test_host);
     defer self.plugin.destroy.?(&self.plugin);
     const plugin = &self.plugin;
@@ -1216,75 +1275,103 @@ test "deactivate frees the history and a later activate starts it over" {
     buses.wire(.{});
     const ctx = buses.context();
     _ = plugin.process.?(plugin, &ctx);
-    try testing.expectEqual(@as(u64, test_frames), self.history.written());
+    try testing.expectEqual(@as(u64, test_frames), testWritten(self));
 
     plugin.stop_processing.?(plugin);
     plugin.deactivate.?(plugin);
-    try testing.expectEqual(@as(usize, 0), self.history.capacity());
+
+    // The line that used to read zero. Freeing here is what the render thread
+    // could not survive, so the storage outlives the activation now.
+    try testing.expectEqual(history_samples, self.history.capacity());
 
     try testing.expect(plugin.activate.?(plugin, 96_000, 1, test_frames));
-    try testing.expectEqual(@as(usize, 131_072), self.history.capacity());
+    try testing.expectEqual(history_samples, self.history.capacity());
 
-    // This half matters more than it looks. `Ring.deinit` does not touch the
-    // cursor, so it only holds because `activate` assigns a whole fresh `Ring`
-    // whose cursor takes its default. One that kept a stale cursor over freshly
-    // zeroed storage would make `read` report a full second of silence as if it
-    // were audio the host never played.
-    try testing.expectEqual(@as(u64, 0), self.history.written());
+    // This half matters more than it looks, and it changed hands. It used to
+    // hold because `activate` assigned a whole fresh `Ring` whose cursor took
+    // its default; `Ring.deinit` never touched the cursor, so nothing else was
+    // making it true. With the storage persisting, `activate`'s `clear` is the
+    // only thing left that does, and a build that dropped it would show the
+    // previous activation's audio, captured at a rate this one need not share.
+    var window: [test_frames]f32 = undefined;
+    try testTapped(self, &window);
+    try testing.expectEqualSlices(f32, &@as([test_frames]f32, @splat(0)), &window);
 
     plugin.deactivate.?(plugin);
-    // testing.allocator fails the test if either activation leaked.
 }
 
-test "activate refuses when the history cannot be allocated" {
+test "create refuses when the history cannot be allocated" {
     var failing = std.testing.FailingAllocator.init(testing.allocator, .{});
-    const self = try create(failing.allocator(), &test_host);
-    defer self.plugin.destroy.?(&self.plugin);
-    const plugin = &self.plugin;
 
-    // Derived rather than hardcoded. Whatever `create` cost, the next
-    // allocation to reach the heap is the history's: `scratchBytes` returns
-    // zero and a zero-byte `alloc` short-circuits before the vtable, so nothing
-    // in between consumes an index. A literal here would rot silently the day
-    // either of those changed.
-    failing.fail_index = failing.alloc_index;
+    // The instance itself is allocation zero and the history is allocation one,
+    // which is the order `create` performs them in. Failing the second is what
+    // exercises the `errdefer`: without it the instance leaks, and
+    // `testing.allocator` underneath is what would say so.
+    failing.fail_index = 1;
 
-    try testing.expect(!plugin.activate.?(plugin, 48_000, 1, test_frames));
-
-    // Without this the refusal is indistinguishable from one where validation
-    // rejected 48 kHz, which would make the test pass for the wrong reason.
+    try testing.expectError(error.OutOfMemory, create(failing.allocator(), &test_host));
     try testing.expect(failing.has_induced_failure);
-
-    try testing.expect(!self.active);
-    try testing.expectEqual(@as(usize, 0), self.history.capacity());
-
-    // The undo. `testing.allocator` underneath catches a scratch buffer the
-    // refusal path forgot to free, which is the failure that appears the moment
-    // `scratchBytes` stops returning zero.
-    try testing.expectEqual(@as(usize, 0), self.scratch.len);
 }
 
-test "activate refuses a sample rate no history could be sized for" {
+test "activate refuses a sample rate outside the range it will agree to" {
     const self = try create(testing.allocator, &test_host);
     defer self.plugin.destroy.?(&self.plugin);
     const plugin = &self.plugin;
 
-    // Both pass `isFinite` and `> 0`, so `activate`'s own bounds let them
-    // through and the refusal has to come from sizing the buffer.
-    //
-    // The large one is the reason `historySamples` saturates instead of
-    // casting: `@intFromFloat` is illegal behaviour out of range, so without
-    // that this case does not fail the test, it panics. No mid-range value like
-    // 1e12 belongs here, because that saturates to a real four-terabyte request
-    // and makes the run's cost depend on how the OS declines it.
+    // Both are finite and positive, so they used to be refused only as a side
+    // effect of sizing the ring from them: one saturated a `usize` and the other
+    // rounded down to no slots at all. `create` sizes the ring now, so nothing
+    // downstream refuses anything, and `min_sample_rate` and `max_sample_rate`
+    // exist to keep this boundary where it was rather than let it lapse.
     try testing.expect(!plugin.activate.?(plugin, std.math.floatMax(f64), 1, test_frames));
     try testing.expect(!self.active);
 
-    // And a rate no audio device has, which rounds down to a ring with no slots.
     try testing.expect(!plugin.activate.?(plugin, 0.5, 1, test_frames));
     try testing.expect(!self.active);
 
-    try testing.expectEqual(@as(usize, 0), self.history.capacity());
+    // The bounds themselves are inclusive, which is worth pinning: they are
+    // wide enough that a rate landing exactly on one is a test artefact rather
+    // than a host, and an off-by-one here would refuse a real session.
+    try testing.expect(plugin.activate.?(plugin, min_sample_rate, 1, test_frames));
+    plugin.deactivate.?(plugin);
+
+    try testing.expect(plugin.activate.?(plugin, max_sample_rate, 1, test_frames));
+    plugin.deactivate.?(plugin);
+}
+
+test "activate publishes a window to the editor and deactivate takes it away" {
+    const self = try create(testing.allocator, &test_host);
+    defer self.plugin.destroy.?(&self.plugin);
+    const plugin = &self.plugin;
+
+    // Nothing has activated, so there is no rate in force and no window that
+    // would mean anything. The editor reads nothing in this state.
+    try testing.expectEqual(@as(u32, 0), self.editor.window.load(.acquire));
+
+    try testing.expect(plugin.activate.?(plugin, 48_000, 1, test_frames));
+    try testing.expectEqual(gui.windowSamples(48_000), self.editor.window.load(.acquire));
+    try testing.expectEqual(@as(u32, 960), self.editor.window.load(.acquire));
+
+    plugin.deactivate.?(plugin);
+    try testing.expectEqual(@as(u32, 0), self.editor.window.load(.acquire));
+
+    // A second rate, so the window is shown to follow it rather than to have
+    // been set once and left.
+    try testing.expect(plugin.activate.?(plugin, 96_000, 1, test_frames));
+    try testing.expectEqual(@as(u32, 1920), self.editor.window.load(.acquire));
+    plugin.deactivate.?(plugin);
+}
+
+test "init points the editor at the instance's history" {
+    const self = try create(testing.allocator, &test_host);
+    defer self.plugin.destroy.?(&self.plugin);
+    const plugin = &self.plugin;
+
+    // Null until `init`, which is the first callback where the wiring happens.
+    try testing.expect(self.editor.history == null);
+
+    try testing.expect(plugin.init.?(plugin));
+    try testing.expect(self.editor.history == &self.history);
 }
 
 test "get_extension answers for what is implemented and nothing else" {
@@ -1658,7 +1745,7 @@ test "process silences the output when the input is unusable" {
         // a timeline the scope keeps drawing, and a flat line is the truth
         // about what went downstream. Freezing the trace instead would report
         // the last good block as if it were still playing.
-        try testing.expectEqual(@as(u64, test_frames), self.history.written());
+        try testing.expectEqual(@as(u64, test_frames), testWritten(self));
 
         var window: [test_frames]f32 = undefined;
         try testTapped(self, &window);
@@ -1682,7 +1769,7 @@ test "process survives a missing output bus rather than writing through null" {
     // The one unusable-bus shape that leaves the history where it was. With no
     // output there is nothing the plugin emitted, so there is nothing to record
     // and the trace holds rather than advancing with invented silence.
-    try testing.expectEqual(@as(u64, 0), self.history.written());
+    try testing.expectEqual(@as(u64, 0), testWritten(self));
 }
 
 test "process reports an error rather than dereferencing a null context" {
@@ -1690,7 +1777,7 @@ test "process reports an error rather than dereferencing a null context" {
     defer testStop(self);
 
     try testing.expectEqual(c.CLAP_PROCESS_ERROR, self.plugin.process.?(&self.plugin, null));
-    try testing.expectEqual(@as(u64, 0), self.history.written());
+    try testing.expectEqual(@as(u64, 0), testWritten(self));
 }
 
 test "process refuses a block larger than activate negotiated" {
@@ -1714,7 +1801,7 @@ test "process refuses a block larger than activate negotiated" {
     // the history either.
     try testing.expectEqualSlices(f32, &@as([test_frames]f32, @splat(7)), &buses.out_samples[0]);
     try testing.expectEqualSlices(f32, &@as([test_frames]f32, @splat(7)), &buses.out_samples[1]);
-    try testing.expectEqual(@as(u64, 0), self.history.written());
+    try testing.expectEqual(@as(u64, 0), testWritten(self));
 }
 
 test "the audio path is handed an allocator that cannot reach the heap" {
@@ -1745,7 +1832,7 @@ test "process taps the left output channel into the history" {
 
     // By exactly the frame count, rather than by frames times channels or by
     // one per block.
-    try testing.expectEqual(@as(u64, test_frames), self.history.written());
+    try testing.expectEqual(@as(u64, test_frames), testWritten(self));
 
     // The two bases are far enough apart that the right channel (200 up) and
     // the sum (300 up) each fail this same assertion, so one comparison pins
@@ -1771,7 +1858,7 @@ test "repeated process calls extend the history rather than restarting it" {
     // The single-call test passes equally well against a tap that rewinds the
     // cursor or rewrites slot zero each block. This is the cheapest one that
     // does not.
-    try testing.expectEqual(@as(u64, 3 * test_frames), self.history.written());
+    try testing.expectEqual(@as(u64, 3 * test_frames), testWritten(self));
 
     var window: [3 * test_frames]f32 = undefined;
     try testTapped(self, &window);
@@ -1793,7 +1880,7 @@ test "the tap reads the output bus rather than the input the host handed over" {
     _ = self.plugin.process.?(&self.plugin, &ctx);
 
     try testing.expectEqualSlices(f32, &@as([test_frames]f32, @splat(0)), buses.outChannel(0));
-    try testing.expectEqual(@as(u64, test_frames), self.history.written());
+    try testing.expectEqual(@as(u64, test_frames), testWritten(self));
 
     var window: [test_frames]f32 = undefined;
     try testTapped(self, &window);
@@ -1813,7 +1900,7 @@ test "a block the host flagged constant is tapped in full rather than skipped" {
     // went quiet, and would stop the cursor advancing with the stream, so every
     // window read afterwards would be misaligned in time.
     _ = self.plugin.process.?(&self.plugin, &ctx);
-    try testing.expectEqual(@as(u64, test_frames), self.history.written());
+    try testing.expectEqual(@as(u64, test_frames), testWritten(self));
 
     var window: [test_frames]f32 = undefined;
     try testTapped(self, &window);
@@ -1827,7 +1914,7 @@ test "a block the host flagged constant is tapped in full rather than skipped" {
     @memset(&buses.in_samples[0], 0.5);
     _ = self.plugin.process.?(&self.plugin, &ctx);
 
-    try testing.expectEqual(@as(u64, 2 * test_frames), self.history.written());
+    try testing.expectEqual(@as(u64, 2 * test_frames), testWritten(self));
     try testTapped(self, &window);
     try testing.expectEqualSlices(f32, &@as([test_frames]f32, @splat(0.5)), &window);
 }
@@ -1848,7 +1935,7 @@ test "an output bus declaring no channels leaves the history where it was" {
     // channel 0 exists, and the fixture happens to hold two live pointers, so a
     // missing guard would silently record a channel the host never offered and
     // would crash only in a real host.
-    try testing.expectEqual(@as(u64, 0), self.history.written());
+    try testing.expectEqual(@as(u64, 0), testWritten(self));
 }
 
 test "a zero-frame block leaves the history where it was" {
@@ -1866,7 +1953,7 @@ test "a zero-frame block leaves the history where it was" {
     // `Ring.write` no-ops on an empty slice, so this looks covered by the
     // container. It is not: the two ways to get here differ, and `to[0..0]` on
     // a null `data32` is the one that is not safe. The guard has to come first.
-    try testing.expectEqual(@as(u64, 0), self.history.written());
+    try testing.expectEqual(@as(u64, 0), testWritten(self));
 }
 
 test "reset publishes a capacity of silence rather than blanking behind the cursor" {
@@ -1888,7 +1975,7 @@ test "reset publishes a capacity of silence rather than blanking behind the curs
     // reporting it as intact.
     try testing.expectEqual(
         @as(u64, test_frames + self.history.capacity()),
-        self.history.written(),
+        testWritten(self),
     );
 
     var window: [test_frames]f32 = undefined;
