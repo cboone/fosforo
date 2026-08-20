@@ -160,7 +160,15 @@ zig build smoke-appkit
 zig build smoke-leaks
 ```
 
-`smoke-leaks` is the one that needs the instrument checked before its result is trusted. A leaked `MTLBuffer` prints under a class name `leaks` chooses, not the public one, so confirm what it actually prints rather than grepping for `MTLBuffer`: `scripts/smoke-leak-check`'s `PLUGIN_OWNED` pattern covers `_?MTL` and `AGX` already, but that is a prediction until a planted leak proves it. Drop one `release` from the buffer loop in `deinit`, confirm the script reports it, and put the line back.
+`smoke-leaks` is the one that needed the instrument checked before its result was trusted, and checking it overturned the assumption above. **`leaks` cannot see a leaked `MTLBuffer` at all.**
+
+The plan assumed `scripts/smoke-leak-check`'s `PLUGIN_OWNED` pattern would catch one under whatever name `leaks` chose for it. It does not, and the failure is not the prefix. Dropping the release in `Renderer.deinit` and running 60 cycles produces a report the script calls clean; the *same* omission applied to the command queue is caught in the same run as `AGXG17XFamilyCommandQueue`, so the instrument works. None of the 234 leaked classes in the buffer run is a buffer under any name, while the leak is real: peak RSS across 200 cycles goes from 47.7 MB to 57.7 MB. `leaks` walks the malloc heap, and a Metal buffer's storage is not in it.
+
+So the verification this issue asked for did not cover the thing it was asked about, and the backend counts its own instead. `live_windows` is incremented by `buildWindows` and decremented by `releaseWindows`, `gpu.Renderer.liveWindowBuffers` reports it on `probe`'s precedent, and `src/smoke.zig` asserts it is zero after the cycle loop rather than inside it, because every fourth cycle leaves the editor to `plugin.destroy` in a `defer` the cycle cannot assert after. Removing the release from `deinit` now fails with `WindowBuffersLeaked` and names the count.
+
+The limit is worth stating: the counter proves the ring was handed back, not that `release` was sent, so a `releaseWindows` that stopped releasing would still balance. What it catches is the realistic failure, a path that builds a ring and forgets it.
+
+Both halves are positive controls rather than claims, and both were run: the read path by inverting `Ring.read`'s result and watching `smoke-appkit` report torn windows, and the empty-ring guard by removing it and watching the new `ring.zig` test abort on `integer overflow`.
 
 In REAPER, launched from a terminal so the debug diagnostics are readable:
 
@@ -174,6 +182,18 @@ In Logic, where the Audio Unit destroys its editor rather than hiding it and dia
 ### What this does not close
 
 **The memory-ordering gap #35 deferred to this issue stays open.** #35 recorded that replacing `write`'s release store with a `.monotonic` one passes every test in the project, and that the first check able to tell the two apart is "a known signal drawn on screen during playback". Nothing is drawn here, so that check is not available yet and this issue cannot honestly claim it. It moves to #38, which is the first phase that has a picture to be wrong.
+
+## What landed differently
+
+Four things the plan did not anticipate, each recorded because the reason is more useful than the change.
+
+**`leaks` cannot see the buffer ring**, which is set out in full above. The plan treated `smoke-leaks` as covering the new resource and it does not, so `gpu.Renderer.liveWindowBuffers` is a seventh seam operation that was not planned. It is the same kind of thing as `probe`, a question about the backend rather than an instruction to it, which is what makes it defensible on a seam that exists to stay small.
+
+**`activate` gained explicit sample-rate bounds.** Sizing the history from the rate was refusing absurd values as a side effect, because `Ring.init` rejected anything that saturated a `usize` or rounded down to no slots. Moving the allocation to `create` removed that without anything in the plan noticing, and two existing tests caught it: `floatMax(f64)` and 0.5 Hz both became rates `activate` accepted. `min_sample_rate` and `max_sample_rate` put the boundary back where it was, explicitly, which is how this project treats every other value arriving from a host.
+
+**The seam's own docstring was wrong before this touched it.** It said "four operations" and listed three, having missed `resize`. Corrected to six plus the count above, with a note that the comptime block is the list that cannot drift and the prose is the one that has to be kept beside it.
+
+**The plugin tests now measure the cursor from a baseline.** `activate`'s `clear` means the cursor no longer starts an activation at zero, so eleven tests asserting absolute values failed at once. `testWritten` subtracts the baseline in one place rather than each restating an implementation detail of `activate`, and every assertion still states what the tap wrote.
 
 ## Out of scope
 
@@ -189,9 +209,12 @@ Recorded so they read as deliberate omissions rather than oversights.
 
 ## Commits
 
-1. `fix: guard Ring.read against a ring with no storage (#37)`
-2. `feat: give the history buffer the instance's lifetime (#37)`
+As landed, in order. The seam and the editor precede the plugin, which the plan had the other way round: `activate` calls `gui.windowSamples` and `Editor.setWindow`, so the plugin commit cannot build until both exist.
+
+1. `docs: plan the trailing-window read and the upload path (#37)`
+2. `fix: guard Ring.read against a ring with no storage (#37)`
 3. `feat: add the per-frame window upload to the renderer seam (#37)`
 4. `feat: read a trailing window in Editor.tick and upload it (#37)`
-5. `test: drive audio and a deactivate through the smoke harness (#37)`
-6. `docs: record the upload path's ordering and lifetime rules (#37)`
+5. `feat: give the history buffer the instance's lifetime (#37)`
+6. `test: drive audio and a deactivate through the smoke harness (#37)`
+7. `docs: record the upload path's ordering and lifetime rules (#37)`
