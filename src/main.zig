@@ -62,6 +62,7 @@ test {
     _ = @import("clap/gui.zig");
     _ = @import("clap/log.zig");
     _ = @import("clap/state.zig");
+    _ = @import("dsp/ring.zig");
     _ = @import("gpu/iface.zig");
     _ = @import("gpu/metal/renderer.zig");
     _ = @import("platform/displaylink.zig");

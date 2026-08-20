@@ -40,6 +40,7 @@ const objc = @import("objc");
 const clap = @import("clap/c.zig");
 const gpu = @import("gpu/iface.zig");
 const gui = @import("clap/gui.zig");
+const io = @import("platform/io.zig");
 const platform = @import("platform/objc.zig");
 const plugin = @import("clap/plugin.zig");
 const root = @import("main.zig");
@@ -66,11 +67,21 @@ const frame_timeout_us: u64 = 2 * std.time.us_per_s;
 /// loop is confirmed almost immediately, long enough not to spin a core.
 const frame_poll_us: u32 = 1 * std.time.us_per_ms;
 
-/// Declared rather than taken from `std`, which moved every sleep behind an
-/// `Io` instance in 0.16, the same reason `platform/displaylink.zig` declares
-/// its own clock. A harness that waits for another thread needs to wait, and
-/// owning an event loop to do it would be a strange price.
-extern "c" fn usleep(microseconds: u32) c_int;
+/// Sleep, which is all this harness asks of `std.Io`.
+///
+/// Taken from `platform/io.zig` rather than declared here. Zig 0.16 moved every
+/// sleep behind an `Io` instance, and a harness that waits for another thread
+/// needs to wait; ADR 0015 records why that instance is shared and why it is
+/// constructed in exactly one place.
+///
+/// Cancellation cannot fire. `Threaded.Thread.current` is a threadlocal set only
+/// for threads the runtime spawns, `init_single_threaded` spawns none, and every
+/// syscall region therefore takes the uncancelable branch. The error is
+/// propagated rather than swallowed because `report` prints it by name and a
+/// `catch` would need a justification longer than this sentence.
+fn sleepFor(duration: std.Io.Duration) std.Io.Cancelable!void {
+    return io.get().sleep(duration, .awake);
+}
 
 /// AppKit constants, restated here for the reason `platform/objc.zig` restates
 /// `NSView.autoresizingMask`: the headers are Objective-C and `translate-c`
@@ -375,7 +386,7 @@ fn oneCycle(
     // `hide` from silently becoming a no-op, which would cost every host with a
     // closed editor a GPU frame every vsync.
     const at_hide = instance.framesPresented();
-    _ = usleep(50 * std.time.us_per_ms);
+    try sleepFor(.fromMilliseconds(50));
     if (instance.framesPresented() != at_hide) return error.LoopRanWhileHidden;
 
     if (tear_down_editor) editor.destroy.?(p);
@@ -398,7 +409,7 @@ fn waitForFrames(editor: *const gui.Editor, target: u64) !void {
             });
             return error.NoFramePresented;
         }
-        _ = usleep(frame_poll_us);
+        try sleepFor(.fromMicroseconds(frame_poll_us));
         waited_us += frame_poll_us;
     }
 }

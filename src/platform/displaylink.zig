@@ -20,6 +20,8 @@
 
 const std = @import("std");
 
+const io = @import("io.zig");
+
 /// A `CGDirectDisplayID`. Opaque to callers, who get one from the view.
 pub const DisplayID = u32;
 
@@ -65,22 +67,24 @@ extern "c" fn CVDisplayLinkRelease(link: CVDisplayLinkRef) void;
 /// window yet, or is in one that no screen claims.
 pub extern "c" fn CGMainDisplayID() DisplayID;
 
-/// `CLOCK_UPTIME_RAW`, from Darwin's `<time.h>`. Monotonic, unadjustable, and
-/// not advanced while the machine is asleep, which is what makes it the right
-/// clock for "how many frames did that second actually contain".
-const clock_uptime_raw: c_uint = 8;
-
-extern "c" fn clock_gettime_nsec_np(clock_id: c_uint) u64;
-
 /// Nanoseconds on a monotonic clock.
 ///
-/// Here rather than in `std`, because Zig 0.16 moved every clock behind an
-/// `Io` instance and a plugin has no business owning an event loop to read the
-/// time. It lives in this file because the only thing that reads it is the
-/// render loop this file paces, and measuring the loop against a clock that
-/// wandered would report a rate that says nothing.
+/// `awake` is `CLOCK_UPTIME_RAW` on macOS: monotonic, unadjustable, and not
+/// advanced while the machine is asleep, which is what makes it the right clock
+/// for "how many frames did that second actually contain". Measuring the loop
+/// against a clock that wandered would report a rate that says nothing.
+///
+/// Zig 0.16 moved every clock behind an `Io` instance, and this reads the one
+/// `platform/io.zig` owns rather than declaring `clock_gettime_nsec_np` here.
+/// That was measured before it was chosen and it costs nothing (ADR 0015). It
+/// stays in this file because the only thing that reads it is the render loop
+/// this file paces.
+///
+/// The cast is lossless in the only direction that exists: `Io.Timestamp` counts
+/// signed `i96` nanoseconds, and `awake` counts from boot, so the value is
+/// non-negative and nowhere near 64 bits.
 pub fn monotonicNanos() u64 {
-    return clock_gettime_nsec_np(clock_uptime_raw);
+    return @intCast(std.Io.Clock.awake.now(io.get()).nanoseconds);
 }
 
 pub const DisplayLink = struct {
