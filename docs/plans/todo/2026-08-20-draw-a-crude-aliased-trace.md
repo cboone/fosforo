@@ -339,18 +339,26 @@ Sines at 0.8 amplitude, counted by peaks across the 20 ms window, came back exac
 2. **Liveness, checked on the stop rather than the start.** With a sine playing, stop the transport: the trace must return to flat within about 20 ms plus a refresh period. A frozen window keeps showing the sine indefinitely, so this fails loudly where "it appeared quickly" does not. Toggle half a dozen times.
 3. **Frequency, counted as a ratio.** At 48 kHz the window is 960 samples, so 50 Hz shows 1 period, 100 Hz shows 2, 250 Hz shows 5, 1 kHz shows 20. Count 100 and 250 by eye and 1 kHz from a screenshot. **The decisive form is the ratio:** 100 → 200 → 400 Hz must give 2 → 4 → 8, which is robust to phase, to the `(n-1)` quibble, and to miscounting a partial period at an edge. Then change the device sample rate and repeat: 100 Hz must still show 2 periods at 44.1 kHz and at 96 kHz, which is the first end-to-end check that `window_seconds` is a duration rather than a sample count.
 4. **The stroboscopic standstill.** Between frames the window shifts by `fs/R` samples, so a tone at exactly the refresh rate advances one full cycle per frame and stands still. Read `N` from the debug line, set the host's block size to 64 or 128 (at 512 the cursor's block-sized jumps exceed a full period of a 100 Hz tone), play a sine at `N` Hz, confirm the standstill, then detune by 1 Hz and confirm a 1 Hz crawl. This proves the window is live, the X axis is linear in time, and the right edge tracks the present, all at once. Skip it on a ProMotion display, where the refresh rate varies.
-5. **Level sweep**, from rendered WAVs at verified peaks rather than a gain knob. The plugin passes audio through, so the host's own meter after it is a free independent readout. Expected peak rows at 1920x1080:
+5. **Level sweep**, from rendered WAVs at verified peaks rather than a gain knob. The plugin passes audio through, so the host's own meter after it is a free independent readout.
 
-   | Peak  | dBFS  | Peak row (top / bottom) | What it looks like                         |
-   | ----- | ----- | ----------------------- | ------------------------------------------ |
-   | 1.000 | 0     | 54 / 1026               | Rounded, a 43 px dark strip above the peak |
-   | 0.500 | -6.02 | 297 / 783               | Exactly half the excursion                 |
-   | 0.100 | -20   | 491.4 / 588.6           | A tenth                                    |
-   | 0.010 | -40   | 535.1 / 544.9           | About 10 px total, visibly not flat        |
-   | 0.002 | -54   | 539 / 541               | One pixel each way: the practical floor    |
-   | 1.050 | +0.42 | 29.7 / 1050.3           | Over full scale and still not railed       |
-   | 1.089 | +0.74 | 10.8 / 1069.2           | The first level that rails                 |
-   | 2.000 | +6.02 | 10.8 / 1069.2           | **Identical to 1.089.** Over says "over"   |
+   **Read the peak's position, not its shape.** Railing shows up as the peak *ceasing to climb*, and a visible flat top is a secondary cue that only appears well past the threshold. Rows are for a 1920x1080 drawable, the default editor at 2x:
+
+   | Peak  | dBFS  | Peak row (top / bottom) | Travel clipped off | What it looks like                      |
+   | ----- | ----- | ----------------------- | ------------------ | --------------------------------------- |
+   | 0.002 | -54   | 539 / 541               | none               | One pixel each way: the practical floor |
+   | 0.010 | -40   | 535.1 / 544.9           | none               | About 10 px total, visibly not flat     |
+   | 0.100 | -20   | 491.4 / 588.6           | none               | A tenth                                 |
+   | 0.500 | -6.02 | 297 / 783               | none               | Exactly half the excursion              |
+   | 1.000 | 0     | 54 / 1026               | none               | A 43 px dark strip above the peak       |
+   | 1.050 | +0.42 | 29.7 / 1050.3           | none               | Over full scale, still not railed       |
+   | 1.089 | +0.74 | 10.8 / 1069.2           | 0.1 px             | Railing begins, and is **invisible**    |
+   | 2.000 | +6.02 | 10.8 / 1069.2           | 443 px             | **Same row as 1.089**, now plainly flat |
+
+   **The check is that the peak climbs to 1.089 and then stops.** 1.089 and 2.000 must be pixel-identical in height, which is the whole of what ADR 0016 means by refusing to say how far over the signal is.
+
+   **Do not look for a plateau at 1.089.** It is where clamping *begins*, so it removes a tenth of a pixel of travel, and anyone hunting a flat top there will report a defect that is not one. A plateau becomes 1 px deep at 1.091 and 5 px at 1.100; the sine at 2.000 loses 443 px of travel and is unmistakable.
+
+   `saw-1.100.wav` is the sharpest small-overshoot case, because a saw crosses the rail on a linear ramp rather than at a turning point: 0.51% of the ramp sits above it, which is about 5 px wide and 5 px deep. A clipped sine's plateau can be mistaken for a rounded peak at low zoom; a clipped saw's flat top with a vertical edge cannot.
 
    Use a sawtooth or square at 0.9 and 1.1 as well as a sine: a clipped sine's plateau can be mistaken for a rounded peak at low zoom, and a clipped saw's flat top with a vertical edge cannot.
 
