@@ -38,7 +38,9 @@ Three alternatives, each dismissed for a concrete reason rather than a preferenc
 
 **Why 0.98.** It is set by the smallest editor `clampSize` permits. `min_size.height` is 270 points, which on a 1x display is 270 backing pixels and a half-height of 135, so `(1 - 0.98) * 135 = 2.7` pixels between the rail and the edge. Above one pixel at every geometry this plugin will adopt, which is the arithmetic that makes the rail always rasterize, and it is a relationship a test can hold.
 
-**Why 0.9.** `1 / 0.9 = 1.111`, so the margin is worth +0.92 dB of visible headroom above full scale before railing. Typical intersample overshoot on limited material is 0.5 to 1.5 dBTP, so when phase 3 adds the bandlimited reconstruction ADR 0007 asks for, the common overshoot case draws inside the margin rather than railing. That is why the number is not arbitrary; it is not the reason for having a margin at all.
+**Why 0.9.** The rail is reached at `rail / full_scale`, which is `0.98 / 0.9 = 1.0889`, so the margin is worth **+0.74 dB** of visible headroom above full scale before railing. Typical intersample overshoot on limited material is 0.5 to 1.5 dBTP, so when phase 3 adds the bandlimited reconstruction ADR 0007 asks for, the smaller half of that range draws inside the margin rather than against the rail. That is why the number is not arbitrary; it is not the reason for having a margin at all.
+
+**The tempting figure here is wrong and was believed for a while, so it is worth naming.** `1 / full_scale` is 1.111, or +0.92 dB, and that is *not* the railing threshold: it is where the trace would reach the drawable's edge if nothing clamped it, which cannot happen because the rail clamps first. Measured rather than argued: `s = 1.05` draws at row 14 of 540 and `s = 1.0889`, `1.111`, `2.0` and `8.0` all draw at row 5.
 
 **The trace has a floor, and it is arithmetic rather than a defect.** One pixel of excursion needs `s = 1 / (full_scale * H/2)`: about `0.00206`, or **-54 dBFS**, at the default editor on a 2x display, and about **-42 dBFS** at the minimum editor on a 1x display. Below that a sine moves the trace less than a backing pixel and reads as flat. It bounds the bottom of any level sweep.
 
@@ -312,12 +314,16 @@ At 960x540 with `full_scale = 0.9` and `rail = 0.98`, every constant-level case 
 | `+0.500` | 148.5        | 148          |
 | `+1.000` | 27.0         | 26           |
 | `-1.000` | 513.0        | 512          |
+| `+1.050` | 14.85        | 14           |
+| `+1.089` | 5.4          | 5            |
 | `+1.111` | 5.4          | 5            |
 | `+2.000` | 5.4          | 5            |
 | `+8.000` | 5.4          | 5            |
 | `-2.000` | 534.6        | 534          |
 
-Three things fall out of that table. Silence draws a real pixel on the centre row rather than nothing, so the benign half of the boundary-rasterization concern is confirmed benign at an even drawable height. `+2.0` and `+8.0` are pixel-identical, which is the instrument declining to say how far over it is. And `+1.111` is already at the rail, confirming the margin is worth the +0.92 dB the constant was chosen for and not more.
+Three things fall out of that table. Silence draws a real pixel on the centre row rather than nothing, so the benign half of the boundary-rasterization concern is confirmed benign at an even drawable height. Everything from `+1.089` up is pixel-identical, which is the instrument declining to say how far over it is. And `+1.05` is visibly over full scale without being railed, at row 14 against full scale's 26 and the rail's 5, which is the margin doing the job it exists for.
+
+**That last row is also where the probe caught a wrong number in this plan.** The headroom was written as +0.92 dB, from `1 / full_scale = 1.111`. The rail is reached at `rail / full_scale = 1.0889`, which is **+0.74 dB**; 1.111 is where the trace would reach the drawable's edge unclamped, and it never gets there. The original level-sweep table below called 1.111 "the last level that is not railed", which the measurement flatly contradicts.
 
 Sines at 0.8 amplitude, counted by peaks across the 20 ms window, came back exact at 50, 100, 200, 250, 400 and 1000 Hz: 1, 2, 4, 5, 8 and 20 periods, matching `f x 0.020` in every case.
 
@@ -342,8 +348,9 @@ Sines at 0.8 amplitude, counted by peaks across the 20 ms window, came back exac
    | 0.100 | -20   | 491.4 / 588.6           | A tenth                                    |
    | 0.010 | -40   | 535.1 / 544.9           | About 10 px total, visibly not flat        |
    | 0.002 | -54   | 539 / 541               | One pixel each way: the practical floor    |
-   | 1.111 | +0.92 | 10.8 / 1069.2           | The last level that is not railed          |
-   | 2.000 | +6.02 | 10.8 / 1069.2           | **Identical to 1.111.** Over says "over"   |
+   | 1.050 | +0.42 | 29.7 / 1050.3           | Over full scale and still not railed       |
+   | 1.089 | +0.74 | 10.8 / 1069.2           | The first level that rails                 |
+   | 2.000 | +6.02 | 10.8 / 1069.2           | **Identical to 1.089.** Over says "over"   |
 
    Use a sawtooth or square at 0.9 and 1.1 as well as a sine: a clipped sine's plateau can be mistaken for a rounded peak at low zoom, and a clipped saw's flat top with a vertical edge cannot.
 

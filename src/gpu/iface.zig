@@ -56,10 +56,15 @@ pub const max_window_samples: usize = 8192;
 /// The margin is the point rather than a courtesy. Full scale on the drawable's
 /// exact edges leaves a peak at 0 dBFS pixel-identical to one at +6, because both
 /// are at the top; the strip between this and `trace_rail` is what makes "at full
-/// scale" and "over" two different pictures. It is worth +0.92 dB, since
-/// `1 / 0.9` is 1.111, which also means phase 3's bandlimited reconstruction will
-/// draw a typical 0.5 to 1.5 dBTP intersample overshoot inside the margin rather
-/// than against the rail.
+/// scale" and "over" two different pictures. It is worth +0.74 dB of headroom,
+/// since the rail is reached at `trace_rail / trace_full_scale`, or 1.0889, which
+/// also means phase 3's bandlimited reconstruction will draw the smaller half of
+/// a typical 0.5 to 1.5 dBTP intersample overshoot inside the margin rather than
+/// against the rail.
+///
+/// Not `1 / trace_full_scale`, which is 1.111 and +0.92 dB. That is where the
+/// trace would reach the drawable's edge if nothing clamped it, and it is
+/// unreachable precisely because `trace_rail` clamps first.
 ///
 /// The consequence to know before reading a quiet signal: one backing pixel of
 /// excursion needs `1 / (trace_full_scale * height / 2)`, which is about
