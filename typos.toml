@@ -1,3 +1,19 @@
+[default]
+# Pinned commit SHAs are hex, not prose, and hex happily spells things. The
+# `run-zig-ci.yml` pin `91f9abd` reads as "abd" and is reported as a misspelling
+# of "and" twice in docs/plans/done/2026-07-29-tighten-ci-job-timeouts.md. This
+# repository pins every action and reusable workflow by SHA and records those
+# pins in prose, so the collision recurs by design rather than by accident.
+#
+# Matched by how a SHA is written here rather than by "looks like hex", which
+# would also silence real words: `defaced` and `decades` are both hex-only. A
+# SHA appears either in backticks or after an `@` in a workflow pin, and neither
+# shape is something prose produces.
+extend-ignore-re = [
+  "`[0-9a-f]{7,40}`",
+  "@[0-9a-f]{40}\\b",
+]
+
 [default.extend-words]
 # "precessing" is correct: a phase-space loop that slowly rotates exhibits
 # precession. Not a misspelling of "processing", despite the audio context.
