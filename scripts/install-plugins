@@ -78,11 +78,26 @@ USAGE
 
 # The first twelve hex digits, which is plenty to tell two builds apart and short
 # enough to read at a glance.
+#
+# Refuses rather than returning an empty string, which is what it used to do when the
+# path was missing, and that was the worse of the two failures it caused. `shasum`
+# wrote to stderr and exited non-zero, the assignment below took its status from the
+# `echo` that followed instead, and the caller went on to compare "" against "" and
+# call that a match: a run that had just deleted a working bundle reported a
+# successful verified install, with a blank hash, and exited 0. A hash that cannot be
+# computed is an error, not a value.
+#
+# Callers guard the file before asking, so reaching this is a race rather than the
+# ordinary missing-file case, and it is left loud for that reason.
 function short_hash() {
   local path="${1}"
   local sum
 
-  sum="$(shasum -a 256 "${path}")"
+  if ! sum="$(shasum -a 256 "${path}")"; then
+    warn "cannot hash ${path}"
+    return "${E_NOINPUT}"
+  fi
+
   echo "${sum:0:12}"
 }
 
@@ -99,6 +114,17 @@ function install_bundle() {
 
   local installed
   installed="${dest_dir}/$(basename "${source}")"
+
+  # Checked here rather than by the caller, and specifically *before* the `rm -rf`
+  # below, because the destructive step comes first and the verification comes last.
+  # A source directory with no Mach-O inside it used to pass the caller's `-d` test,
+  # take the working installed bundle with it, and then be unhashable. The existence
+  # of a bundle directory is not evidence that there is a build in it.
+  if [[ ! -f "${source}/${binary}" ]]; then
+    warn "${label}: ${source} has no ${binary}; nothing was installed"
+    warn "${label}:   the build is incomplete, and whatever is installed is untouched"
+    return "${E_NOINPUT}"
+  fi
 
   mkdir -p "${dest_dir}"
   rm -rf "${installed}"
@@ -166,7 +192,23 @@ function report_audio_unit() {
     return 0
   fi
 
-  if [[ -d "${built}" ]]; then
+  # A bundle directory whose Mach-O is missing is installed and unreadable, which is
+  # neither of the two states below and cannot be hashed into either of them. It is
+  # reported rather than hashed because this whole function is the diagnostic path:
+  # it runs after the CLAP has already been installed, so a `shasum` that takes the
+  # run down with it turns a successful install into a non-zero exit and swallows the
+  # provenance line that follows. A diagnostic that aborts is worse than none.
+  if [[ ! -f "${installed}/${AU_BINARY}" ]]; then
+    warn "audio unit: ${installed} has no ${AU_BINARY}"
+    warn "audio unit:   damaged rather than stale, and a host will refuse it"
+    warn "audio unit:   \`zig build install-plugins\` will build one and replace it"
+    return 0
+  fi
+
+  # The built bundle gets the same treatment for the same reason. Falling through to
+  # the report below is right: an incomplete build is not something that can replace
+  # what is installed, which is exactly what that branch says.
+  if [[ -f "${built}/${AU_BINARY}" ]]; then
     local built_hash
     local installed_hash
     built_hash="$(short_hash "${built}/${AU_BINARY}")"
