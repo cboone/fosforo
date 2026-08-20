@@ -126,21 +126,21 @@ The file header is rewritten. It currently claims "The real passes arrive in pla
 
 ### `src/gpu/metal/renderer.zig`
 
-| Site                | Change                                                                                                              |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `mtl`               | `primitive_type_line_strip: u64 = 2`, in numeric order above the triangle                                           |
-| New constants       | `Functions { vertex, fragment }`, `clear_functions`, `trace_functions`, and `passes` for the test to walk           |
-| New constants       | `window_buffer_index: u64 = 0` and `uniform_buffer_index: u64 = 1`, typed `u64` so the call sites lose their `@as`  |
-| New types           | `TraceUniforms` (`extern struct { sample_count: u32, full_scale: f32, rail: f32 }`) and `Pipelines { clear, trace }` |
-| `Renderer.pipeline` | Becomes `pipelines: Pipelines`                                                                                      |
+| Site                | Change                                                                                                                       |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `mtl`               | `primitive_type_line_strip: u64 = 2`, in numeric order above the triangle                                                    |
+| New constants       | `Functions { vertex, fragment }`, `clear_functions`, `trace_functions`, and `passes` for the test to walk                    |
+| New constants       | `window_buffer_index: u64 = 0` and `uniform_buffer_index: u64 = 1`, typed `u64` so the call sites lose their `@as`           |
+| New types           | `TraceUniforms` (`extern struct { sample_count: u32, full_scale: f32, rail: f32 }`) and `Pipelines { clear, trace }`         |
+| `Renderer.pipeline` | Becomes `pipelines: Pipelines`                                                                                               |
 | `init`              | `const pipelines = try buildPipelines(device, diags); errdefer releasePipelines(pipelines);` One acquisition, one `errdefer` |
-| `probe`             | The symmetric pair, matching the `buildWindows`/`releaseWindows` lines three below it                               |
-| `deinit`            | `releasePipelines(self.pipelines)` in the same position                                                             |
-| `buildPipelines`    | Compiles the library once, calls `buildPipeline` per pass, `errdefer clear.release()` between them                  |
-| `buildPipeline`     | Takes the library and a `comptime Functions`; its body is the old one from the two `newFunctionWithName:` calls down |
-| `releasePipelines`  | The one release site for either state                                                                               |
-| `traceVertices`     | New pure helper beside `writeWindow`: `?u32`, null below two samples                                                |
-| `frame`             | Clear pass, then the guarded trace pass. See below                                                                  |
+| `probe`             | The symmetric pair, matching the `buildWindows`/`releaseWindows` lines three below it                                        |
+| `deinit`            | `releasePipelines(self.pipelines)` in the same position                                                                      |
+| `buildPipelines`    | Compiles the library once, calls `buildPipeline` per pass, `errdefer clear.release()` between them                           |
+| `buildPipeline`     | Takes the library and a `comptime Functions`; its body is the old one from the two `newFunctionWithName:` calls down         |
+| `releasePipelines`  | The one release site for either state                                                                                        |
+| `traceVertices`     | New pure helper beside `writeWindow`: `?u32`, null below two samples                                                         |
+| `frame`             | Clear pass, then the guarded trace pass. See below                                                                           |
 
 `frame`'s new tail, replacing `:464-486`:
 
@@ -214,7 +214,7 @@ The `torn` assertion stays and its comment is corrected. With `uploaded > 0` pro
 ## Tests
 
 | File           | Test                                                                                                          |
-| -------------- | --------------------------------------------------------------------------------------------------------------- |
+| -------------- | ------------------------------------------------------------------------------------------------------------- |
 | `renderer.zig` | The embedded shader defines the functions every pipeline asks for, walking `passes` rather than listing them  |
 | `renderer.zig` | The shader reads the buffers at the indices the encoder binds them to, searching for `buffer(0)`/`buffer(1)`  |
 | `renderer.zig` | A window shorter than one segment draws no trace: `traceVertices` of 0 and 1 are null, of 2 is 2              |
@@ -268,14 +268,14 @@ Then all of it again under `--release=fast`, on #37's precedent: everything abov
 
 Each targets exactly one assertion, on the `Ring.capacity` and `no_drawable` precedent.
 
-| Plant                                                    | Expected                                                                 |
-| -------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Delete `self.editor.history = &self.history` in `init`   | `NoWindowUploaded`. Also run `zig build test`, because the value of this plant is that it is harness-only coverage and that prediction has to be measured |
-| Delete `setWindow` from `activate`                       | `NoWindowUploaded` **and** a unit-test failure, so it is a control that the two agree rather than evidence of unique coverage |
-| An early return at the top of `readWindow` after frame 1 | `UploadsStopped`                                                         |
-| Delete `setWindow(0)` from `deactivate`                  | `UploadedWhileDeactivated`                                               |
-| Clear `window` in `Editor.destroy`                       | `ReopenedEditorStalled`                                                  |
-| Drop one `release` from `releasePipelines`               | `smoke-leaks` red, or a recorded second blind spot                       |
+| Plant                                                    | Expected                                                                                                                                                                                                                                                                                                                                                   |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Delete `self.editor.history = &self.history` in `init`   | `NoWindowUploaded`. Also run `zig build test`, because the value of this plant is that it is harness-only coverage and that prediction has to be measured                                                                                                                                                                                                  |
+| Delete `setWindow` from `activate`                       | `NoWindowUploaded` **and** a unit-test failure, so it is a control that the two agree rather than evidence of unique coverage                                                                                                                                                                                                                              |
+| An early return at the top of `readWindow` after frame 1 | `UploadsStopped`                                                                                                                                                                                                                                                                                                                                           |
+| Delete `setWindow(0)` from `deactivate`                  | `UploadedWhileDeactivated`                                                                                                                                                                                                                                                                                                                                 |
+| Clear `window` in `Editor.destroy`                       | `ReopenedEditorStalled`                                                                                                                                                                                                                                                                                                                                    |
+| Drop one `release` from `releasePipelines`               | `smoke-leaks` red, or a recorded second blind spot                                                                                                                                                                                                                                                                                                         |
 | Make `Renderer.upload` a no-op                           | **Passes.** Record it as the limit, in the words `live_windows` already uses: the counter proves the window was read and handed across the seam, not that the backend copied it. Changing `upload` to return a count so the harness could catch it would be shaping the seam to the harness, which is what `probe`'s docstring is careful to say it is not |
 
 ### In a host

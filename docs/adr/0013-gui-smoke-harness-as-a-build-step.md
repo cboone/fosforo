@@ -88,7 +88,7 @@ The cost is not effort. `attachLayer` sets `setFramebufferOnly: true`, and readi
 
 ### `windowsTorn() == 0` was a vacuous assertion, and this document said why
 
-#37 added an assertion that no window tore across a cycle. It is satisfied by three worlds it cannot tell apart: reads happened and none tore; reads happened and none *could* tear, because the harness stops calling `process` before the editor opens and the producer is stationary; and **no read ever happened at all**. `Editor.readWindow` returns before either counter when its history pointer is null or its window count is zero, so a `plugin.init` that dropped its history wiring, an `activate` that dropped `setWindow`, or a widened early return would all leave the count at zero and read as healthy.
+Issue [#37](https://github.com/cboone/fosforo/issues/37) added an assertion that no window tore across a cycle. It is satisfied by three worlds it cannot tell apart: reads happened and none tore; reads happened and none *could* tear, because the harness stops calling `process` before the editor opens and the producer is stationary; and **no read ever happened at all**. `Editor.readWindow` returns before either counter when its history pointer is null or its window count is zero, so a `plugin.init` that dropped its history wiring, an `activate` that dropped `setWindow`, or a widened early return would all leave the count at zero and read as healthy.
 
 The Consequences above already state the rule that breaks, about `leaks`: **an absence has to be told apart from an instrument that did not run.**
 
@@ -98,14 +98,14 @@ The Consequences above already state the rule that breaks, about `leaks`: **an a
 
 Four assertions, each verified by planting the defect it names:
 
-| Plant                                                     | Result                                                          |
-| --------------------------------------------------------- | ----------------------------------------------------------------- |
-| Drop `self.editor.history = &self.history` from `init`    | `smoke: appkit FAILED: NoWindowUploaded`                        |
-| Drop `setWindow` from `activate`                          | `NoWindowUploaded`                                              |
-| `readWindow` returns early once one window has uploaded   | `UploadsStopped`                                                |
-| Drop `setWindow(0)` from `deactivate`                     | `UploadedWhileDeactivated`, naming 2 windows                    |
-| Clear `window` in `Editor.destroy`                        | `ReopenedEditorStalled`                                         |
-| Make `Renderer.upload` a no-op                            | **Passes.** See the limit below                                 |
+| Plant                                                   | Result                                       |
+| ------------------------------------------------------- | -------------------------------------------- |
+| Drop `self.editor.history = &self.history` from `init`  | `smoke: appkit FAILED: NoWindowUploaded`     |
+| Drop `setWindow` from `activate`                        | `NoWindowUploaded`                           |
+| `readWindow` returns early once one window has uploaded | `UploadsStopped`                             |
+| Drop `setWindow(0)` from `deactivate`                   | `UploadedWhileDeactivated`, naming 2 windows |
+| Clear `window` in `Editor.destroy`                      | `ReopenedEditorStalled`                      |
+| Make `Renderer.upload` a no-op                          | **Passes.** See the limit below              |
 
 **The first two are not harness-only coverage, which was measured rather than assumed.** Both were predicted to be unique to the harness and both also fail `zig build test`, against the existing tests "init points the editor at the instance's history" and "activate publishes a window to the editor and deactivate takes it away". They are worth keeping as controls that the two levels agree, and not worth citing as coverage nothing else provides.
 
