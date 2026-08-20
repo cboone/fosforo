@@ -328,6 +328,23 @@ pub const Editor = struct {
     /// "drawing". At the margins involved anything above zero is a real signal.
     torn: std.atomic.Value(u64) = .init(0),
 
+    /// Windows read intact and handed across the seam.
+    ///
+    /// The third split of the same kind `presented` and `torn` already made, and
+    /// it exists because the second one was not enough on its own. `windowsTorn()
+    /// == 0` is satisfied by three different worlds a caller cannot tell apart:
+    /// reads happened and none tore, reads happened and none *could* tear because
+    /// no producer was running, and **no read ever happened at all**. `readWindow`
+    /// returns before either counter when `history` is null or `window` is zero,
+    /// so an `activate` that dropped `setWindow` or a `plugin.init` that dropped
+    /// its history wiring would leave the torn count at zero and look healthy.
+    ///
+    /// So "the loop is drawing" and "the loop is drawing the samples" become two
+    /// claims rather than one, which is what ADR 0013 did for "running" and
+    /// "drawing" when `presented` arrived, and for the same reason: an absence has
+    /// to be told apart from an instrument that did not run.
+    uploaded: std.atomic.Value(u64) = .init(0),
+
     /// How many samples the render thread should read per tick, or zero for
     /// none.
     ///
@@ -440,6 +457,7 @@ pub const Editor = struct {
         self.applied = .{ .size = default_size, .scale = 1.0 };
         self.presented = .init(0);
         self.torn = .init(0);
+        self.uploaded = .init(0);
         self.current = default_size;
         self.scale = 1.0;
         self.hidden = false;
@@ -692,6 +710,7 @@ pub const Editor = struct {
         const window = self.samples[0..want];
         if (history.read(window)) {
             renderer.upload(window);
+            _ = self.uploaded.fetchAdd(1, .release);
         } else {
             _ = self.torn.fetchAdd(1, .release);
         }
@@ -712,6 +731,15 @@ pub const Editor = struct {
     /// `Editor.torn`. `src/smoke.zig` asserts against it.
     pub fn windowsTorn(self: *const Editor) u64 {
         return self.torn.load(.acquire);
+    }
+
+    /// [thread-safe] Windows read intact and uploaded since this editor was
+    /// created.
+    ///
+    /// The positive claim `windowsTorn` cannot make on its own: see
+    /// `Editor.uploaded`. `src/smoke.zig` is the caller.
+    pub fn windowsUploaded(self: *const Editor) u64 {
+        return self.uploaded.load(.acquire);
     }
 
     /// [main-thread] Set how many samples each tick should read, or zero.
@@ -780,12 +808,13 @@ pub const Editor = struct {
         const rate = self.meter.observe(display_link.monotonicNanos()) orelse return;
         const l = self.log orelse return;
 
-        l.print(c.CLAP_LOG_DEBUG, "rendering at {d:.1} Hz, {d}x{d} at {d:.2}x, {d} sample window, {d} torn", .{
+        l.print(c.CLAP_LOG_DEBUG, "rendering at {d:.1} Hz, {d}x{d} at {d:.2}x, {d} sample window, {d} uploaded, {d} torn", .{
             rate,
             self.applied.size.width,
             self.applied.size.height,
             self.applied.scale,
             self.window.load(.acquire),
+            self.windowsUploaded(),
             self.windowsTorn(),
         });
     }
@@ -1258,6 +1287,28 @@ test "a window the editor is given is bounded by the buffer it owns" {
     try testing.expectEqual(@as(u32, 0), editor.window.load(.acquire));
 }
 
+test "the rail is outside full scale, so over-scale has somewhere to go" {
+    // If these ever met, a signal at 0 dBFS and one at +6 would draw identically
+    // and the level sweep would be checking nothing. The gap is the deliverable
+    // of the vertical-scale decision (ADR 0016), not a rounding allowance.
+    try testing.expect(gpu.trace_rail > gpu.trace_full_scale);
+}
+
+test "the rail leaves at least one backing pixel at the smallest editor" {
+    // This file owns the assertion because this file owns `min_size`, which is
+    // what the rail's inset is sized against. A one-pixel line whose centre lands
+    // on the drawable's boundary may rasterize to nothing, so a rail flush with
+    // the edge would make a railed signal read as an absent one.
+    //
+    // The worst case is the smallest editor at a backing scale of 1, which is the
+    // fewest pixels the inset can be spent on. Shrink `min_size` or move
+    // `trace_rail` and this is what has to be faced.
+    const half_height: f32 = @as(f32, @floatFromInt(min_size.height)) / 2;
+    const inset = (1.0 - gpu.trace_rail) * half_height;
+
+    try testing.expect(inset > 1.0);
+}
+
 test "teardown clears the editor's own counters and leaves the instance's alone" {
     var editor: Editor = .{};
     try testing.expect(editor.create(&c.CLAP_WINDOW_API_COCOA, false));
@@ -1272,12 +1323,17 @@ test "teardown clears the editor's own counters and leaves the instance's alone"
     // What this editor accumulated.
     _ = editor.presented.fetchAdd(3, .release);
     _ = editor.torn.fetchAdd(2, .release);
+    _ = editor.uploaded.fetchAdd(5, .release);
 
     editor.destroy();
 
     // Cleared, because a stale count would be the next editor's opening claim.
+    // `uploaded` most of all: `src/smoke.zig` asserts a reopened editor uploads
+    // again, and a count that survived teardown would satisfy that assertion
+    // without the second editor ever having read anything.
     try testing.expectEqual(@as(u64, 0), editor.framesPresented());
     try testing.expectEqual(@as(u64, 0), editor.windowsTorn());
+    try testing.expectEqual(@as(u64, 0), editor.windowsUploaded());
 
     // Kept, because a host closing and reopening an editor on an active plugin
     // is ordinary, and clearing these would leave the second one reading nothing

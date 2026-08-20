@@ -371,9 +371,15 @@ const Audio = struct {
     buses: [2]c.clap_audio_buffer_t = undefined,
 
     /// A ramp per block, so what reaches the ring is checkable in principle and
-    /// distinguishable from silence in practice. Nothing here reads it back: the
-    /// window ends up in a GPU buffer this process cannot see, which is the
-    /// honest limit of this harness and why #38 is where the samples get judged.
+    /// distinguishable from silence in practice.
+    ///
+    /// The harness counts the windows that were read and handed across the seam
+    /// and does not read any of them back: past `Renderer.upload` the samples are
+    /// in a GPU buffer this process cannot see, and the drawable is
+    /// `framebufferOnly`, which is a property of the shipping renderer rather
+    /// than something to relax for a test. So this proves the path ran, not what
+    /// the pixels became. ADR 0013's #38 amendment records why that line is
+    /// drawn there.
     fn wire(self: *Audio, block: u32) void {
         for (&self.input, 0..) |*channel, ch| {
             for (channel, 0..) |*sample, i| {
@@ -486,11 +492,60 @@ fn oneCycle(
     const before = instance.framesPresented();
     try waitForFrames(instance, before + 1);
 
+    // The samples reached the seam, which is a claim `windowsTorn() == 0` cannot
+    // make: see `Editor.uploaded`. No extra wait is needed and the ordering is
+    // what makes it sound. `Editor.tick` calls `readWindow` before
+    // `Renderer.frame` and counts the frame after both, so a `framesPresented`
+    // that has moved at all proves a `readWindow` ran to completion. If it ran
+    // and uploaded nothing, it returned early.
+    if (instance.windowsUploaded() == 0) {
+        say("  a frame was presented without a window ever being read", .{});
+        return error.NoWindowUploaded;
+    }
+
     // A resize while the loop is running, which is the one interleaving the
     // mailbox exists for and the one that cannot be reached from a unit test.
     // The frames after it went through `Renderer.resize` on the render thread.
+    //
+    // Audio is driven through the same span, so the producer is running while
+    // the consumer reads rather than being stationary from the moment the editor
+    // opened. **That is not a test of the ring's memory ordering** (#44): a
+    // weakened release store's visibility window is nanoseconds against a window
+    // that lags 20 ms. What it buys is that `uploaded` sees changing windows.
+    const uploaded_before_resize = instance.windowsUploaded();
     if (!editor.set_size.?(p, 1280, 720)) return error.SetSizeFailed;
+    for (0..smoke_blocks) |block| {
+        audio.wire(@intCast(smoke_blocks + block));
+        const ctx = audio.context();
+        if (p.*.process.?(p, &ctx) != c.CLAP_PROCESS_CONTINUE) return error.ProcessFailed;
+    }
     try waitForFrames(instance, instance.framesPresented() + 2);
+
+    // A loop that read once and then stopped presents frames forever and draws
+    // the same window forever, which by eye is a trace that never moves.
+    if (instance.windowsUploaded() <= uploaded_before_resize) {
+        say("  uploads stopped after {d} windows", .{uploaded_before_resize});
+        return error.UploadsStopped;
+    }
+
+    // An editor destroyed and reopened on a still-activated plugin, which is what
+    // Logic does on every open of the plugin window because clap-wrapper's AUv2
+    // view destroys rather than hides. `Editor.destroy` deliberately keeps
+    // `history` and `window`, and until now nothing checked it: clearing either
+    // would leave this second editor reading nothing for the rest of the
+    // activation, with no symptom but a trace that never moved.
+    editor.destroy.?(p);
+    if (!editor.create.?(p, &c.CLAP_WINDOW_API_COCOA, false)) return error.GuiCreateFailed;
+    if (!editor.set_parent.?(p, &window)) return error.SetParentFailed;
+    if (!editor.show.?(p)) return error.ShowFailed;
+
+    // Teardown reset the counters, so this is the second editor's own claim
+    // rather than the first one's leftovers.
+    try waitForFrames(instance, 1);
+    if (instance.windowsUploaded() == 0) {
+        say("  a reopened editor presented a frame without reading a window", .{});
+        return error.ReopenedEditorStalled;
+    }
 
     // The interleaving this harness exists to reach, and the one the whole
     // lifetime decision in `Instance.history` was made for: the host deactivates
@@ -505,11 +560,29 @@ fn oneCycle(
 
     // The loop has to survive it. A window of zero means the render thread reads
     // nothing and draws what it last held, rather than stopping.
+    //
+    // One frame first, to absorb a tick that was already inside `readWindow`
+    // holding a non-zero `want` when `deactivate`'s release store landed. The
+    // count is captured after that, so what follows is about ticks that started
+    // on this side of it.
+    try waitForFrames(instance, instance.framesPresented() + 1);
+    const uploaded_after_deactivate = instance.windowsUploaded();
     try waitForFrames(instance, instance.framesPresented() + 2);
 
-    // Windows the producer lapped mid-copy. The margin is enormous and the audio
-    // thread here is this thread, so anything but zero means the read is wrong
-    // rather than unlucky.
+    // The mirror of `LoopRanWhileHidden` below, on the other mechanism: a window
+    // of zero has to mean the render thread stops reading, not merely that it
+    // reads something harmless.
+    if (instance.windowsUploaded() != uploaded_after_deactivate) {
+        say("  {d} windows uploaded after deactivate", .{
+            instance.windowsUploaded() - uploaded_after_deactivate,
+        });
+        return error.UploadedWhileDeactivated;
+    }
+
+    // Windows the producer lapped mid-copy, and a claim worth something now that
+    // `NoWindowUploaded` above proves reads happened at all. The margin is
+    // enormous and the audio thread here is this thread, so anything but zero
+    // means the read is wrong rather than unlucky.
     if (instance.windowsTorn() != 0) {
         say("  {d} torn windows across the cycle", .{instance.windowsTorn()});
         return error.WindowTorn;
