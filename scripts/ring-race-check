@@ -259,7 +259,13 @@ function main() {
     return "${E_NOINPUT}"
   fi
 
-  capture="$(mktemp -t ring-race-check)"
+  # An explicit template rather than `mktemp -t <prefix>`, which is what
+  # `smoke-leak-check` uses and is why the difference is worth a comment. BSD
+  # mktemp treats the argument as a prefix and appends its own suffix; GNU mktemp
+  # requires the X's and fails with "too few X's in template". That script only
+  # ever runs on macOS, and this one only ever runs on Linux, so the portable
+  # spelling is the one that belongs here.
+  capture="$(mktemp "${TMPDIR:-/tmp}/ring-race-check.XXXXXX")"
   # shellcheck disable=SC2064 # Expand now: the path must survive the function scope.
   trap "rm -f '${capture}'" EXIT
 
