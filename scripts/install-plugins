@@ -19,15 +19,25 @@
 # which build is now installed. An install that cannot be confirmed is worth no
 # more than one that never happened.
 #
-# The Audio Unit is the easier half to get wrong, because `zig build
-# install-clap` has no counterpart for it and that copy has always been manual.
-# It is skipped with an explanation rather than an error when CMake has not run,
-# since the day-to-day loop deliberately never invokes CMake.
+# Both callers build what they are about to install, which is what makes the hashes
+# below mean anything: `zig build install-clap` runs this with --clap-only behind the
+# Zig install step, and `zig build install-plugins` runs it behind that and the
+# audio-unit step. This script builds nothing itself.
+#
+# An installed bundle with no built counterpart is reported rather than ignored, and
+# that is the other half of the same argument. Silence about a component nobody in
+# this worktree built is what let a two-week-old Fosforo.component from another
+# branch sit in ~/Library/Audio/Plug-Ins/Components while a fresh CLAP was installed
+# beside it. Logic loaded the stale one, it rendered, and it read as a pass (#43).
+# It is a report and not an error: the CLAP-only loop is deliberately the common
+# one, and refusing to finish it would be a worse trade than saying what is there.
 #
 # Usage:
 #   install-plugins [--clap-only]
 #
-#   --clap-only   Skip the Audio Unit even if it has been built.
+#   --clap-only   Skip the Audio Unit even if it has been built. What is already
+#                 installed is still reported, because the question the report
+#                 answers does not go away when the copy is skipped.
 #
 # Exit codes:
 #   0  - Everything installed was verified against the build it came from
@@ -107,6 +117,78 @@ function install_bundle() {
   warn "${label}: ${installed_hash}  ${installed}"
 }
 
+# Describe a bundle that is installed and was not installed by this run.
+#
+# The hash alone is not enough here, because there is nothing to compare it to. The
+# date is what makes it legible: a component from a fortnight ago, next to a CLAP
+# from a minute ago, is the whole tell, and it is the one that was missed.
+#
+# Arguments:
+#   $1 - label for the message
+#   $2 - the installed bundle directory
+#   $3 - the binary inside it, relative to the bundle
+function describe_installed() {
+  local label="${1}"
+  local installed="${2}"
+  local binary="${3}"
+
+  local hash
+  local modified
+  hash="$(short_hash "${installed}/${binary}")"
+  modified="$(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "${installed}/${binary}")"
+
+  warn "${label}:   installed ${hash}, modified ${modified}"
+}
+
+# Report on an Audio Unit that this run is not going to install over.
+#
+# Three of the four cases the caller can be in end up here, and they differ in what
+# is knowable rather than in what happened. With a built component in hand the
+# installed one can be compared and the answer is exact; without one, the date above
+# is the only evidence there is.
+#
+# Arguments:
+#   $1 - path to the built component, which may not exist
+#   $2 - true when the skip was asked for rather than forced
+function report_audio_unit() {
+  local built="${1}"
+  local skipped="${2}"
+
+  local installed="${AU_DEST}/${AU_BUNDLE}"
+
+  if [[ ! -d "${installed}" ]]; then
+    if [[ "${skipped}" == true ]]; then
+      warn "audio unit: skipped by --clap-only, and none is installed"
+    else
+      warn "audio unit: none built and none installed"
+      warn "audio unit:   Logic loads no CLAP; run \`zig build audio-unit\` if you need it"
+    fi
+    return 0
+  fi
+
+  if [[ -d "${built}" ]]; then
+    local built_hash
+    local installed_hash
+    built_hash="$(short_hash "${built}/${AU_BINARY}")"
+    installed_hash="$(short_hash "${installed}/${AU_BINARY}")"
+
+    if [[ "${built_hash}" == "${installed_hash}" ]]; then
+      warn "audio unit: skipped by --clap-only; the installed one IS this build"
+      warn "audio unit:   ${installed_hash}  ${installed}"
+    else
+      warn "audio unit: skipped by --clap-only; the installed one is NOT this build"
+      warn "audio unit:   installed ${installed_hash}, built ${built_hash}"
+      warn "audio unit:   drop --clap-only to replace it"
+    fi
+    return 0
+  fi
+
+  warn "audio unit: NOT from this build"
+  describe_installed "audio unit" "${installed}" "${AU_BINARY}"
+  warn "audio unit:   nothing was built here to replace it"
+  warn "audio unit:   Logic will load that bundle; run \`zig build audio-unit\` first"
+}
+
 function main() {
   local clap_only=false
 
@@ -143,15 +225,14 @@ function main() {
     warn "no ${CLAP_BUNDLE} in zig-out; run \`zig build\` first"
   fi
 
-  if [[ "${clap_only}" == true ]]; then
-    warn "audio unit: skipped by --clap-only"
-  elif [[ -d "${au_source}" ]]; then
+  if [[ "${clap_only}" != true && -d "${au_source}" ]]; then
     install_bundle "audio unit" "${au_source}" "${AU_DEST}" "${AU_BINARY}"
     installed_any=true
   else
-    # Not an error. The day-to-day loop never invokes CMake, so an absent
-    # component usually means the fast path was taken deliberately.
-    warn "no ${AU_BUNDLE}; run \`cmake -B build cmake/ && cmake --build build --target fosforo_all\` to build it"
+    # Not an error, in any of its three shapes. The CLAP-only loop is the common
+    # one and is meant to stay cheap; what changes here is that it no longer stays
+    # quiet about a component it is leaving behind.
+    report_audio_unit "${au_source}" "${clap_only}"
   fi
 
   if [[ "${installed_any}" != true ]]; then
