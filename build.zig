@@ -20,6 +20,20 @@ pub fn build(b: *std.Build) void {
     });
     const optimize = b.standardOptimizeOption(.{});
 
+    // First, and before anything below reaches `b.dependency`. This is the only
+    // step here that builds on a non-Apple target, and the graph below cannot even
+    // be *described* on one: `b.dependency` runs a dependency's `build` function
+    // at configure time, and zig-objc's calls `appleSDKPath`, which panics on any
+    // OS that is not Darwin. So `zig build ring-race` on Linux aborted inside a
+    // dependency's build script before a single step ran, which is what the first
+    // CI run of the `ring-race` job did (#44). Fetching the tarball is a cost;
+    // describing the graph is the failure, and only the second one is fatal.
+    //
+    // Everything past this line is macOS-only anyway (ADR 0001), so the early
+    // return costs nothing: on Linux there is genuinely nothing else to build.
+    addRingRaceStep(b);
+    if (target.result.os.tag != .macos) return;
+
     const core: Core = .{
         .b = b,
         .target = target,
@@ -70,7 +84,6 @@ pub fn build(b: *std.Build) void {
     addTestStep(core);
     addShaderValidationStep(b);
     addSmokeSteps(core);
-    addRingRaceStep(b);
 }
 
 /// Build the Audio Unit, which is a CMake artifact this build system knows nothing
