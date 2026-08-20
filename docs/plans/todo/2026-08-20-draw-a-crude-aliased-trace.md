@@ -278,7 +278,54 @@ Each targets exactly one assertion, on the `Ring.capacity` and `no_drawable` pre
 | Drop one `release` from `releasePipelines`               | `smoke-leaks` red, or a recorded second blind spot                                                                                                                                                                                                                                                                                                         |
 | Make `Renderer.upload` a no-op                           | **Passes.** Record it as the limit, in the words `live_windows` already uses: the counter proves the window was read and handed across the seam, not that the backend copied it. Changing `upload` to return a count so the harness could catch it would be shaping the seam to the harness, which is what `probe`'s docstring is careful to say it is not |
 
+### What was run, and what it found
+
+Everything below passed. The split matters, because only the first two blocks are repeatable by the next person to touch this.
+
+| Check                                                | Result                                                   |
+| ---------------------------------------------------- | -------------------------------------------------------- |
+| `zig fmt --check`, `zig build test`                  | Clean, 154 tests                                         |
+| `zig build`, `zig build validate-shaders`            | Clean                                                    |
+| `zig build smoke-gpu`, `smoke-appkit`, `smoke-leaks` | Clean; 400 cycles, 288 leaks and 18,816 bytes, none ours |
+| The same four under `--release=fast`                 | Clean                                                    |
+| `shfmt`, `shellcheck`, `markdownlint-cli2`, `typos`  | Clean                                                    |
+| The six planted defects                              | As tabulated above, with two corrections recorded below  |
+| REAPER and Logic                                     | **Outstanding.** The author's, per the procedure below   |
+
+**Two of the planted defects did not behave as the plan predicted, and both corrections are worth more than the rows they fix.**
+
+The plan expected dropping the editor's history wiring to be caught only by the harness. It is also caught by `zig build test`, against the existing test "init points the editor at the instance's history". So that row is a control showing the two levels agree, not evidence of unique coverage, and the plan was wrong to imply otherwise. Dropping `setWindow` from `activate` behaves the same way, which the plan did predict.
+
+The plant for `UploadsStopped` had to be strengthened before it tripped. A `readWindow` that stops once one *frame* has been presented still uploads a second window, because the count is captured after the first wait and the assertion asks only that it advanced; the assertion caught it only once the plant stopped after one *upload*. What `UploadsStopped` catches is a path that stopped, not one that slowed, and that is now stated where the assertion lives.
+
+### The mapping was measured offscreen rather than reasoned about
+
+The vertical mapping and the period count are the two claims a host check would confirm last and least precisely, so both were measured first, with a throwaway Objective-C program that compiles `shaders/scope.metal` with the real Metal compiler, draws the trace pass into an offscreen `BGRA8Unorm` texture it owns, and reads the pixels back.
+
+**It is deliberately not in the repository.** It renders to its own texture rather than to the shipping renderer's drawable, so it neither needs nor implies relaxing `framebufferOnly`, and the shader it probes is one phase 3 replaces. It is recorded here the way the `leaks` RSS figures are recorded in `AGENTS.md`: as a measurement someone can reproduce, not as a check that runs.
+
+At 960x540 with `full_scale = 0.9` and `rail = 0.98`, every constant-level case landed within one pixel of the arithmetic, each lighting exactly one pixel per column:
+
+| Sample   | Expected row | Measured row |
+| -------- | ------------ | ------------ |
+| `0.000`  | 270.0        | 269          |
+| `+0.500` | 148.5        | 148          |
+| `+1.000` | 27.0         | 26           |
+| `-1.000` | 513.0        | 512          |
+| `+1.111` | 5.4          | 5            |
+| `+2.000` | 5.4          | 5            |
+| `+8.000` | 5.4          | 5            |
+| `-2.000` | 534.6        | 534          |
+
+Three things fall out of that table. Silence draws a real pixel on the centre row rather than nothing, so the benign half of the boundary-rasterization concern is confirmed benign at an even drawable height. `+2.0` and `+8.0` are pixel-identical, which is the instrument declining to say how far over it is. And `+1.111` is already at the rail, confirming the margin is worth the +0.92 dB the constant was chosen for and not more.
+
+Sines at 0.8 amplitude, counted by peaks across the 20 ms window, came back exact at 50, 100, 200, 250, 400 and 1000 Hz: 1, 2, 4, 5, 8 and 20 periods, matching `f x 0.020` in every case.
+
+**The first version of that counter was wrong and passed everything anyway**, which is the part worth keeping. It counted upward zero crossings against the centre row using the topmost lit pixel per column, and a steep segment crossing the centre lights every row it spans, so the topmost pixel reads as "above" whatever the sample was. Every tone came back exactly one period low, and a ±1 tolerance called all six "ok". Counting peaks instead, against a strict equality, is what produced the numbers above. A tolerance wide enough to absorb a systematic error is a tolerance that hides one.
+
 ### In a host
+
+**Still to be done by the author**, and it is what closes phase 2's exit criterion. The offscreen measurements above cover the arithmetic; none of them proves that the samples reaching the shader in a DAW are the ones the DAW is playing.
 
 **Build order is load-bearing here in a way it usually is not.** This verification needs the *Debug* CLAP, because the once-a-second `rendering at N Hz` line is Debug-only and the standstill test below reads the refresh rate from it, and `cmake --build` silently rebuilds and re-signs `zig-out/Fosforo.clap` as ReleaseFast. So: Audio Unit first, then `zig build`, then `zig build install-plugins`, then read both hash pairs and confirm both match before believing anything below.
 
