@@ -428,7 +428,24 @@ fn oneCycle(
     // The rate is also what `Editor.window` follows, so this is what makes the
     // read a 960-sample one rather than a no-op.
     if (!p.*.activate.?(p, smoke_sample_rate, 1, smoke_block_frames)) return error.ActivateFailed;
+
+    // A host owes `deactivate` before `destroy`, and `plugin.destroy` asserts
+    // it. Nine `return error` paths sit between here and the explicit teardown
+    // below, and without this unwind every one of them would reach the deferred
+    // `destroy` still active: the assertion would fire and a legible
+    // `NoGuiExtension` would surface as a panic several frames up. This file
+    // plays the host, so it owes the contract on the failing paths too, and
+    // this is exactly the "cannot say what it was doing when it died" outcome
+    // the header argues against.
+    var active = true;
+    defer if (active) p.*.deactivate.?(p);
+
     if (!p.*.start_processing.?(p)) return error.StartProcessingFailed;
+
+    // Registered after `deactivate`'s, so it runs before it. `deactivate`
+    // asserts `!processing` for the same reason `destroy` asserts `!active`.
+    var processing = true;
+    defer if (processing) p.*.stop_processing.?(p);
 
     var audio: Audio = .{};
     for (0..smoke_blocks) |block| {
@@ -482,7 +499,9 @@ fn oneCycle(
     // use-after-free, but the version that frees the ring on this line is a
     // version this loop can catch, and it runs 400 times under `leaks`.
     p.*.stop_processing.?(p);
+    processing = false;
     p.*.deactivate.?(p);
+    active = false;
 
     // The loop has to survive it. A window of zero means the render thread reads
     // nothing and draws what it last held, rather than stopping.

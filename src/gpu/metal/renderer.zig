@@ -232,8 +232,15 @@ pub const Renderer = struct {
         });
         errdefer in_flight.release();
 
+        // `releaseWindows` rather than a bare release loop, because these are
+        // counted: `buildWindows` reported them the moment it handed the whole
+        // ring over. Releasing them here without saying so would leave
+        // `liveWindowBuffers` permanently three high after a failed `init`,
+        // which is worse than the leak it exists to catch. The count would then
+        // never return to zero and the harness would report a leak on every
+        // later run, or hide a real one behind the offset.
         const windows = try buildWindows(device, diags);
-        errdefer for (windows) |buffer| buffer.release();
+        errdefer releaseWindows(windows);
 
         const layer = try attachLayer(view, device, size, scale, diags);
 
