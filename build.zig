@@ -418,6 +418,19 @@ fn addRingRaceStep(b: *std.Build) void {
             .link_libc = true,
             .sanitize_thread = true,
         }),
+
+        // **`sanitize_thread` alone produces a binary that detects nothing, and
+        // says nothing about it.** Zig 0.16 defaults to its self-hosted x86_64
+        // backend for a Debug build on Linux, and that backend links the Thread
+        // Sanitizer runtime while emitting none of its instrumentation. The
+        // result builds, links, runs, exits zero and reports no races, whatever
+        // you race in it. Measured by disassembling both: the default backend
+        // stores straight to the shared word, and `-fllvm` emits a
+        // `__tsan_write8` call before the same store.
+        //
+        // The first run of this job with a deliberately racing control arm
+        // reported nothing, which is exactly what that arm is for.
+        .use_llvm = true,
     });
 
     // Refuse rather than produce a binary that segfaults before it can say why.
