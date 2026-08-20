@@ -11,7 +11,10 @@
 //! exists: there is no texture creation here, because nothing calls it yet.
 //! Operations arrive with the phase that has a caller for them, which is how
 //! `resize` arrived: the display link gave the backend a second thread, and a
-//! resizable editor gave that thread something to service.
+//! resizable editor gave that thread something to service. `upload` arrived the
+//! same way: the history buffer gave the render thread something to read, and
+//! the in-flight semaphore gave the buffers it fills a slot discipline that was
+//! already in place before there was anything to put in them.
 
 const std = @import("std");
 
@@ -27,6 +30,21 @@ pub const Size = struct { width: u32, height: u32 };
 /// exactly the leak ADR 0005 exists to prevent, since a Metal layer is a Metal
 /// type wearing QuartzCore's coat.
 pub const NativeView = *anyopaque;
+
+/// The longest window `upload` will take, in samples.
+///
+/// A bound rather than a size: a caller hands over whatever window it has and
+/// this is where the backend stops copying. It exists because the buffers behind
+/// the seam are allocated once, at `init`, and something has to say how large
+/// once is.
+///
+/// Eight thousand one hundred and ninety-two covers a 20 ms window through
+/// 409.6 kHz. Above that the window shortens rather than the rate being refused,
+/// which is the right failure for a rate no audio device offers: a scope showing
+/// 19 ms instead of 20 is a scope, and a plugin that will not load is not.
+///
+/// 32 KiB per buffer, and the backend holds one per frame in flight.
+pub const max_window_samples: usize = 8192;
 
 /// Every way starting a renderer can fail. Each is a real machine condition
 /// rather than a programming error, so each is reported rather than asserted.
@@ -45,6 +63,10 @@ pub const Error = error{
     PipelineCreationFailed,
     /// A drawable surface could not be created or attached to the view.
     SurfaceCreationFailed,
+    /// The per-frame window buffers could not be allocated. Memory pressure
+    /// rather than anything about this machine's GPU, and the only member here
+    /// that a second run might not reproduce.
+    BufferAllocationFailed,
 };
 
 /// What became of one tick.
@@ -128,10 +150,12 @@ pub const Diagnostics = struct {
 /// paying for indirection with a single implementation would buy nothing that
 /// the comptime check below does not buy for free.
 ///
-/// Four operations, three of which the editor drives: `init`, `deinit`, and
-/// `frame`.
+/// Six operations, five of which the editor drives: `init`, `deinit`, `resize`,
+/// `upload`, and `frame`. This sentence undercounted by one before `upload`
+/// arrived, having missed `resize`; the comptime block below is the list that
+/// cannot drift, and this one is prose that has to be kept beside it by hand.
 ///
-/// `probe` is the fourth, and it has one caller: `src/smoke.zig`. It does
+/// `probe` is the sixth, and it has one caller: `src/smoke.zig`. It does
 /// everything `init` does except attach a surface, which makes it the half of
 /// starting a renderer that needs no window and can therefore run unattended.
 /// That is a real backend capability rather than a testing hook. "Can this
@@ -154,6 +178,13 @@ comptime {
     // main thread to the render thread through a mailbox above this seam, so
     // the size has to be expressible without naming anything Metal owns.
     assertSignature("resize", @TypeOf(Renderer.resize), fn (*Renderer, Size, f64) void);
+    // `[render-thread]` as well, and the reason its parameter is a plain slice
+    // of samples: what crosses here is the signal, not the geometry drawn from
+    // it. A vertex type would be this seam describing a line strip, which is one
+    // phase's way of drawing a trace rather than the trace itself, and phase 3
+    // replaces it with oriented quads. `[]const f32` names nothing Metal owns
+    // and needs nothing added to this file's vocabulary.
+    assertSignature("upload", @TypeOf(Renderer.upload), fn (*Renderer, []const f32) void);
     assertSignature("frame", @TypeOf(Renderer.frame), fn (*Renderer) Outcome);
     assertSignature("probe", @TypeOf(Renderer.probe), fn (*Diagnostics) Error!void);
 }
