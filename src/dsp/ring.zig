@@ -216,7 +216,8 @@ pub const Ring = struct {
     /// were asked for, which is a normal case rather than an edge one: a scope
     /// opened before playback starts hits it on its very first frame. It draws
     /// as a flat line filling in from the right, which is the correct picture.
-    /// The same rule covers a window longer than the whole capacity.
+    /// The same rule covers a window longer than the whole capacity, and a ring
+    /// with no storage at all.
     ///
     /// The window ends at the cursor as it was when this call started, not at
     /// wherever the producer reached during the copy, so the samples returned
@@ -236,6 +237,22 @@ pub const Ring = struct {
         if (dst.len == 0) return true;
 
         const cap = self.samples.len;
+
+        // A ring holding no storage, which is both the value `deinit` leaves
+        // behind and the one a `Ring` that was never initialised carries. This
+        // is a guard rather than a shortcut: every path below reaches `index`,
+        // whose mask is `len - 1` computed on a `u64`, and that underflows at a
+        // length of zero however few samples the caller asked for.
+        //
+        // The answer is the one the zero pad already gives a window longer than
+        // anything written, and it is coherent for the reason `coherent` states
+        // for a copy of nothing: no sample came out of shared storage, so there
+        // is nothing in `dst` a producer could have torn.
+        if (cap == 0) {
+            @memset(dst, 0);
+            return true;
+        }
+
         const at = self.cursor.load(.acquire);
 
         // Everything the ring can still be holding: before the first lap that
@@ -588,6 +605,30 @@ test "an empty write and an empty read change nothing" {
     var window: [3]f32 = undefined;
     try testing.expect(ring.read(&window));
     try expectSamples(&[_]f32{ 1, 2, 3 }, &window);
+}
+
+test "a ring with no storage reads as silence rather than underflowing its mask" {
+    // Not a hypothetical state. It is the default `Instance.history` carries
+    // before anything initialises it, and it is what `deinit` leaves behind, so
+    // a caller holding a `*const Ring` can meet it without having made a
+    // mistake. Every path below the guard reaches `index`, whose mask is
+    // `len - 1` on a `u64`, and zero minus one is not a mask.
+    const never_initialised: Ring = .{ .samples = &.{} };
+
+    var window: [4]f32 = @splat(7);
+    try testing.expect(never_initialised.read(&window));
+    try expectSamples(&[_]f32{ 0, 0, 0, 0 }, &window);
+
+    // The same state reached the other way, with a cursor `deinit` deliberately
+    // does not reset, so the guard cannot be resting on the cursor being zero.
+    var freed = try Ring.init(testing.allocator, 8);
+    freed.write(&[_]f32{ 1, 2, 3 });
+    freed.deinit(testing.allocator);
+    try testing.expectEqual(@as(u64, 3), freed.written());
+
+    @memset(&window, 7);
+    try testing.expect(freed.read(&window));
+    try expectSamples(&[_]f32{ 0, 0, 0, 0 }, &window);
 }
 
 test "an ordinary read reports the window it copied as coherent" {
