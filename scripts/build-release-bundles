@@ -120,13 +120,16 @@ function main() {
 
   cd -- "${REPO_ROOT}"
 
-  # The Audio Unit first, and the order is load-bearing rather than arbitrary.
-  # cmake/CMakeLists.txt drives the Zig build itself, through a custom target that
-  # runs a bare `zig build --release=fast` with no identity, because all it wants
-  # from Zig is the static library. That rebuild also reassembles and re-signs
-  # zig-out/Fosforo.clap, ad-hoc. Building the CLAP first therefore produces a
-  # correctly signed bundle and then silently replaces it with an ad-hoc one, and
-  # every check downstream is against the wrong file.
+  # The Audio Unit first. This order used to be load-bearing and no longer is, and
+  # it is kept because nothing is bought by reversing it.
+  #
+  # cmake/CMakeLists.txt drives the Zig build itself, since all it wants from Zig is
+  # the static library. That custom target ran a bare `zig build --release=fast` with
+  # no identity, which also reassembled and ad-hoc signed zig-out/Fosforo.clap, so
+  # building the CLAP first produced a correctly signed bundle and then silently
+  # replaced it with an ad-hoc one, and every check downstream read the wrong file.
+  # It now runs `zig build --release=fast --prefix build/zig impl`, which touches
+  # neither the bundle nor zig-out at all (#43).
   if ! build_auv2 "${identity}"; then
     warn "cmake build failed"
     return "${E_SOFTWARE}"

@@ -243,8 +243,10 @@ function main() {
   # silent and was observed rather than imagined: anything that runs a plain
   # `zig build` between the release build and this step replaces
   # zig-out/Fosforo.clap with a Debug, ad-hoc bundle, and pkgbuild will package it
-  # without complaint. Existence is not evidence of provenance. See the CMake
-  # clobbering gotcha in AGENTS.md for one way this happens without anyone asking.
+  # without complaint. Existence is not evidence of provenance. A CMake build used to
+  # be one way this happened without anyone asking, and is not any more (#43); a
+  # second terminal, an editor's build-on-save, or a `zig build install-clap` in
+  # another worktree still are.
   if [[ "${signed}" == true ]]; then
     step "Asserting the bundles about to be packaged will notarize"
     if ! "${SCRIPT_DIR}/assert-distributable-signature" "${CLAP_BUNDLE}" "${AUV2_BUNDLE}"; then
