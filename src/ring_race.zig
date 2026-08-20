@@ -100,10 +100,13 @@ const max_attempts: u64 = target_reads * 4;
 
 /// How long the reader waits for the writer's first window before giving up.
 ///
-/// Only reachable if the writer never publishes, which is a defect in the
-/// harness rather than a finding about the ring, so it fails loudly instead of
-/// hanging a CI job until its timeout.
-const max_spins: u64 = 1 << 32;
+/// Only reachable if the writer never publishes, which would be a defect in the
+/// harness rather than a finding about the ring. Generous by any measure, since
+/// the writer needs four blocks to fill one window, and still small enough that
+/// hitting it fails in seconds. A bound large enough to run for minutes would
+/// make that failure read as a wedged job rather than as a failed one, which is
+/// the harder thing to diagnose from a CI log.
+const max_spins: u64 = 1 << 28;
 
 pub fn main(init: std.process.Init.Minimal) u8 {
     var args = init.args.iterate();
