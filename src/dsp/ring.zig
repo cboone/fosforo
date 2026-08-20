@@ -18,6 +18,17 @@
 //!   between publishing and copying. That margin is what makes a seqlock retry
 //!   loop unnecessary, and `read` reports on it rather than assuming it.
 //!
+//! **Those two orderings are unverified by anything here, and a passing test run
+//! is not permission to weaken them.** Every test below is single-threaded, so
+//! nothing ever runs `write` and `read` at once: replacing the release store
+//! with a `.monotonic` one passes all of them. Thread Sanitizer is unavailable
+//! rather than awkward, since Zig 0.16 links a `-fsanitize-thread` binary on
+//! `aarch64-macos` that segfaults on startup, and a threaded stress test would
+//! assert the scheduler rather than the code. What holds the pairing correct is
+//! ADR 0010 specifying it and a reading of these forty lines, which is a weaker
+//! guarantee than anything else in this file has and is said out loud rather
+//! than left for someone to discover. Issue #44 owns the decision.
+//!
 //! Nothing below `init` allocates, takes a lock, or makes a syscall. The
 //! storage is allocated once by its owner and never resized, which is what lets
 //! `write` be reachable from `process`.
@@ -163,6 +174,12 @@ pub const Ring = struct {
 
         // Release, paired with the acquire load in `read`: a consumer that
         // observes this cursor observes every sample written above it.
+        //
+        // **No test in this project can catch you weakening this**, which is the
+        // module docstring's point restated at the line it applies to. Every
+        // test is single-threaded, so `.monotonic` here passes all of them and
+        // surfaces later as rare visual corruption in someone's session. See
+        // issue #44 before changing it.
         self.cursor.store(at + input.len, .release);
     }
 
@@ -216,7 +233,8 @@ pub const Ring = struct {
     /// were asked for, which is a normal case rather than an edge one: a scope
     /// opened before playback starts hits it on its very first frame. It draws
     /// as a flat line filling in from the right, which is the correct picture.
-    /// The same rule covers a window longer than the whole capacity.
+    /// The same rule covers a window longer than the whole capacity, and a ring
+    /// with no storage at all.
     ///
     /// The window ends at the cursor as it was when this call started, not at
     /// wherever the producer reached during the copy, so the samples returned
@@ -236,6 +254,22 @@ pub const Ring = struct {
         if (dst.len == 0) return true;
 
         const cap = self.samples.len;
+
+        // A ring holding no storage, which is both the value `deinit` leaves
+        // behind and the one a `Ring` that was never initialised carries. This
+        // is a guard rather than a shortcut: every path below reaches `index`,
+        // whose mask is `len - 1` computed on a `u64`, and that underflows at a
+        // length of zero however few samples the caller asked for.
+        //
+        // The answer is the one the zero pad already gives a window longer than
+        // anything written, and it is coherent for the reason `coherent` states
+        // for a copy of nothing: no sample came out of shared storage, so there
+        // is nothing in `dst` a producer could have torn.
+        if (cap == 0) {
+            @memset(dst, 0);
+            return true;
+        }
+
         const at = self.cursor.load(.acquire);
 
         // Everything the ring can still be holding: before the first lap that
@@ -588,6 +622,30 @@ test "an empty write and an empty read change nothing" {
     var window: [3]f32 = undefined;
     try testing.expect(ring.read(&window));
     try expectSamples(&[_]f32{ 1, 2, 3 }, &window);
+}
+
+test "a ring with no storage reads as silence rather than underflowing its mask" {
+    // Not a hypothetical state. It is the default `Instance.history` carries
+    // before anything initialises it, and it is what `deinit` leaves behind, so
+    // a caller holding a `*const Ring` can meet it without having made a
+    // mistake. Every path below the guard reaches `index`, whose mask is
+    // `len - 1` on a `u64`, and zero minus one is not a mask.
+    const never_initialised: Ring = .{ .samples = &.{} };
+
+    var window: [4]f32 = @splat(7);
+    try testing.expect(never_initialised.read(&window));
+    try expectSamples(&[_]f32{ 0, 0, 0, 0 }, &window);
+
+    // The same state reached the other way, with a cursor `deinit` deliberately
+    // does not reset, so the guard cannot be resting on the cursor being zero.
+    var freed = try Ring.init(testing.allocator, 8);
+    freed.write(&[_]f32{ 1, 2, 3 });
+    freed.deinit(testing.allocator);
+    try testing.expectEqual(@as(u64, 3), freed.written());
+
+    @memset(&window, 7);
+    try testing.expect(freed.read(&window));
+    try expectSamples(&[_]f32{ 0, 0, 0, 0 }, &window);
 }
 
 test "an ordinary read reports the window it copied as coherent" {

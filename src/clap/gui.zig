@@ -24,6 +24,7 @@ const builtin = @import("builtin");
 const clap = @import("c.zig");
 const log_mod = @import("log.zig");
 const gpu = @import("../gpu/iface.zig");
+const ring = @import("../dsp/ring.zig");
 const display_link = @import("../platform/displaylink.zig");
 const view_mod = @import("../platform/view.zig");
 
@@ -65,6 +66,47 @@ pub const min_size: gpu.Size = .{ .width = 480, .height = 270 };
 /// becomes a drawable Metal cannot allocate, on a thread with no way to report
 /// it.
 pub const max_size: gpu.Size = .{ .width = 8192, .height = 8192 };
+
+/// How much time the trace spans, in seconds.
+///
+/// ADR 0010 asks only for "tens of milliseconds", against a history capacity on
+/// the order of a second, and this is where that becomes a number. Twenty, for
+/// three reasons that happen to agree:
+///
+/// At 48 kHz it is 960 samples against `default_size`'s 960 points, so the crude
+/// trace #38 draws needs no decimation at the default geometry. #35 put min/max
+/// decimation out of scope and noted the boundary was close; this is the side of
+/// it that does not bite yet.
+///
+/// It shows two periods of 100 Hz and twenty of 1 kHz, which is what makes
+/// "count the periods across a known window" a check a person can actually
+/// perform against a signal generator.
+///
+/// And against a capacity of a second or more it leaves `Ring.read`'s coherence
+/// check a margin measured in seconds, for a copy that takes microseconds.
+///
+/// **A duration rather than a sample count**, which is the decision rather than
+/// the units. A scope's horizontal axis is time, so a window that silently
+/// halved when a session moved from 48 to 96 kHz would be misreporting the one
+/// thing an instrument may not misreport. Phase 4 makes this a parameter; until
+/// then it is a constant with its reasoning beside it rather than a literal at a
+/// call site.
+pub const window_seconds: f64 = 0.020;
+
+/// Samples the editor reads per tick at a given sample rate.
+///
+/// Saturating rather than `@intFromFloat`, which is illegal behaviour out of
+/// range. `activate` establishes that the rate is finite and positive and
+/// nothing more, so a host claiming 1e300 Hz reaches this and must get an answer
+/// rather than a panic, on the same reasoning the old `historySamples` applied.
+///
+/// Clamped to the seam's bound, which is what makes a rate above 409.6 kHz
+/// shorten the window rather than refuse the session. The editor's own buffer is
+/// that bound, so the clamp is also what keeps the read in range.
+pub fn windowSamples(sample_rate: f64) u32 {
+    const wanted = std.math.lossyCast(usize, sample_rate * window_seconds);
+    return @intCast(@min(wanted, gpu.max_window_samples));
+}
 
 /// A single-slot mailbox carrying a size and a backing scale from the host's
 /// main thread to the render thread.
@@ -275,6 +317,47 @@ pub const Editor = struct {
     /// Inert outside a debug build, because nothing reads the meter there.
     meter_reset: std.atomic.Value(bool) = .init(false),
 
+    /// Windows `Ring.read` reported torn, which is the producer having lapped
+    /// the window during the copy.
+    ///
+    /// Counted rather than retried, which is what ADR 0010's margin buys and
+    /// what `Ring.read`'s docstring insists on: spinning on the audio thread's
+    /// heels is exactly the thing this design exists not to do. Counting it
+    /// makes "the loop is uploading" and "the loop is uploading intact windows"
+    /// two claims instead of one, in the way `presented` split "running" from
+    /// "drawing". At the margins involved anything above zero is a real signal.
+    torn: std.atomic.Value(u64) = .init(0),
+
+    /// How many samples the render thread should read per tick, or zero for
+    /// none.
+    ///
+    /// Published by `activate`, cleared by `deactivate`, and the only thing that
+    /// tells this side what sample rate is in force. Main thread to render
+    /// thread, which is `meter_reset`'s direction, and a single word carrying a
+    /// value rather than a pointer, so unlike everything else that crosses here
+    /// it has no lifetime to reason about.
+    window: std.atomic.Value(u32) = .init(0),
+
+    /// The fixed buffer `Ring.read` fills, owned by the editor and touched by
+    /// the render thread alone.
+    ///
+    /// Sized to the seam's bound rather than to the rate, because it cannot be
+    /// resized: allocating on this path is what ADR 0010 forbids, and the tick
+    /// has nowhere to report a failure to. Thirty-two kibibytes inside an
+    /// `Instance` the host already heap-allocated.
+    samples: [gpu.max_window_samples]f32 = @splat(0),
+
+    /// The history the render thread reads, or null before `plugin.init` has
+    /// wired it.
+    ///
+    /// A pointer to a field of the enclosing `Instance`, on the pattern `log`
+    /// and `host_gui` already establish and safe for the same reason: the
+    /// instance is heap-allocated and outlives the editor inside it. What makes
+    /// it safe *here* is one thing more, and it is the whole of #37's lifetime
+    /// question: the ring's storage now outlives every activation too, so this
+    /// cannot become a pointer to memory `deactivate` freed.
+    history: ?*const ring.Ring = null,
+
     log: ?*const log_mod.Log = null,
     host_gui: ?*const HostGui = null,
 
@@ -356,10 +439,19 @@ pub const Editor = struct {
         self.meter_reset = .init(false);
         self.applied = .{ .size = default_size, .scale = 1.0 };
         self.presented = .init(0);
+        self.torn = .init(0);
         self.current = default_size;
         self.scale = 1.0;
         self.hidden = false;
         self.created = false;
+
+        // **`window` and `history` are deliberately not reset here.** Everything
+        // above belongs to one editor and is meaningless across two; those two
+        // are published by `plugin.init` and `plugin.activate` and describe the
+        // instance, which outlives any number of editors. A host that closes and
+        // reopens an editor on an active plugin is ordinary, and clearing them
+        // would leave the second editor reading nothing for as long as the
+        // activation lasted, with no symptom but a trace that never moved.
 
         // Reopened last, so the editor is reusable: a host may `create` and
         // `set_parent` the same one again. Safe here and nowhere else, because
@@ -562,6 +654,8 @@ pub const Editor = struct {
             self.applied = update;
         }
 
+        self.readWindow(renderer);
+
         // Counted, not merely performed. Monotonic and never reset, so a caller
         // that samples it twice can tell the loop advanced without having to
         // coordinate with teardown over when zero means "not started".
@@ -570,12 +664,63 @@ pub const Editor = struct {
         self.report();
     }
 
+    /// [render-thread] Read the trailing window and hand it across the seam.
+    ///
+    /// Called after the mailbox has been drained, which is ADR 0010's ordering
+    /// and matters here for the same reason it matters for `resize`: the read is
+    /// sized against a rate rather than a geometry, but the upload it feeds
+    /// lands in resources a resize is entitled to have replaced first.
+    ///
+    /// Nothing on this path allocates. `Ring.read` copies into a buffer this
+    /// editor owns and `Renderer.upload` copies out of it, and the length of
+    /// both is bounded by `gpu.max_window_samples` at compile time.
+    ///
+    /// **A torn window is skipped rather than retried**, which is `Ring.read`'s
+    /// own instruction. Skipping the upload rather than the frame is deliberate:
+    /// the renderer still holds the last intact window, so the tick draws that
+    /// again and `presented` keeps advancing. Skipping the whole frame would
+    /// stall the loop over a condition that resolves itself in microseconds.
+    fn readWindow(self: *Editor, renderer: *gpu.Renderer) void {
+        const history = self.history orelse return;
+
+        // Zero between `deactivate` and the next `activate`, and before the
+        // first one. There is no rate in force, so there is no window that means
+        // anything, and the renderer keeps whatever it last held.
+        const want = self.window.load(.acquire);
+        if (want == 0) return;
+
+        const window = self.samples[0..want];
+        if (history.read(window)) {
+            renderer.upload(window);
+        } else {
+            _ = self.torn.fetchAdd(1, .release);
+        }
+    }
+
     /// [thread-safe] Frames put on screen since this editor was created.
     ///
     /// The one observable that distinguishes a render loop doing its job from
     /// one ticking and drawing nothing. `src/smoke.zig` is the caller.
     pub fn framesPresented(self: *const Editor) u64 {
         return self.presented.load(.acquire);
+    }
+
+    /// [thread-safe] Windows the producer lapped mid-copy since this editor was
+    /// created.
+    ///
+    /// The counterpart to `framesPresented`, and expected to stay at zero: see
+    /// `Editor.torn`. `src/smoke.zig` asserts against it.
+    pub fn windowsTorn(self: *const Editor) u64 {
+        return self.torn.load(.acquire);
+    }
+
+    /// [main-thread] Set how many samples each tick should read, or zero.
+    ///
+    /// `plugin.activate` and `plugin.deactivate` are the only callers, because
+    /// they are the only places a sample rate starts and stops being in force.
+    /// The release pairs with `readWindow`'s acquire.
+    pub fn setWindow(self: *Editor, samples: u32) void {
+        self.window.store(@min(samples, gpu.max_window_samples), .release);
     }
 
     /// [main-thread, before the loop starts] Hand the render thread its opening
@@ -635,11 +780,13 @@ pub const Editor = struct {
         const rate = self.meter.observe(display_link.monotonicNanos()) orelse return;
         const l = self.log orelse return;
 
-        l.print(c.CLAP_LOG_DEBUG, "rendering at {d:.1} Hz, {d}x{d} at {d:.2}x", .{
+        l.print(c.CLAP_LOG_DEBUG, "rendering at {d:.1} Hz, {d}x{d} at {d:.2}x, {d} sample window, {d} torn", .{
             rate,
             self.applied.size.width,
             self.applied.size.height,
             self.applied.scale,
+            self.window.load(.acquire),
+            self.windowsTorn(),
         });
     }
 
@@ -1055,6 +1202,89 @@ test "teardown returns the applied geometry to the default" {
     editor.destroy();
     try testing.expectEqual(default_size, editor.applied.size);
     try testing.expectEqual(@as(f64, 1.0), editor.applied.scale);
+}
+
+test "the window is a duration, so its sample count follows the rate" {
+    // The relationship the constant exists to state, checked at the rates a
+    // session actually runs at rather than at a round number: 20 ms is 20 ms
+    // whatever the host negotiated, which is what stops a scope's time axis
+    // meaning two different things in two sessions.
+    try testing.expectEqual(@as(u32, 882), windowSamples(44_100));
+    try testing.expectEqual(@as(u32, 960), windowSamples(48_000));
+    try testing.expectEqual(@as(u32, 1764), windowSamples(88_200));
+    try testing.expectEqual(@as(u32, 1920), windowSamples(96_000));
+    try testing.expectEqual(@as(u32, 3840), windowSamples(192_000));
+
+    // The coincidence `window_seconds` is chosen for, pinned so a change to
+    // either number has to face it: at 48 kHz the window is one sample per point
+    // of the default editor width, which is why #38's trace needs no decimation
+    // at the default geometry.
+    try testing.expectEqual(default_size.width, windowSamples(48_000));
+}
+
+test "the window is clamped to what the seam will take, at every rate" {
+    // Above 409.6 kHz the window shortens rather than the session being refused.
+    // `activate` accepts anything up to `max_sample_rate`, so this is reachable
+    // without a misbehaving host, and the clamp is also what keeps the read
+    // inside the editor's own fixed buffer.
+    try testing.expectEqual(@as(u32, gpu.max_window_samples), windowSamples(409_600));
+    try testing.expectEqual(@as(u32, gpu.max_window_samples), windowSamples(3_000_000));
+
+    // Saturating rather than casting, which is illegal behaviour out of range.
+    // Without it this line does not fail the test, it panics.
+    try testing.expectEqual(@as(u32, gpu.max_window_samples), windowSamples(std.math.floatMax(f64)));
+
+    // And the bottom, where a rate below 50 Hz buys less than one sample. Zero
+    // is a legal answer and means the editor reads nothing.
+    try testing.expectEqual(@as(u32, 0), windowSamples(1));
+}
+
+test "a window the editor is given is bounded by the buffer it owns" {
+    var editor: Editor = .{};
+    defer editor.destroy();
+
+    try testing.expectEqual(@as(u32, 0), editor.window.load(.acquire));
+
+    editor.setWindow(960);
+    try testing.expectEqual(@as(u32, 960), editor.window.load(.acquire));
+
+    // The clamp is repeated here rather than trusted to the caller, because the
+    // count indexes `Editor.samples` directly and that is a fixed array. A value
+    // past its end would be an out-of-bounds read on the render thread.
+    editor.setWindow(std.math.maxInt(u32));
+    try testing.expectEqual(@as(u32, gpu.max_window_samples), editor.window.load(.acquire));
+
+    editor.setWindow(0);
+    try testing.expectEqual(@as(u32, 0), editor.window.load(.acquire));
+}
+
+test "teardown clears the editor's own counters and leaves the instance's alone" {
+    var editor: Editor = .{};
+    try testing.expect(editor.create(&c.CLAP_WINDOW_API_COCOA, false));
+
+    // What `plugin.init` and `plugin.activate` publish. Both describe the
+    // instance rather than any one editor.
+    var history = try ring.Ring.init(testing.allocator, 1024);
+    defer history.deinit(testing.allocator);
+    editor.history = &history;
+    editor.setWindow(960);
+
+    // What this editor accumulated.
+    _ = editor.presented.fetchAdd(3, .release);
+    _ = editor.torn.fetchAdd(2, .release);
+
+    editor.destroy();
+
+    // Cleared, because a stale count would be the next editor's opening claim.
+    try testing.expectEqual(@as(u64, 0), editor.framesPresented());
+    try testing.expectEqual(@as(u64, 0), editor.windowsTorn());
+
+    // Kept, because a host closing and reopening an editor on an active plugin
+    // is ordinary, and clearing these would leave the second one reading nothing
+    // for the rest of the activation with no symptom but a trace that never
+    // moved.
+    try testing.expect(editor.history == &history);
+    try testing.expectEqual(@as(u32, 960), editor.window.load(.acquire));
 }
 
 test "what the render thread reports is what it drained, not what the host holds" {

@@ -67,6 +67,18 @@ const frame_timeout_us: u64 = 2 * std.time.us_per_s;
 /// loop is confirmed almost immediately, long enough not to spin a core.
 const frame_poll_us: u32 = 1 * std.time.us_per_ms;
 
+/// What the cycle activates the plugin at, and how much audio it pushes through
+/// before opening the editor.
+///
+/// Without an activation `Instance.history` holds a capacity of silence and
+/// every upload is a window of zeros, which exercises the path and proves
+/// nothing about the samples. 48 kHz is the rate `Editor.window` then follows,
+/// and the blocks below fill more than the 960-sample window it asks for, so the
+/// render thread reads real audio rather than a mostly-zero pad.
+const smoke_sample_rate: f64 = 48_000;
+const smoke_block_frames: u32 = 512;
+const smoke_blocks = 4;
+
 /// Sleep, which is all this harness asks of `std.Io`.
 ///
 /// Taken from `platform/io.zig` rather than declared here. Zig 0.16 moved every
@@ -287,6 +299,21 @@ fn appkitHalf(cycles: u32) !void {
         };
     }
 
+    // The one leak this project's leak check cannot see, so it is asserted here
+    // instead. `scripts/smoke-leak-check` catches a released-one-too-few command
+    // queue and calls the same omission on the window buffers clean, because
+    // `leaks` walks the malloc heap and a Metal buffer's storage is not in it.
+    // Measured, not assumed: see `live_windows` in the Metal backend.
+    //
+    // After the loop rather than inside it, because every fourth cycle leaves
+    // the editor for `plugin.destroy` to tear down, and that runs in a `defer`
+    // the cycle itself cannot assert after.
+    const live = gpu.Renderer.liveWindowBuffers();
+    if (live != 0) {
+        say("  {d} window buffers were never released across {d} cycles", .{ live, cycles });
+        return error.WindowBuffersLeaked;
+    }
+
     say("  {d} open and close cycles clean", .{cycles});
 }
 
@@ -323,6 +350,60 @@ fn closeWindow(window: objc.Object) void {
     window.release();
 }
 
+/// A stereo pair of buses and the audio to push through them.
+///
+/// The host's side of `process`, which this file is entitled to build for the
+/// same reason it builds an `NSWindow`: it is playing the host. Deliberately
+/// thin, because `plugin.zig`'s own tests cover what `process` does with these
+/// and what this half adds is only that the audio thread and the render thread
+/// are running at the same time.
+///
+/// The event lists stay null. `process` reads `frames_count`, `audio_inputs` and
+/// `audio_outputs` and nothing else, so a zeroed context is a complete one, and
+/// filling in lists nothing reads would be inventing a contract.
+const Audio = struct {
+    input: [2][smoke_block_frames]f32 = @splat(@splat(0)),
+    output: [2][smoke_block_frames]f32 = @splat(@splat(0)),
+
+    input_channels: [2][*c]f32 = @splat(null),
+    output_channels: [2][*c]f32 = @splat(null),
+
+    buses: [2]c.clap_audio_buffer_t = undefined,
+
+    /// A ramp per block, so what reaches the ring is checkable in principle and
+    /// distinguishable from silence in practice. Nothing here reads it back: the
+    /// window ends up in a GPU buffer this process cannot see, which is the
+    /// honest limit of this harness and why #38 is where the samples get judged.
+    fn wire(self: *Audio, block: u32) void {
+        for (&self.input, 0..) |*channel, ch| {
+            for (channel, 0..) |*sample, i| {
+                sample.* = @floatFromInt(block * smoke_block_frames + @as(u32, @intCast(i)) + ch);
+            }
+        }
+
+        for (&self.input, 0..) |*channel, i| self.input_channels[i] = channel;
+        for (&self.output, 0..) |*channel, i| self.output_channels[i] = channel;
+
+        self.buses[0] = std.mem.zeroes(c.clap_audio_buffer_t);
+        self.buses[0].data32 = &self.input_channels;
+        self.buses[0].channel_count = 2;
+
+        self.buses[1] = std.mem.zeroes(c.clap_audio_buffer_t);
+        self.buses[1].data32 = &self.output_channels;
+        self.buses[1].channel_count = 2;
+    }
+
+    fn context(self: *Audio) c.clap_process_t {
+        var ctx = std.mem.zeroes(c.clap_process_t);
+        ctx.frames_count = smoke_block_frames;
+        ctx.audio_inputs = &self.buses[0];
+        ctx.audio_inputs_count = 1;
+        ctx.audio_outputs = &self.buses[1];
+        ctx.audio_outputs_count = 1;
+        return ctx;
+    }
+};
+
 /// One editor, opened into the host's window and torn down again.
 ///
 /// The sequence a host drives, in the order CLAP specifies it, through the same
@@ -341,6 +422,37 @@ fn oneCycle(
     }
     // Owed from here regardless of what fails below, exactly as a host owes it.
     defer p.*.destroy.?(p);
+
+    // Activated before the editor opens, so the render thread reads a window of
+    // audio rather than a window of the silence an unactivated instance holds.
+    // The rate is also what `Editor.window` follows, so this is what makes the
+    // read a 960-sample one rather than a no-op.
+    if (!p.*.activate.?(p, smoke_sample_rate, 1, smoke_block_frames)) return error.ActivateFailed;
+
+    // A host owes `deactivate` before `destroy`, and `plugin.destroy` asserts
+    // it. Nine `return error` paths sit between here and the explicit teardown
+    // below, and without this unwind every one of them would reach the deferred
+    // `destroy` still active: the assertion would fire and a legible
+    // `NoGuiExtension` would surface as a panic several frames up. This file
+    // plays the host, so it owes the contract on the failing paths too, and
+    // this is exactly the "cannot say what it was doing when it died" outcome
+    // the header argues against.
+    var active = true;
+    defer if (active) p.*.deactivate.?(p);
+
+    if (!p.*.start_processing.?(p)) return error.StartProcessingFailed;
+
+    // Registered after `deactivate`'s, so it runs before it. `deactivate`
+    // asserts `!processing` for the same reason `destroy` asserts `!active`.
+    var processing = true;
+    defer if (processing) p.*.stop_processing.?(p);
+
+    var audio: Audio = .{};
+    for (0..smoke_blocks) |block| {
+        audio.wire(@intCast(block));
+        const ctx = audio.context();
+        if (p.*.process.?(p, &ctx) != c.CLAP_PROCESS_CONTINUE) return error.ProcessFailed;
+    }
 
     const raw = p.*.get_extension.?(p, &c.CLAP_EXT_GUI) orelse return error.NoGuiExtension;
     const editor: *const c.clap_plugin_gui_t = @ptrCast(@alignCast(raw));
@@ -379,6 +491,29 @@ fn oneCycle(
     // The frames after it went through `Renderer.resize` on the render thread.
     if (!editor.set_size.?(p, 1280, 720)) return error.SetSizeFailed;
     try waitForFrames(instance, instance.framesPresented() + 2);
+
+    // The interleaving this harness exists to reach, and the one the whole
+    // lifetime decision in `Instance.history` was made for: the host deactivates
+    // while the editor is open and the display link is running, which is what a
+    // DAW does when a track is disabled. Nothing here can prove the absence of a
+    // use-after-free, but the version that frees the ring on this line is a
+    // version this loop can catch, and it runs 400 times under `leaks`.
+    p.*.stop_processing.?(p);
+    processing = false;
+    p.*.deactivate.?(p);
+    active = false;
+
+    // The loop has to survive it. A window of zero means the render thread reads
+    // nothing and draws what it last held, rather than stopping.
+    try waitForFrames(instance, instance.framesPresented() + 2);
+
+    // Windows the producer lapped mid-copy. The margin is enormous and the audio
+    // thread here is this thread, so anything but zero means the read is wrong
+    // rather than unlucky.
+    if (instance.windowsTorn() != 0) {
+        say("  {d} torn windows across the cycle", .{instance.windowsTorn()});
+        return error.WindowTorn;
+    }
 
     if (!editor.hide.?(p)) return error.HideFailed;
 
