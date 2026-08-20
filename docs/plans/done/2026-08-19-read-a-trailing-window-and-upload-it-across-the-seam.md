@@ -179,6 +179,24 @@ In REAPER, launched from a terminal so the debug diagnostics are readable:
 
 In Logic, where the Audio Unit destroys its editor rather than hiding it and diagnostics are unreadable: confirm the editor opens and renders, and that disabling and enabling the track does not crash. The pixel sample described in `AGENTS.md` is the check, since nothing is drawn differently yet.
 
+### What was run, and by whom
+
+Everything below passed. Splitting the automated half from the host half matters, because only one of them is repeatable by the next person to touch this.
+
+| Check                                                | Result                                                 |
+|------------------------------------------------------|--------------------------------------------------------|
+| `zig fmt --check`, `zig build test`                  | 139 tests, all passing                                 |
+| `zig build`, `zig build validate-shaders`            | Clean                                                  |
+| `zig build smoke-gpu`, `smoke-appkit`, `smoke-leaks` | Clean, 400 cycles under `leaks`                        |
+| The same four, under `--release=fast`                | Clean                                                  |
+| `clap-validator` against both bundles                | 21 passed, 0 failed, 0 warnings, 23 skipped, on each   |
+| `shfmt`, `shellcheck`, `markdownlint-cli2`, `typos`  | Clean                                                  |
+| REAPER and Logic                                     | Confirmed by the author against hash-verified installs |
+
+**The `--release=fast` pass was added after the fact and is worth keeping.** Everything else here is Debug, which is what `zig build` and `zig build test` produce, and the shipping build compiles `std.debug.assert` out. That takes `platform.assertNotMainThread` in the new `upload` with it, so the mode this issue's code actually ships in had never once been compiled until it was run deliberately. The two checks the harness added survive the mode change, because `WindowTorn` and `WindowBuffersLeaked` are explicit returns rather than assertions.
+
+**The host half was confirmed by the author rather than by this document**, against installs whose hashes matched their sources: the CLAP at `2be599cc0772` and the Audio Unit at `5a7956287f88`. That check was not a formality. A `Fosforo.component` dated two weeks earlier, from another branch, was installed at the time the CLAP was first installed from this one, and `install-plugins` could not overwrite it because CMake had never run in this worktree. Logic would have loaded it, rendered, and read as a pass. Issue #43 is that gap.
+
 ### What this does not close
 
 **The memory-ordering gap #35 deferred to this issue stays open.** #35 recorded that replacing `write`'s release store with a `.monotonic` one passes every test in the project, and that the first check able to tell the two apart is "a known signal drawn on screen during playback". Nothing is drawn here, so that check is not available yet and this issue cannot honestly claim it. It moves to #38, which is the first phase that has a picture to be wrong.
@@ -194,6 +212,8 @@ Four things the plan did not anticipate, each recorded because the reason is mor
 **The seam's own docstring was wrong before this touched it.** It said "four operations" and listed three, having missed `resize`. Corrected to six plus the count above, with a note that the comptime block is the list that cannot drift and the prose is the one that has to be kept beside it.
 
 **The plugin tests now measure the cursor from a baseline.** `activate`'s `clear` means the cursor no longer starts an activation at zero, so eleven tests asserting absolute values failed at once. `testWritten` subtracts the baseline in one place rather than each restating an implementation detail of `activate`, and every assertion still states what the tap wrote.
+
+**One issue was filed rather than fixed here.** Verifying this in a host surfaced that `zig build install-plugins` installs one bundle, cannot build the Audio Unit, and says nothing about a stale one already installed, while its three step names conflate `zig-out` with the plug-in folders and an unverified copy with a verified one. That is [#43](https://github.com/cboone/fosforo/issues/43), and it is deliberately not this issue's work: the install path is orthogonal to the upload path, and folding it in would have made a phase 2 step into a build-system change.
 
 ## Out of scope
 
