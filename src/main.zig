@@ -68,6 +68,12 @@ test {
     _ = @import("platform/displaylink.zig");
     _ = @import("platform/objc.zig");
     _ = @import("platform/view.zig");
+
+    // Not reached from the plugin at all: it is the root of the race harness,
+    // which `zig build ring-race` builds as its own executable. Named here so its
+    // pure parts are still checked by `zig build test`, because the machine that
+    // runs that command is usually the one machine that cannot run the harness.
+    _ = @import("ring_race.zig");
 }
 
 test "the entry hands back the plugin factory, and only for its own id" {

@@ -20,6 +20,20 @@ pub fn build(b: *std.Build) void {
     });
     const optimize = b.standardOptimizeOption(.{});
 
+    // First, and before anything below reaches `b.dependency`. This is the only
+    // step here that builds on a non-Apple target, and the graph below cannot even
+    // be *described* on one: `b.dependency` runs a dependency's `build` function
+    // at configure time, and zig-objc's calls `appleSDKPath`, which panics on any
+    // OS that is not Darwin. So `zig build ring-race` on Linux aborted inside a
+    // dependency's build script before a single step ran, which is what the first
+    // CI run of the `ring-race` job did (#44). Fetching the tarball is a cost;
+    // describing the graph is the failure, and only the second one is fatal.
+    //
+    // Everything past this line is macOS-only anyway (ADR 0001), so the early
+    // return costs nothing: on Linux there is genuinely nothing else to build.
+    addRingRaceStep(b);
+    if (target.result.os.tag != .macos) return;
+
     const core: Core = .{
         .b = b,
         .target = target,
@@ -359,6 +373,102 @@ fn addSmokeSteps(core: Core) void {
     check.stdio = .inherit;
     check.has_side_effects = true;
     leaks.dependOn(&check.step);
+}
+
+/// The race harness (src/ring_race.zig and ADR 0016), which runs `Ring.write`
+/// and `Ring.read` on two threads under Thread Sanitizer.
+///
+/// **The only step here that cannot run on the machine this project is developed
+/// on.** Zig 0.16 links a `-fsanitize-thread` binary on `aarch64-macos` that
+/// segfaults before `main`, re-measured on 0.16.0 rather than inherited. The
+/// container is the one part of the signal path with no reason to stay on that
+/// target: `src/dsp/ring.zig` imports `std` and nothing else. So this step wants
+/// a Linux host, and CI supplies one. That is the same bargain
+/// `addShaderValidationStep` and `addSmokeSteps` already make, a step allowed to
+/// require a machine capability the default build must not depend on, with the
+/// capability here being *not* macOS.
+///
+/// Deliberately not wired into `zig build test`, for their reasons and ADR 0009's.
+fn addRingRaceStep(b: *std.Build) void {
+    const step = b.step("ring-race", "Race-check the history buffer under Thread Sanitizer (needs a Linux host)");
+
+    // Its own module rather than `Core.module`. That constructor adds `objc`,
+    // the translated CLAP header, the anonymous shader import and five Apple
+    // frameworks unconditionally, none of which can link off macOS.
+    //
+    // `resolveTargetQuery(.{})` rather than the shared target, which carries
+    // `os_version_min` 11.0 as a macOS deployment floor. Resolved on Linux that
+    // becomes a minimum kernel version no kernel satisfies. The ring has no
+    // deployment target, so it takes the bare host.
+    //
+    // `link_libc` is load-bearing rather than incidental: Thread Sanitizer learns
+    // about threads by intercepting `pthread_create`, and without libc Zig issues
+    // a raw `clone` that TSan never sees. Both arms then come back clean, which is
+    // the exact false pass the harness's control arm exists to catch.
+    //
+    // Debug, matching `zig build test`. Atomic orderings survive every
+    // optimization level, so this costs no coverage.
+    const target = b.resolveTargetQuery(.{});
+    const exe = b.addExecutable(.{
+        .name = "fosforo-ring-race",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ring_race.zig"),
+            .target = target,
+            .optimize = .Debug,
+            .link_libc = true,
+            .sanitize_thread = true,
+        }),
+
+        // **`sanitize_thread` alone produces a binary that detects nothing, and
+        // says nothing about it.** Zig 0.16 defaults to its self-hosted x86_64
+        // backend for a Debug build on Linux, and that backend links the Thread
+        // Sanitizer runtime while emitting none of its instrumentation. The
+        // result builds, links, runs, exits zero and reports no races, whatever
+        // you race in it. Measured by disassembling both: the default backend
+        // stores straight to the shared word, and `-fllvm` emits a
+        // `__tsan_write8` call before the same store.
+        //
+        // The first run of this job with a deliberately racing control arm
+        // reported nothing, which is exactly what that arm is for.
+        .use_llvm = true,
+    });
+
+    // Refuse rather than produce a binary that segfaults before it can say why.
+    // A cross-compiled harness is still worth building, so `-Dtarget` is not what
+    // is consulted here: the question is whether *this* host can run one.
+    if (b.graph.host.result.os.tag != .linux) {
+        const fail = b.addFail(
+            \\`zig build ring-race` needs a Linux host.
+            \\
+            \\Thread Sanitizer links on aarch64-macos and segfaults before main, which
+            \\is why this check lives in the `ring-race` job on ubuntu-latest. See
+            \\docs/adr/0016-verify-the-ring-ordering-with-tsan.md.
+            \\
+            \\To compile-check the harness from here without running it:
+            \\    zig build-exe src/ring_race.zig -fsanitize-thread -lc -target x86_64-linux-gnu
+        );
+
+        // Still built, so a type error in the harness fails this step on macOS
+        // rather than waiting for CI. Zig analyses a declaration only where it is
+        // reached, so building it is what checks it.
+        fail.step.dependOn(&exe.step);
+        step.dependOn(&fail.step);
+        return;
+    }
+
+    // Not `b.installArtifact`: plain `zig build` must keep producing only the
+    // .clap, on `addSmokeSteps`' reasoning.
+    const install = b.addInstallArtifact(exe, .{});
+
+    // The script rather than the two runs, because the criterion is an absence
+    // and an absence has to be told apart from an instrument that was not
+    // running. See the assertion order in its header.
+    const check = b.addSystemCommand(&.{"./scripts/ring-race-check"});
+    check.addFileArg(exe.getEmittedBin());
+    check.step.dependOn(&install.step);
+    check.stdio = .inherit;
+    check.has_side_effects = true;
+    step.dependOn(&check.step);
 }
 
 /// One half, as its own step, so CI can require the half that needs no window.
