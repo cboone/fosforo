@@ -45,14 +45,22 @@ zig fmt --check build.zig src/
 zig build install-clap
 ```
 
+Every step whose name begins with `install-` builds exactly what it installs,
+copies it into `~/Library/Audio/Plug-Ins`, and prints the hash of what landed.
+Every other step stays in the worktree, including Zig's own `install`, which
+writes to `zig-out`. Compare the hash a step prints against the build you meant
+to test before trusting anything a host tells you: several worktrees compete for
+one plug-in folder, and the failure is silent.
+
 ### Building the Audio Unit
 
 Only needed for Logic Pro, which does not load CLAP plugins. This fetches the
-AudioUnit SDK and takes considerably longer than the Zig build.
+AudioUnit SDK and takes considerably longer than the Zig build, which is why the
+day-to-day loop never invokes CMake.
 
 ```bash
-cmake -B build cmake/
-cmake --build build --target fosforo_all
+zig build audio-unit     # builds it in the worktree
+zig build install-plugins # builds both bundles and installs both
 ```
 
 ### Type-checking shaders

@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# build-audio-unit — build the Audio Unit through clap-wrapper, with the two constraints that used to be prose
+# Author: Christopher Boone
+# Date: 2026-08-20
+#
+# Logic loads no CLAP, so the Audio Unit is the only way this plugin reaches it
+# (ADR 0011). Every other build path here is a step; this one was two CMake
+# invocations a developer was expected to remember, and two constraints on them
+# that existed only in AGENTS.md. Both now live here, and `zig build audio-unit`
+# runs this, as does the clap-wrapper CI job, so neither can be true only locally.
+#
+# The constraints:
+#
+#   Configuring is once per worktree, building is every time. CMake regenerates
+#   its own build system when CMakeLists.txt changes, so configuring only when
+#   build/ is absent is correct rather than merely cheap. --reconfigure is for
+#   changing a cache variable by hand, which nothing else here needs.
+#
+#   fosforo_all, never fosforo_auv2. Setting AUV2_MANUFACTURER_CODE sends
+#   make_clapfirst_plugins down its explicit-configuration branch, which never
+#   calls add_dependencies() between the AUv2 target and the CLAP one, so naming
+#   the component alone silently does not build the CLAP beside it.
+#
+# fosforo_all therefore produces two bundles, not one:
+#
+#   build/assets/Fosforo.component  the Audio Unit, which is the point
+#   build/assets/Fosforo.clap       the wrapper CLAP, which exists so CI can prove
+#                                   the clap-wrapper seam still works and is
+#                                   deliberately never installed or shipped
+#
+# This is much slower than `zig build`, because CMake fetches the AudioUnit SDK on
+# a cold configure. That cost is the whole reason the day-to-day loop does not
+# invoke CMake and this is a separate command rather than part of one.
+#
+# It does not install anything and does not touch zig-out. `scripts/install-plugins`
+# owns installing; CMake writes its Zig outputs under build/zig/ for the reason in
+# cmake/CMakeLists.txt.
+#
+# Usage:
+#   build-audio-unit [--reconfigure]
+#
+#   --reconfigure   Re-run `cmake -B build cmake/` even though build/ exists.
+#
+# Exit codes:
+#   0  - build/assets/Fosforo.component is built and current
+#  64  - Invalid arguments
+#  70  - A CMake step failed
+
+set -euo pipefail
+
+if [[ -n "${TRACE:-}" ]]; then
+  set -x
+fi
+
+readonly E_USAGE=64
+readonly E_SOFTWARE=70
+
+readonly PROGRAM_NAME="${0##*/}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(dirname -- "${SCRIPT_DIR}")"
+readonly REPO_ROOT
+
+readonly BUILD_DIR="build"
+readonly SOURCE_DIR="cmake/"
+
+# The target, and the reason it is this one rather than fosforo_auv2. See the header.
+readonly BUILD_TARGET="fosforo_all"
+
+# Written by a successful configure and by nothing else, so its absence is the
+# question being asked rather than the directory's, which a failed build also leaves
+# behind.
+readonly CMAKE_CACHE="${BUILD_DIR}/CMakeCache.txt"
+
+readonly AUV2_BUNDLE="${BUILD_DIR}/assets/Fosforo.component"
+
+# Write a message to stderr, prefixed with the program name.
+# Arguments:
+#   $@ - message parts
+function warn() {
+  echo "${PROGRAM_NAME}: ${*}" >&2
+}
+
+# Announce a step, so a long build reads as progress rather than as a hang.
+# Arguments:
+#   $@ - message parts
+function step() {
+  echo "==> ${*}"
+}
+
+function usage() {
+  cat >&2 << 'USAGE'
+usage: build-audio-unit [--reconfigure]
+
+  --reconfigure   Re-run `cmake -B build cmake/` even though build/ exists.
+USAGE
+}
+
+function main() {
+  local reconfigure=false
+
+  while [[ "${#}" -gt 0 ]]; do
+    case "${1}" in
+      --reconfigure)
+        reconfigure=true
+        shift
+        ;;
+      -h | --help)
+        usage
+        return 0
+        ;;
+      *)
+        warn "unknown argument: ${1}"
+        usage
+        return "${E_USAGE}"
+        ;;
+    esac
+  done
+
+  cd -- "${REPO_ROOT}"
+
+  if [[ "${reconfigure}" == true || ! -f "${CMAKE_CACHE}" ]]; then
+    step "Configuring CMake (fetches the AudioUnit SDK on a cold run)"
+    if ! cmake -B "${BUILD_DIR}" "${SOURCE_DIR}"; then
+      warn "cmake configure failed"
+      return "${E_SOFTWARE}"
+    fi
+  fi
+
+  step "Building ${BUILD_TARGET}"
+  if ! cmake --build "${BUILD_DIR}" --target "${BUILD_TARGET}"; then
+    warn "cmake build failed"
+    return "${E_SOFTWARE}"
+  fi
+
+  # Asserted rather than assumed. A CMake build reports success for the targets it
+  # was asked for, and the bundle is assembled by POST_BUILD commands whose absence
+  # nothing else here would notice.
+  if [[ ! -d "${AUV2_BUNDLE}" ]]; then
+    warn "cmake reported success but ${AUV2_BUNDLE} does not exist"
+    return "${E_SOFTWARE}"
+  fi
+
+  step "Built ${AUV2_BUNDLE}"
+  warn "not installed; \`zig build install-plugins\` copies it where Logic will look"
+}
+
+main ${1+"$@"}

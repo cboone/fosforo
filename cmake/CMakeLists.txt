@@ -6,8 +6,12 @@
 # development loop. CMake is only needed when the Audio Unit or the standalone
 # app is wanted. See docs/adr/0003-author-clap-project-outward.md.
 #
-#   cmake -B build cmake/
-#   cmake --build build
+# `scripts/build-audio-unit` is how to reach this, and `zig build audio-unit` is
+# how to reach that. It configures only when build/ is absent and builds
+# fosforo_all, which are the two things worth getting right here:
+#
+#   cmake -B build cmake/                            # once per worktree
+#   cmake --build build --target fosforo_all         # every time, and not fosforo_auv2
 
 cmake_minimum_required(VERSION 3.21)
 
@@ -63,21 +67,47 @@ FetchContent_MakeAvailable(clap-wrapper)
 
 find_program(ZIG_EXECUTABLE zig REQUIRED)
 
-set(ZIG_IMPL_LIB "${REPO_ROOT}/zig-out/lib/libfosforo_impl.a")
+# Its own prefix, not the repository's zig-out, and the `impl` step rather than a
+# bare `zig build`. Both halves of that exist to keep this target inside its own
+# build directory.
+#
+# A bare `zig build` here would build far more than the archive: it also reassembles
+# and ad-hoc signs zig-out/Fosforo.clap, with no identity, because the custom target
+# passes none. So a CMake build silently replaced whatever `zig build
+# -Dcodesign-identity=` had produced, and every check that ran afterwards read a
+# different file than the one that had been signed. `scripts/build-release-bundles`
+# existed in AU-then-CLAP order for exactly that reason.
+#
+# The prefix is the other half. `impl` alone would still write
+# zig-out/lib/libfosforo_impl.a, at ReleaseFast, racing a Debug archive from any
+# `zig build` running concurrently. Under its own prefix the two never meet, so this
+# target has no ordering relationship with the Zig build at all.
+set(ZIG_PREFIX "${CMAKE_BINARY_DIR}/zig")
+set(ZIG_IMPL_LIB "${ZIG_PREFIX}/lib/libfosforo_impl.a")
 
 # Always reruns. Zig maintains its own build cache, so a no-op rebuild is cheap
 # and this avoids CMake and Zig disagreeing about what is stale.
+#
+# The paths are quoted for consistency with the rest of this file, and the reason
+# usually given for it is wrong, which is worth recording so it is not re-argued. An
+# unquoted `${VAR}` inside COMMAND splits on **semicolons**, CMake's list separator,
+# and not on whitespace: measured by reading the generated build.make, where an
+# unquoted variable holding `one two` emits the single argument `"one two"`, byte for
+# byte what the quoted form emits, while one holding `one;two` emits two. So a
+# checkout under a path containing spaces, which is ordinary on macOS, was never at
+# risk here. What quoting actually buys is a path containing a semicolon, which would
+# break CMake in a dozen places before reaching this one.
 add_custom_target(fosforo-zig ALL
-    COMMAND ${ZIG_EXECUTABLE} build --release=fast
-    WORKING_DIRECTORY ${REPO_ROOT}
-    BYPRODUCTS ${ZIG_IMPL_LIB}
+    COMMAND "${ZIG_EXECUTABLE}" build --release=fast --prefix "${ZIG_PREFIX}" impl
+    WORKING_DIRECTORY "${REPO_ROOT}"
+    BYPRODUCTS "${ZIG_IMPL_LIB}"
     COMMENT "Building the Zig implementation library"
     VERBATIM
 )
 
 add_library(fosforo-impl INTERFACE)
 add_dependencies(fosforo-impl fosforo-zig)
-target_link_libraries(fosforo-impl INTERFACE ${ZIG_IMPL_LIB})
+target_link_libraries(fosforo-impl INTERFACE "${ZIG_IMPL_LIB}")
 
 # Carries the CLAP headers through to entry.cpp. clap-wrapper defines this
 # target when it resolves its own SDK dependencies.
