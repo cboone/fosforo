@@ -194,7 +194,7 @@ pub const Ring = struct {
         // fails without needing a Linux host. Read ADR 0016 before changing it,
         // and change the canary in the same edit, or you have silenced the
         // faster of the two and learned nothing from the slower.
-        self.cursor.store(at + input.len, .monotonic);
+        self.cursor.store(at + input.len, .release);
     }
 
     /// [audio-thread] Publish a whole capacity of silence, so every sample a
@@ -284,7 +284,7 @@ pub const Ring = struct {
             return true;
         }
 
-        const at = self.cursor.load(.acquire);
+        const at = self.cursor.load(.monotonic);
 
         // Everything the ring can still be holding: before the first lap that
         // is the cursor itself, and after it the capacity.
