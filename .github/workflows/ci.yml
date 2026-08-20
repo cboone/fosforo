@@ -166,6 +166,54 @@ jobs:
         run: |
           echo "::notice::AppKit smoke half: ${{ steps.appkit.outcome }}"
 
+  # The release/acquire pairing in `src/dsp/ring.zig` is the whole of ADR 0010's
+  # protocol between the audio thread and the render thread, and every test of
+  # that module is single-threaded, so `.monotonic` passes all of them. This job
+  # is the only thing anywhere that would notice. See ADR 0016.
+  #
+  # **Ubuntu because the check cannot run on macOS at all**, which is the reason
+  # this job exists rather than an economy on top of one. Zig 0.16 links a
+  # `-fsanitize-thread` binary on `aarch64-macos` that segfaults before `main`,
+  # so the machine this project is developed on is the one machine that cannot
+  # run it. The container is the one part of the signal path with no reason to
+  # stay on that target: it imports `std` and nothing else, no Metal, no
+  # Objective-C, no CLAP. That it also bills at a tenth of the macOS rate, as the
+  # `shell` and `typos` jobs note, is a coincidence here rather than the argument.
+  #
+  # In `ci.yml` rather than its own workflow, unlike `typos`. That question is
+  # settled by the `paths-ignore` lists at the top of this file, which cover
+  # `*.md`, `docs/**`, `LICENSE` and the agent config files. None of those can
+  # hide a change to `src/dsp/ring.zig`, `src/ring_race.zig` or `build.zig`, so
+  # this check cannot skip the change that governs it, which is exactly what a
+  # spell checker added here would have done.
+  #
+  # No pinned download and no cached tool, unlike the two Ubuntu jobs below and
+  # the validator: the sanitizer ships inside the Zig toolchain, so
+  # `build.zig.zon` is already the pin. Zig builds the runtime from the
+  # compiler-rt sources it carries on a cold cache, which is the one variable
+  # part of this job and the reason for the ceiling below.
+  #
+  # Borrowed rather than measured, because this job has never run. 10 rather than
+  # the 8 the other borrowed ceilings use, because none of them build a C++
+  # runtime library first and nothing here has measured what that costs. Replace
+  # it with a real figure and sample size once this pull request's runs supply
+  # one, the way every other ceiling here was set (#17).
+  ring-race:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version-file: build.zig.zon
+
+      # The step judges two arms and one of them must be flagged, so a green
+      # result here means the sanitizer was demonstrably running. See the
+      # assertion order in `scripts/ring-race-check`'s header.
+      - name: Race-check the history buffer
+        run: zig build ring-race
+
   # The reusable workflow's `format` job runs `zig fmt --check` and nothing
   # else, so no shell tooling ran anywhere in this repository. That left the
   # `.editorconfig` profile resting on someone remembering to run the tool.
