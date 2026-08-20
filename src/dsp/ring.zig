@@ -18,6 +18,17 @@
 //!   between publishing and copying. That margin is what makes a seqlock retry
 //!   loop unnecessary, and `read` reports on it rather than assuming it.
 //!
+//! **Those two orderings are unverified by anything here, and a passing test run
+//! is not permission to weaken them.** Every test below is single-threaded, so
+//! nothing ever runs `write` and `read` at once: replacing the release store
+//! with a `.monotonic` one passes all of them. Thread Sanitizer is unavailable
+//! rather than awkward, since Zig 0.16 links a `-fsanitize-thread` binary on
+//! `aarch64-macos` that segfaults on startup, and a threaded stress test would
+//! assert the scheduler rather than the code. What holds the pairing correct is
+//! ADR 0010 specifying it and a reading of these forty lines, which is a weaker
+//! guarantee than anything else in this file has and is said out loud rather
+//! than left for someone to discover. Issue #44 owns the decision.
+//!
 //! Nothing below `init` allocates, takes a lock, or makes a syscall. The
 //! storage is allocated once by its owner and never resized, which is what lets
 //! `write` be reachable from `process`.
@@ -163,6 +174,12 @@ pub const Ring = struct {
 
         // Release, paired with the acquire load in `read`: a consumer that
         // observes this cursor observes every sample written above it.
+        //
+        // **No test in this project can catch you weakening this**, which is the
+        // module docstring's point restated at the line it applies to. Every
+        // test is single-threaded, so `.monotonic` here passes all of them and
+        // surfaces later as rare visual corruption in someone's session. See
+        // issue #44 before changing it.
         self.cursor.store(at + input.len, .release);
     }
 

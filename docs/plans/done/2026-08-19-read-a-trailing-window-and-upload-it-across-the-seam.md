@@ -199,7 +199,11 @@ Everything below passed. Splitting the automated half from the host half matters
 
 ### What this does not close
 
-**The memory-ordering gap #35 deferred to this issue stays open.** #35 recorded that replacing `write`'s release store with a `.monotonic` one passes every test in the project, and that the first check able to tell the two apart is "a known signal drawn on screen during playback". Nothing is drawn here, so that check is not available yet and this issue cannot honestly claim it. It moves to #38, which is the first phase that has a picture to be wrong.
+**The memory-ordering gap #35 deferred to this issue stays open, and it is not being handed on again.** #35 recorded that replacing `write`'s release store with a `.monotonic` one passes every test in the project, and that the first check able to tell the two apart is "a known signal drawn on screen during playback". Nothing is drawn here, so this issue cannot claim it.
+
+An earlier revision of this section passed it to #38 on that basis. **That was wrong, and #35's own plan says why two sentences before the one quoted above:** a weakened store "would very likely pass in a host too, surfacing much later as rare visual corruption". Both cannot hold. A weakened store's visibility window is nanoseconds against a window that lags 20 ms and redraws sixty times a second, so a sine looks like a sine either way, and #38 drawing a correct trace would appear to discharge the obligation without ever having tested it. #38's body also never mentioned inheriting it.
+
+Three plans in `docs/plans/done/` now each point forward to the next, which is how this survived three hand-offs. That chain ends here. The durable half, that no test in this project can catch the ordering being weakened, is stated in `src/dsp/ring.zig`'s docstring, at the release store itself, and in `AGENTS.md`. The half that needs a decision rather than a comment is [#44](https://github.com/cboone/fosforo/issues/44).
 
 ## What landed differently
 
