@@ -132,6 +132,22 @@ const dispatch_time_now: u64 = 0;
 /// that `dispatch_time_now` exists to keep off the render path.
 const Completion = objc.Block(struct { sema: objc.c.id }, .{objc.c.id}, void);
 
+/// Window buffers taken and not yet given back.
+///
+/// **This exists because `leaks` cannot see one, which was measured rather than
+/// assumed.** Dropping the release in `deinit` and running the harness 60 times
+/// produces a report `scripts/smoke-leak-check` calls clean, while the same
+/// omission applied to the command queue is caught immediately as
+/// `AGXG17XFamilyCommandQueue`. The leak is real: peak RSS across 200 cycles
+/// goes from 47.7 MB to 57.7 MB. `leaks` walks the malloc heap, and a Metal
+/// buffer's storage is not in it.
+///
+/// So the one resource this file holds that the project's leak check is blind to
+/// carries its own count. Process-wide rather than per-renderer, because that is
+/// what makes it answer the question worth asking across an editor being opened
+/// and closed several hundred times rather than within any one of them.
+var live_windows: std.atomic.Value(usize) = .init(0);
+
 fn signalCompleted(block: *const Completion.Context, buffer: objc.c.id) callconv(.c) void {
     _ = buffer;
     if (block.sema) |sema| _ = dispatch_semaphore_signal(@ptrCast(sema));
@@ -272,7 +288,7 @@ pub const Renderer = struct {
         // reported a healthy backend on a machine where starting one allocates
         // memory it cannot get.
         const windows = try buildWindows(device, diags);
-        for (windows) |buffer| buffer.release();
+        releaseWindows(windows);
 
         diags.set(platform.utf8(device.msgSend(objc.Object, "name", .{})));
     }
@@ -297,7 +313,7 @@ pub const Renderer = struct {
     pub fn deinit(self: *Renderer) void {
         platform.assertMainThread();
 
-        for (self.windows) |buffer| buffer.release();
+        releaseWindows(self.windows);
         self.in_flight.release();
         self.layer.release();
         self.pipeline.release();
@@ -475,6 +491,17 @@ pub const Renderer = struct {
         return .presented;
     }
 
+    /// [thread-safe] Window buffers this process has taken and not given back.
+    ///
+    /// Zero whenever no editor is open, and the only check in this project that
+    /// can see a leaked one at all: see `live_windows` for the measurement that
+    /// establishes `leaks` cannot. `src/smoke.zig` is the caller, on `probe`'s
+    /// precedent, and like `probe` this is a question any second backend would
+    /// have to answer rather than a hook shaped to this one's tests.
+    pub fn liveWindowBuffers() usize {
+        return live_windows.load(.acquire);
+    }
+
     /// [render-thread] Copy staging into this frame's buffer.
     ///
     /// Split out of `frame` only so the ordering rule has somewhere to be
@@ -523,7 +550,23 @@ fn buildWindows(device: objc.Object, diags: *iface.Diagnostics) iface.Error![max
         windows[taken] = buffer;
     }
 
+    // Counted only once the whole ring is in hand, which pairs with
+    // `releaseWindows` giving the whole ring back. A partial failure released
+    // what it took through the `errdefer` above and reports nothing here,
+    // because it is handing back buffers this count never included.
+    _ = live_windows.fetchAdd(max_frames_in_flight, .release);
+
     return windows;
+}
+
+/// Give a whole ring back, and say so.
+///
+/// The one place window buffers are released, which is what stops the count
+/// drifting from the releases: `probe` takes a ring and hands it straight back,
+/// and a second bare release loop there would have left the count high forever.
+fn releaseWindows(windows: [max_frames_in_flight]objc.Object) void {
+    for (windows) |buffer| buffer.release();
+    _ = live_windows.fetchSub(max_frames_in_flight, .release);
 }
 
 /// Compile the embedded source and assemble a pipeline state from it.

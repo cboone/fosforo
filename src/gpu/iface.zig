@@ -155,6 +155,12 @@ pub const Diagnostics = struct {
 /// arrived, having missed `resize`; the comptime block below is the list that
 /// cannot drift, and this one is prose that has to be kept beside it by hand.
 ///
+/// `liveWindowBuffers` is the seventh and is the same kind of thing as `probe`:
+/// a question about the backend rather than an instruction to it. It exists
+/// because `scripts/smoke-leak-check` was measured and cannot see a leaked
+/// window buffer, while it catches a leaked command queue in the same run, so
+/// the backend has to answer for that one resource itself.
+///
 /// `probe` is the sixth, and it has one caller: `src/smoke.zig`. It does
 /// everything `init` does except attach a surface, which makes it the half of
 /// starting a renderer that needs no window and can therefore run unattended.
@@ -187,6 +193,9 @@ comptime {
     assertSignature("upload", @TypeOf(Renderer.upload), fn (*Renderer, []const f32) void);
     assertSignature("frame", @TypeOf(Renderer.frame), fn (*Renderer) Outcome);
     assertSignature("probe", @TypeOf(Renderer.probe), fn (*Diagnostics) Error!void);
+    // `[thread-safe]`, and a plain count because that is all a caller can do
+    // anything with: naming what is being counted would name a Metal type.
+    assertSignature("liveWindowBuffers", @TypeOf(Renderer.liveWindowBuffers), fn () usize);
 }
 
 fn assertSignature(comptime name: []const u8, comptime Found: type, comptime Want: type) void {
