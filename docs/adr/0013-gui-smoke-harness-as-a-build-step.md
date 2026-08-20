@@ -32,7 +32,7 @@ Keep the harness, as `src/smoke.zig`, behind its own build steps, and never wire
 
 The GPU half is required in CI. The AppKit half runs there under `continue-on-error` until an actual run settles whether a hosted runner grants an unbundled process a window-server connection.
 
-**The GPU half reaches the device through the seam**, as `Renderer.probe`, one of the operations declared beside `init`, `deinit`, `resize`, and `frame` in `src/gpu/iface.zig`. `Renderer.init` cannot run without a window, because its last step attaches a `CAMetalLayer` to an `NSView`. `probe` is everything before that step, sharing `buildPipeline` with `init` rather than paraphrasing it, so a pass means the shipping path compiled the shader. It names no Metal type above the seam, which [ADR 0005](./0005-metal-behind-a-renderer-seam.md) requires and the comptime block in that file enforces.
+**The GPU half reaches the device through the seam**, as `Renderer.probe`, one of the operations declared beside `init`, `deinit`, `resize`, `upload`, `frame`, and `liveWindowBuffers` in `src/gpu/iface.zig`. `Renderer.init` cannot run without a window, because its last step attaches a `CAMetalLayer` to an `NSView`. `probe` is everything before that step, sharing `buildPipelines` with `init` rather than paraphrasing it, so a pass means the shipping path compiled the shader. It names no Metal type above the seam, which [ADR 0005](./0005-metal-behind-a-renderer-seam.md) requires and the comptime block in that file enforces.
 
 **Leak checking stays outside the process**, in `scripts/smoke-leak-check` behind `zig build smoke-leaks`. A leak the harness could observe about itself is one it has not leaked.
 
@@ -60,7 +60,7 @@ The reason it could not be deferred is that #5 turned the gap into a total loss 
 
 Three pieces close it:
 
-- `frame` returns an `Outcome` (`presented`, `no_drawable`, `no_command_buffer`, `no_encoder`) rather than `void`. It is not an error set: every value but the first is a normal response to load, and modelling them as errors would push a caller toward escalating something whose only correct answer is to skip the tick.
+- `frame` returns an `Outcome` (`presented`, `no_drawable`, `no_frame_slot`, `no_command_buffer`, `no_encoder`) rather than `void`. It is not an error set: every value but the first is a normal response to load, and modelling them as errors would push a caller toward escalating something whose only correct answer is to skip the tick.
 - `Editor` counts presented frames in an atomic and exposes `framesPresented()`. `plugin.editorOf` reaches it, which is the one deliberate exception to `Instance` staying private, because CLAP has no callback that reports whether anything was drawn.
 - Each AppKit cycle waits for a frame, resizes to 1280x720, waits for two more, then hides and asserts the counter **stopped** advancing.
 
@@ -71,3 +71,50 @@ That last assertion is new coverage rather than restored coverage: it is what ke
 **What it still does not prove is what the frame contained.** The counter says the pipeline ran, the drawable was acquired, and the command buffer was committed. A shader writing the wrong colour presents exactly as readily as one writing the right colour. Closing that needs a readback of the drawable and a comparison against an expected value, which is worth doing when there is something in the picture worth comparing: today it is a flat colour, and in phase 3 it will not be.
 
 **`probe` and `init` are not the same path.** `probe` stops before `attachLayer`, so a defect confined to layer attachment is caught only by the AppKit half, which is the half that might not run in CI.
+
+## Amended by issue #38: what the harness can assert about the samples
+
+Issue [#38](https://github.com/cboone/fosforo/issues/38) drew the first trace and asked, as a checkbox, whether `zig build smoke-appkit` could assert more than that a frame was presented. It can, and the thing it now asserts is not the thing the section above predicted.
+
+**Two transcription errors in this document were corrected in place while writing this**, and are named here because a silent edit to an ADR looks like exactly what this directory's rules forbid. The `Outcome` list omitted `no_frame_slot`, added by [#37](https://github.com/cboone/fosforo/issues/37); the list of seam operations `probe` sits beside omitted `upload` and `liveWindowBuffers`, added by the same issue. Neither was a decision.
+
+### A drawable readback was refused, and the criterion above is wrong
+
+The paragraph above says a readback "is worth doing when there is something in the picture worth comparing: today it is a flat colour, and in phase 3 it will not be." #38 produces a picture, and a readback is still not worth it, so the criterion needs sharpening rather than waiting on.
+
+The cost is not effort. `attachLayer` sets `setFramebufferOnly: true`, and reading a drawable back means dropping that: changing the shipping renderer's storage mode, in every host, on every frame, so that a check can run in CI. The plan for issue #19 already refused precisely that, in these words: "A drawable that is `framebufferOnly` cannot be read back, and changing that to suit a test would change the shipping renderer." A harness-only readable path is worse rather than a way around it, because it inverts the principle `probe` is built on: `probe` shares `buildPipelines` with `init` *rather than paraphrasing it*, and a path the shipping renderer never takes is a paraphrase. The comparison also needs a golden image, in a project with no image comparison of any kind, pinning the vertical scale, the horizontal mapping, the drawable size and Metal's line rasterization rule against a shader phase 3 replaces wholesale.
+
+**The real criterion is when the picture is expensive enough to justify a golden and stable enough that the golden does not churn.** That is after phase 3's look settles, not at its start.
+
+### `windowsTorn() == 0` was a vacuous assertion, and this document said why
+
+#37 added an assertion that no window tore across a cycle. It is satisfied by three worlds it cannot tell apart: reads happened and none tore; reads happened and none *could* tear, because the harness stops calling `process` before the editor opens and the producer is stationary; and **no read ever happened at all**. `Editor.readWindow` returns before either counter when its history pointer is null or its window count is zero, so a `plugin.init` that dropped its history wiring, an `activate` that dropped `setWindow`, or a widened early return would all leave the count at zero and read as healthy.
+
+The Consequences above already state the rule that breaks, about `leaks`: **an absence has to be told apart from an instrument that did not run.**
+
+### What the harness now asserts
+
+`Editor` counts windows read intact and handed across the seam, behind `windowsUploaded()`, beside `framesPresented()` and `windowsTorn()`. It is the same split this ADR already made once, on the same object: #5 turned "the loop is running" and "the loop is drawing" into two claims, and #38 turns "the loop is drawing" and "the loop is drawing the samples" into two more. Following the precedent is not extending it.
+
+Four assertions, each verified by planting the defect it names:
+
+| Plant                                                     | Result                                                          |
+| --------------------------------------------------------- | ----------------------------------------------------------------- |
+| Drop `self.editor.history = &self.history` from `init`    | `smoke: appkit FAILED: NoWindowUploaded`                        |
+| Drop `setWindow` from `activate`                          | `NoWindowUploaded`                                              |
+| `readWindow` returns early once one window has uploaded   | `UploadsStopped`                                                |
+| Drop `setWindow(0)` from `deactivate`                     | `UploadedWhileDeactivated`, naming 2 windows                    |
+| Clear `window` in `Editor.destroy`                        | `ReopenedEditorStalled`                                         |
+| Make `Renderer.upload` a no-op                            | **Passes.** See the limit below                                 |
+
+**The first two are not harness-only coverage, which was measured rather than assumed.** Both were predicted to be unique to the harness and both also fail `zig build test`, against the existing tests "init points the editor at the instance's history" and "activate publishes a window to the editor and deactivate takes it away". They are worth keeping as controls that the two levels agree, and not worth citing as coverage nothing else provides.
+
+**The third plant had to be strengthened before it tripped.** A `readWindow` that stopped once *one frame* had been presented still uploaded a second window, because the count is captured after the first wait and the assertion asks only that it advanced. Stopping once one window had uploaded is the defect the assertion actually names, and that one trips it. What the assertion catches is a path that stopped, not one that slowed.
+
+**`ReopenedEditorStalled` is the one that closes something previously untestable.** `Editor.destroy` deliberately keeps `history` and `window` while clearing everything else, and its comment says clearing either "would leave the second editor reading nothing for the rest of the activation, with no symptom but a trace that never moved." Nothing tested that, and it is the Logic path specifically: clap-wrapper's AUv2 view destroys rather than hides, so every open of the plugin window there is a `destroy` and `create` on a still-activated instance. Each cycle now reopens an editor before the deactivate block, which makes the comment enforceable.
+
+**The limit, stated in the words `live_windows` already uses.** A `Renderer.upload` that does nothing passes every assertion above: the counter proves the window was read and handed across the seam, not that the backend copied it. Changing `upload` to return a count so the harness could catch that would be shaping the seam to the harness, which is what `probe`'s docstring is careful to say it is not.
+
+### A second Metal resource, checked rather than assumed
+
+The trace needs a second `MTLRenderPipelineState`, and this document's own rule is that a Metal resource which is not a buffer must be checked against `leaks` with a planted leak before `smoke-leaks` is assumed to cover it. Dropping the trace pipeline's release takes a 400-cycle run from 288 leaks and 18,816 bytes to 9,880 leaks and 8,555,776 bytes, and `scripts/smoke-leak-check` reports that objects belonging to this project were leaked. So a pipeline state is visible to `leaks` where an `MTLBuffer` is not, and there is no second blind spot of the `live_windows` kind here.

@@ -21,3 +21,4 @@ Background for all of these lives in [the design brainstorm](../design/scope-plu
 | [0013](./0013-gui-smoke-harness-as-a-build-step.md) | The GUI smoke harness is a build step, not a test          | Accepted |
 | [0014](./0014-distribute-as-a-notarized-pkg.md)     | Distribute as a signed, notarized pkg installer            | Accepted |
 | [0015](./0015-adopt-std-io-single-instance.md)      | Adopt std.Io through one single-threaded instance          | Accepted |
+| [0016](./0016-absolute-vertical-axis.md)            | The vertical axis is absolute and never rescales itself    | Accepted |
