@@ -385,12 +385,13 @@ jobs:
   # from cmake/entry.cpp here and src/main.zig there, so a defect in that seam or a
   # regression arriving with a clap-wrapper pin bump is invisible above.
   #
-  # `--target fosforo_all` rather than naming both targets. It widens automatically
-  # if FOSFORO_FORMATS grows, which is wanted: a new format should reach CI by
-  # default, not by remembering to edit a target list here. Naming fosforo_auv2 alone
-  # does *not* build the CLAP, because setting AUV2_MANUFACTURER_CODE sends
-  # make_clapfirst_plugins down its explicit-configuration branch, which never calls
-  # add_dependencies() between the two.
+  # Through `scripts/build-audio-unit` rather than the two cmake invocations it
+  # wraps, and that is the point of running it here: a build script only a developer
+  # runs is one CI cannot vouch for. It owns the choice of `--target fosforo_all`
+  # over naming either target, which widens automatically if FOSFORO_FORMATS grows
+  # and which is not interchangeable with fosforo_auv2, and it owns the
+  # configure-only-when-absent rule that this job exercises from cold on every run.
+  # Its header carries the reasoning; restating it here is how the two would drift.
   #
   # The AUv2 component is the only artifact carrying a clap-wrapper-generated
   # Info.plist, and two things about it are wrong out of the box: it claims sandbox
@@ -421,9 +422,7 @@ jobs:
           version-file: build.zig.zon
 
       - name: Build the wrapper artifacts
-        run: |
-          cmake -B build cmake/
-          cmake --build build --target fosforo_all
+        run: ./scripts/build-audio-unit
 
       - name: Assert the component claims no sandbox resources
         run: |
