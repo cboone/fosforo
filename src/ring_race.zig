@@ -263,27 +263,34 @@ fn Consumer(comptime Buffer: type) type {
         /// which is what orders them. Nothing touches them in between.
         fn run(self: *Self) void {
             var window: [window_samples]f32 = @splat(0);
+
+            // Wait once for a full window, so the loop below never spends an
+            // instrumented copy discovering there is nothing there yet.
+            //
+            // **Once, and outside the loop, and that is load-bearing rather than
+            // tidy.** `written()` is itself an acquire load, so performing it
+            // every iteration would order the writer's stores against the copies
+            // that follow and hide a weakened load *inside* `read`, which is the
+            // other half of the pairing under test. The plugin's consumer does
+            // not consult the cursor separately either: `Editor.readWindow` goes
+            // straight to `Ring.read`, whose own acquire is the whole mechanism.
+            // One warm-up orders only the 960 samples published by the time it
+            // returns, against the 1047552 this run goes on to write, so
+            // everything the loop actually measures stays unordered.
+            //
+            // Found by planting the defect rather than by reading the code: the
+            // per-iteration version detected a weakened publish and would have
+            // reported a weakened `read` as clean.
             var spins: u64 = 0;
+            while (self.buffer.written() < window_samples) {
+                spins += 1;
+                if (spins > max_spins) return;
+                std.atomic.spinLoopHint();
+            }
 
             while (self.counters.validated < target_reads and
                 self.counters.attempts < max_attempts)
             {
-                // Wait for a full window rather than copying a pad to discover
-                // there is nothing there yet. Consulting the cursor adds no
-                // synchronisation the arms do not already have, since the cursor
-                // *is* the protocol under test, and it costs one atomic load
-                // against the `window_samples` instrumented reads a copy costs.
-                //
-                // Note this stays sound in the weakened arm: an acquire load
-                // synchronises with a *release* store, so reading the relaxed
-                // cursor here creates no edge and cannot mask the missing one.
-                if (self.buffer.written() < window_samples) {
-                    spins += 1;
-                    if (spins > max_spins) return;
-                    std.atomic.spinLoopHint();
-                    continue;
-                }
-
                 self.counters.attempts += 1;
 
                 if (!self.buffer.read(&window)) {
