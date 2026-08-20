@@ -118,3 +118,27 @@ Run from a worktree where CMake has never been configured, which is the state th
 1. `zig build test`, `zig fmt --check build.zig src/`, `typos`, and both `shfmt -d` and `shellcheck` over `git ls-files -z | xargs -0 shfmt -f`. `markdownlint-cli2` for the documentation changes.
 1. `scripts/build-release-bundles` is not run (it needs a Developer ID), but read it against the new CMake target to confirm its assumptions still hold.
 1. Open the plugin in REAPER and in Logic from the installed bundles, confirming the hashes first. Logic is the one that proves the stale-component failure is closed.
+
+## Outcome
+
+Everything above was run except the last item, which needs a DAW and is left to the author.
+
+**The step family is as designed.** `zig build --help` lists `impl`, `audio-unit`, `plugins`, `install-clap` and `install-plugins`, and `install` now reads `Assemble Fosforo.clap into zig-out (not a plug-in folder)`. `b.install_tls.description` is assignable from `build.zig` despite `TopLevelStep` being a private type, because the field is public.
+
+**The clobber is gone, measured on both axes.** Before a full `scripts/build-audio-unit`, `zig-out/Fosforo.clap/Contents/MacOS/Fosforo` hashed `d3fe680e10de` with mtime `15:37:22`; after it, the same hash and the same mtime to the second, so the file was not merely rewritten identically but not touched at all. `codesign --verify --strict` passes afterwards. `zig-out/` now contains `Fosforo.clap` and nothing else, and CMake's archive lives at `build/zig/lib/libfosforo_impl.a`.
+
+**The nested build works.** `zig build install-plugins` runs a `zig build --release=fast --prefix build/zig impl` inside CMake inside a Zig build step, which this project had never done. Both halves land, no cache error, and the two Zig builds never contend, because the prefix separates their outputs. Installed hashes matched their sources: the CLAP `d3fe680e10de`, the component `a0c2ec3412e5`.
+
+**All five report shapes were exercised by hand,** by moving the built and installed components aside in turn:
+
+| State                                        | Report                                                          |
+| -------------------------------------------- | --------------------------------------------------------------- |
+| built here, installed                        | `audio unit: a0c2ec3412e5  Components/Fosforo.component`        |
+| `--clap-only`, built here, installed differs | `the installed one is NOT this build`, both hashes, how to fix  |
+| `--clap-only`, built here, installed matches | `the installed one IS this build`, with the hash                |
+| not built, installed                         | `NOT from this build`, hash, `modified 2026-08-20 10:35`        |
+| not built, not installed                     | `none built and none installed`, and what to run                |
+
+The fourth row is the issue's case, reproduced against a genuinely foreign `5a7956287f88` from an earlier session, and it exits 0.
+
+**Also clean:** `zig build test`, `zig fmt --check`, `shfmt -d`, `shellcheck`, `actionlint`, `markdownlint-cli2`, `typos`, `zig build smoke-gpu`, `scripts/assert-adhoc-signature` over all three bundles, and `clap-validator` against both `.clap` bundles (21 passed, 0 failed, 0 warnings, 23 skipped, each).
