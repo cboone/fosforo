@@ -360,7 +360,7 @@ fn addRingRaceStep(b: *std.Build) void {
             \\
             \\Thread Sanitizer links on aarch64-macos and segfaults before main, which
             \\is why this check lives in the `ring-race` job on ubuntu-latest. See
-            \\docs/adr/0016-verify-the-ring-s-ordering-with-tsan.md.
+            \\docs/adr/0016-verify-the-ring-ordering-with-tsan.md.
             \\
             \\To compile-check the harness from here without running it:
             \\    zig build-exe src/ring_race.zig -fsanitize-thread -lc -target x86_64-linux-gnu
