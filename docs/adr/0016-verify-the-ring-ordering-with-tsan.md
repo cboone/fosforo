@@ -44,7 +44,18 @@ Verify the release/acquire pairing by running `Ring.write` and `Ring.read` on tw
 
 **Measured rather than reasoned about, both directions.** Weakening `write`'s release store to `.monotonic` fails the canary and names the line; weakening `read`'s snapshot load does the same; both were reverted. The suite went from 139 tests to 144.
 
-**The negative control is a replica, so the real `Ring` must be measured with a planted defect too**, once, and the result recorded here. A control that models the defect is not the same as the subject exhibiting it, and this project's own history with `leaks` is the reason that distinction gets written down: a grep for the public class name reported a planted leak as clean, and `leaks` cannot see a leaked `MTLBuffer` at all. Anyone adding a further atomic operation to `src/dsp/ring.zig` should plant a defect in it and confirm the job goes red before assuming this covers it.
+**The negative control is a replica, so the real `Ring` was measured with a planted defect as well.** A control that models the defect is not the subject exhibiting it, and this project's history with `leaks` is why that distinction gets written down: a grep for the public class name reported a planted leak as clean, and `leaks` cannot see a leaked `MTLBuffer` at all. Both halves of the pairing were planted in `src/dsp/ring.zig`, on a throwaway branch, and both were caught:
+
+| Planted defect                                 | `ring` arm | Harness's own validation        |
+| ---------------------------------------------- | ---------- | ------------------------------- |
+| `write`'s release store to `.monotonic`        | data race  | `ring ok`, 4096 windows, 0 torn |
+| `read`'s acquire snapshot load to `.monotonic` | data race  | `ring ok`, 4096 windows, 0 torn |
+
+The second column is the finding and the third is why it was needed. In both cases the harness's own data validation passed completely: 4096 consecutive windows, every one of them a correct run of the writer's sequence, nothing torn. **The weakening does not show up as corruption**, which is exactly what the deferral chain assumed it eventually would and is why drawing a trace could never have closed this. The sanitizer is the only thing in either run that noticed.
+
+**The first of those measurements found a real gap in the harness**, which is the argument for making it an acceptance criterion rather than a formality. The reader consulted `Ring.written()` before every read, to avoid spending an instrumented copy discovering the ring was still empty. `written()` is itself an acquire load, so per-iteration it ordered the writer's stores against the copies that followed: it detected a weakened publishing store and would have reported a weakened acquire load inside `read` as clean. Half the protocol was uncovered by a line that read as an optimization. The wait now happens once, before the loop, which also matches the plugin, whose consumer never consults the cursor separately.
+
+Anyone adding a further atomic operation to `src/dsp/ring.zig` should plant a defect in it and confirm the job goes red before assuming this covers it.
 
 **The deferral chain in `docs/plans/done/` is left as it stands.** Three completed plans point forward to each other, which is how this survived three hand-offs, and that is the useful part of the record. `docs/adr/README.md` already says to supersede rather than edit history. This ADR is the single live statement, and the historical documents keep their forward pointers to the issue that ended the chain.
 

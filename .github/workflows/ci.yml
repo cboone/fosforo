@@ -193,14 +193,13 @@ jobs:
   # compiler-rt sources it carries on a cold cache, which is the one variable
   # part of this job and the reason for the ceiling below.
   #
-  # Borrowed rather than measured, because this job has never run. 10 rather than
-  # the 8 the other borrowed ceilings use, because none of them build a C++
-  # runtime library first and nothing here has measured what that costs. Replace
-  # it with a real figure and sample size once this pull request's runs supply
-  # one, the way every other ceiling here was set (#17).
+  # 88s max over 8 runs, which is the cold case: `mlugg/setup-zig` caches the Zig
+  # cache, so the sanitizer runtime is built from its bundled compiler-rt sources
+  # once and restored afterwards, and the warm runs land between 31s and 73s.
+  # Measured on this pull request's own runs rather than borrowed, per #17.
   ring-race:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
