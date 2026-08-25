@@ -1290,7 +1290,7 @@ test "a window the editor is given is bounded by the buffer it owns" {
 test "the rail is outside full scale, so over-scale has somewhere to go" {
     // If these ever met, a signal at 0 dBFS and one at +6 would draw identically
     // and the level sweep would be checking nothing. The gap is the deliverable
-    // of the vertical-scale decision (ADR 0016), not a rounding allowance.
+    // of the vertical-scale decision (ADR 0017), not a rounding allowance.
     try testing.expect(gpu.trace_rail > gpu.trace_full_scale);
 }
 

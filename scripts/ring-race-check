@@ -1,0 +1,278 @@
+#!/usr/bin/env bash
+# ring-race-check — run both arms of the race harness under Thread Sanitizer and judge them in order
+# Author: Christopher Boone
+# Date: 2026-08-20
+#
+# `src/dsp/ring.zig` publishes its cursor with a release store and reads it with
+# an acquire load, and that pairing is the whole of ADR 0010's protocol between
+# the audio thread and the render thread. Every test of that module is
+# single-threaded, so replacing the release with a `.monotonic` store passes all
+# of them. This is what notices. See ADR 0016.
+#
+# The harness has two arms and one of them must fail:
+#
+#   weakened  the same access pattern with the publishing store relaxed
+#   ring      the real Ring on two threads
+#
+# **The order of the assertions below is the point**, and it is the order
+# `smoke-leak-check` uses for the same reason. Everything the `ring` arm proves
+# is an absence, and a search for absence succeeds for the wrong reason when the
+# instrument was never running. So:
+#
+#   1. The `weakened` arm ran, and TSan reported a data race in it. This is the
+#      positive control. An unlinked runtime, an uninstrumented `@memcpy`, a
+#      `pthread_create` TSan never saw, a job that built the wrong module: each
+#      makes both arms silent, and only this can tell that apart from a correct
+#      ring.
+#   2. The `ring` arm ran to completion and its reader validated windows the
+#      writer produced, so a clean result describes two threads that met.
+#   3. The `ring` arm reported no data race.
+#
+# TSan's exit code is not the whole signal. `exitcode=66` replaces the process
+# status whenever anything was reported, so the `weakened` arm exits 66 while
+# still printing its own `ok` line, and both facts are read separately here.
+#
+# Usage:
+#   ring-race-check <path/to/fosforo-ring-race>
+#
+# Exit codes:
+#   0  - the control was flagged, the ring was clean, and both arms overlapped
+#  64  - invalid arguments
+#  65  - an arm failed, the control was not flagged, or the ring raced
+#  66  - the harness binary does not exist or is not executable
+
+set -euo pipefail
+
+if [[ -n "${TRACE:-}" ]]; then
+  set -x
+fi
+
+readonly E_USAGE=64
+readonly E_DATAERR=65
+readonly E_NOINPUT=66
+
+readonly PROGRAM_NAME="${0##*/}"
+
+# What Thread Sanitizer prints when it finds one. Also the positive control: no
+# such line in the `weakened` arm means nothing below is measuring anything.
+readonly RACE_MARKER='WARNING: ThreadSanitizer: data race'
+
+# `halt_on_error=0` so the weakened arm runs to completion and prints its own
+# result rather than dying on the first report. `exitcode=66` is TSan's default
+# and is set explicitly because the assertions below depend on it.
+readonly TSAN_SETTINGS='halt_on_error=0 exitcode=66'
+
+# Windows the ring arm's reader must validate before a clean result means
+# anything. The harness fails on its own if it cannot reach its target, so this
+# is a second opinion held from outside the process, the way the leak script
+# refuses to trust a report it did not confirm was generated.
+readonly MINIMUM_VALIDATED=1
+
+# Write a message to stderr, prefixed with the program name.
+# Arguments:
+#   $@ - message parts
+function warn() {
+  echo "${PROGRAM_NAME}: ${*}" >&2
+}
+
+function usage() {
+  echo "Usage: ${PROGRAM_NAME} <path/to/fosforo-ring-race>" >&2
+}
+
+# Run one arm, capturing everything it and the sanitizer said.
+#
+# The status is recorded and not obeyed, because a flagged arm exits non-zero by
+# design and a clean one exits zero for a reason this script has not checked yet.
+# Globals:
+#   arm_status - the exit status of the run
+# Arguments:
+#   $1 - path to the harness
+#   $2 - arm name
+#   $3 - path to write the capture to
+function run_arm() {
+  local binary="${1}"
+  local arm="${2}"
+  local capture="${3}"
+
+  arm_status=0
+  TSAN_OPTIONS="${TSAN_SETTINGS}" "${binary}" "${arm}" > "${capture}" 2>&1 ||
+    arm_status="${?}"
+}
+
+# Whether an arm reached the end of its work.
+# Arguments:
+#   $1 - path to the capture
+#   $2 - arm name
+function arm_completed() {
+  local capture="${1}"
+  local arm="${2}"
+
+  grep -q "^ring-race: ${arm} ok\$" "${capture}"
+}
+
+# How many data races the sanitizer reported.
+# Arguments:
+#   $1 - path to the capture
+# Outputs:
+#   A count on stdout
+function race_count() {
+  local capture="${1}"
+
+  grep -c "${RACE_MARKER}" "${capture}" || true
+}
+
+# The reader's validated-window count, from the arm's own statistics line.
+# Arguments:
+#   $1 - path to the capture
+#   $2 - arm name
+# Outputs:
+#   A count on stdout, empty when the line is absent
+function validated_count() {
+  local capture="${1}"
+  local arm="${2}"
+
+  sed -n "s/^ring-race: ${arm} .*validated=\([0-9]\{1,\}\).*/\1/p" "${capture}"
+}
+
+# Report an arm's own summary line, so a passing run says what it measured.
+# Arguments:
+#   $1 - path to the capture
+#   $2 - arm name
+function announce() {
+  local capture="${1}"
+  local arm="${2}"
+  local line
+
+  line="$(grep -m 1 "^ring-race: ${arm} reads=" "${capture}" || true)"
+  if [[ -n "${line}" ]]; then
+    warn "${line#ring-race: }"
+  fi
+}
+
+# Print the tail of a capture, for a failure that needs context.
+# Arguments:
+#   $1 - path to the capture
+function excerpt() {
+  local capture="${1}"
+
+  tail -n 25 "${capture}" >&2
+}
+
+# The positive control. Must run, and must be flagged.
+# Arguments:
+#   $1 - path to the harness
+#   $2 - path to write the capture to
+function check_control() {
+  local binary="${1}"
+  local capture="${2}"
+  local races
+
+  warn "running the weakened arm, which Thread Sanitizer must flag"
+  run_arm "${binary}" weakened "${capture}"
+
+  if ! arm_completed "${capture}" weakened; then
+    warn "the weakened arm did not finish (exit ${arm_status}), so there is nothing to compare against"
+    excerpt "${capture}"
+    return "${E_DATAERR}"
+  fi
+
+  races="$(race_count "${capture}")"
+  if [[ "${races}" -eq 0 ]]; then
+    warn "Thread Sanitizer reported nothing against a buffer built to race, so it is not detecting anything here"
+    warn "every check below would pass vacuously; the ring's result this run means nothing"
+    excerpt "${capture}"
+    return "${E_DATAERR}"
+  fi
+
+  announce "${capture}" weakened
+  warn "control flagged: ${races} data race report(s), as required"
+}
+
+# The subject. Must run, must overlap, and must be clean.
+# Arguments:
+#   $1 - path to the harness
+#   $2 - path to write the capture to
+function check_ring() {
+  local binary="${1}"
+  local capture="${2}"
+  local races
+  local validated
+
+  warn "running the ring arm, which must be clean"
+  run_arm "${binary}" ring "${capture}"
+
+  if ! arm_completed "${capture}" ring; then
+    warn "the ring arm did not finish (exit ${arm_status})"
+    excerpt "${capture}"
+    return "${E_DATAERR}"
+  fi
+
+  validated="$(validated_count "${capture}" ring)"
+  if [[ -z "${validated}" || "${validated}" -lt "${MINIMUM_VALIDATED}" ]]; then
+    warn "the ring arm's reader validated no window the writer produced, so the two threads never met"
+    warn "a clean sanitizer result over that is vacuous"
+    excerpt "${capture}"
+    return "${E_DATAERR}"
+  fi
+
+  races="$(race_count "${capture}")"
+  if [[ "${races}" -ne 0 ]]; then
+    warn "Thread Sanitizer reported ${races} data race(s) against the real Ring:"
+    excerpt "${capture}"
+    return "${E_DATAERR}"
+  fi
+
+  announce "${capture}" ring
+}
+
+function main() {
+  local binary=""
+  local capture
+  local -i arm_status
+
+  while [[ ${#} -gt 0 ]]; do
+    case "${1}" in
+      -*)
+        warn "unknown option '${1}'"
+        usage
+        return "${E_USAGE}"
+        ;;
+      *)
+        if [[ -n "${binary}" ]]; then
+          warn "expected exactly one harness path"
+          usage
+          return "${E_USAGE}"
+        fi
+        binary="${1}"
+        ;;
+    esac
+    shift
+  done
+
+  if [[ -z "${binary}" ]]; then
+    usage
+    return "${E_USAGE}"
+  fi
+
+  if [[ ! -x "${binary}" ]]; then
+    warn "cannot execute '${binary}'"
+    return "${E_NOINPUT}"
+  fi
+
+  # An explicit template rather than `mktemp -t <prefix>`, which is what
+  # `smoke-leak-check` uses and is why the difference is worth a comment. BSD
+  # mktemp treats the argument as a prefix and appends its own suffix; GNU mktemp
+  # requires the X's and fails with "too few X's in template". That script only
+  # ever runs on macOS, and this one only ever runs on Linux, so the portable
+  # spelling is the one that belongs here.
+  capture="$(mktemp "${TMPDIR:-/tmp}/ring-race-check.XXXXXX")"
+  # shellcheck disable=SC2064 # Expand now: the path must survive the function scope.
+  trap "rm -f '${capture}'" EXIT
+
+  check_control "${binary}" "${capture}"
+  check_ring "${binary}" "${capture}"
+
+  warn "the ring's release/acquire pairing held, and the control proves that was measured"
+}
+
+main "${@}"

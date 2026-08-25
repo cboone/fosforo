@@ -18,16 +18,25 @@
 //!   between publishing and copying. That margin is what makes a seqlock retry
 //!   loop unnecessary, and `read` reports on it rather than assuming it.
 //!
-//! **Those two orderings are unverified by anything here, and a passing test run
-//! is not permission to weaken them.** Every test below is single-threaded, so
-//! nothing ever runs `write` and `read` at once: replacing the release store
-//! with a `.monotonic` one passes all of them. Thread Sanitizer is unavailable
-//! rather than awkward, since Zig 0.16 links a `-fsanitize-thread` binary on
-//! `aarch64-macos` that segfaults on startup, and a threaded stress test would
-//! assert the scheduler rather than the code. What holds the pairing correct is
-//! ADR 0010 specifying it and a reading of these forty lines, which is a weaker
-//! guarantee than anything else in this file has and is said out loud rather
-//! than left for someone to discover. Issue #44 owns the decision.
+//! **Those two orderings are verified by `zig build ring-race`, and by nothing
+//! in `zig build test`.** Every test below is single-threaded, so nothing here
+//! ever runs `write` and `read` at once: replacing the release store with a
+//! `.monotonic` one passes all of them. `src/ring_race.zig` runs the two on real
+//! threads under Thread Sanitizer, which judges by the happens-before graph
+//! rather than by whether corruption appeared, so its verdict is a property of
+//! this code and not of the scheduler. It cannot run on `aarch64-macos`, where
+//! Zig 0.16 links a `-fsanitize-thread` binary that segfaults before `main`, so
+//! it runs on Linux in CI, and the canary at the bottom of this file is what
+//! catches a weakening on the machine you are probably reading this on. See
+//! ADR 0016.
+//!
+//! **What that does not cover is the torn-window path, by construction.** A
+//! producer that laps the consumer mid-copy reads and writes the same slots with
+//! nothing ordering them, which is a data race in the model Thread Sanitizer
+//! implements however benign it is here. The harness therefore bounds its writer
+//! so lapping cannot happen, rather than reporting a race this design accepts on
+//! purpose. `coherent` is what covers that path, exactly and with one thread,
+//! because it is arithmetic.
 //!
 //! Nothing below `init` allocates, takes a lock, or makes a syscall. The
 //! storage is allocated once by its owner and never resized, which is what lets
@@ -175,11 +184,16 @@ pub const Ring = struct {
         // Release, paired with the acquire load in `read`: a consumer that
         // observes this cursor observes every sample written above it.
         //
-        // **No test in this project can catch you weakening this**, which is the
-        // module docstring's point restated at the line it applies to. Every
-        // test is single-threaded, so `.monotonic` here passes all of them and
-        // surfaces later as rare visual corruption in someone's session. See
-        // issue #44 before changing it.
+        // **Two things catch you weakening this, and neither is a test of this
+        // module's behaviour**, which is the module docstring's point restated
+        // at the line it applies to. Every test here is single-threaded, so
+        // `.monotonic` passes all of them and surfaces later as rare visual
+        // corruption in someone's session. `zig build ring-race` runs this
+        // against a reader under Thread Sanitizer and reports the missing edge;
+        // the canary at the bottom of this file reads this line as text and
+        // fails without needing a Linux host. Read ADR 0016 before changing it,
+        // and change the canary in the same edit, or you have silenced the
+        // faster of the two and learned nothing from the slower.
         self.cursor.store(at + input.len, .release);
     }
 
@@ -691,4 +705,60 @@ test "the coherence check is exact at its boundary" {
     // report the first line above instead, on a window it had just overwritten.
     try testing.expect(!coherent(100, 108, 8, 1));
     try testing.expect(coherent(100, 108, 8, 0));
+}
+
+/// Everything above this line, so the canary cannot read its own string
+/// literals and count them as code. The marker is the section heading that is
+/// already there rather than a new one, so there is nothing extra to keep in
+/// step.
+fn implementation() []const u8 {
+    const source = @embedFile("ring.zig");
+    const marker = "\n// Tests\n";
+    return source[0 .. std.mem.indexOf(u8, source, marker) orelse source.len];
+}
+
+/// Whether `line`, indented as a statement inside a method, appears exactly once.
+fn statedOnce(text: []const u8, line: []const u8) bool {
+    var buffer: [160]u8 = undefined;
+    const statement = std.fmt.bufPrint(&buffer, "\n        {s}\n", .{line}) catch return false;
+    return std.mem.count(u8, text, statement) == 1;
+}
+
+// The canary.
+//
+// `zig build ring-race` is what verifies the release/acquire pairing, and it
+// needs a Linux host, so the machine this project is developed on is the one
+// machine that cannot run it (ADR 0016). This is the tripwire that fires anyway:
+// one file read at comptime, and it fails in `zig build test` on any machine the
+// moment one of the five atomic operations below is edited.
+//
+// **It reads the source as text and proves nothing about behaviour**, which is
+// what its name says out loud so it cannot be mistaken for the thing that does.
+// A passing canary means these lines are unchanged, not that they are correct.
+//
+// It costs the shipped binary nothing: Zig analyses `test` declarations only in
+// a test build, so neither `@embedFile` nor the two helpers above are ever
+// reached by `zig build`.
+test "the atomics are still the atomics, read as text because no test here can read them as behaviour" {
+    const code = implementation();
+
+    // The publication, and the half a simplifier reaches for first. This is the
+    // exact line `ring-race`'s weakened arm models the absence of.
+    try testing.expect(statedOnce(code, "self.cursor.store(at + input.len, .release);"));
+
+    // The three acquire loads, each by its whole statement, so moving one
+    // between methods reads as a change rather than as a wash.
+    try testing.expect(statedOnce(code, "return self.cursor.load(.acquire);"));
+    try testing.expect(statedOnce(code, "const at = self.cursor.load(.acquire);"));
+    try testing.expect(statedOnce(code, "return coherent(at, self.cursor.load(.acquire), cap, copied);"));
+
+    // The producer's own unsynchronised read, safe only because it is the only
+    // writer of the cursor.
+    try testing.expect(statedOnce(code, "const at = self.cursor.load(.monotonic);"));
+
+    // And that those five are all of them. Without this the checks above are
+    // satisfied by a file that also acquired a sixth operation somewhere else,
+    // which is the shape a seqlock retry loop would arrive in, and `read`'s
+    // docstring says why this is not that.
+    try testing.expectEqual(5, std.mem.count(u8, code, "self.cursor."));
 }

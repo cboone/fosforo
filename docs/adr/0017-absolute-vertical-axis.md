@@ -1,4 +1,4 @@
-# 0016. The vertical axis is absolute and never rescales itself
+# 0017. The vertical axis is absolute and never rescales itself
 
 **Status:** Accepted
 

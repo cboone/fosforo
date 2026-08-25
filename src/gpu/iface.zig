@@ -49,7 +49,7 @@ pub const max_window_samples: usize = 8192;
 /// Where a sample of ±1.0 lands, as a fraction of the drawable's half-height.
 ///
 /// **The vertical axis is absolute and the display never rescales itself to the
-/// signal** (ADR 0016). This is the reference that statement is about: full scale
+/// signal** (ADR 0017). This is the reference that statement is about: full scale
 /// is ±1.0, it draws 5% of the height in from each edge, and nothing anywhere
 /// adjusts it to fit what is playing.
 ///

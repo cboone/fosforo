@@ -20,6 +20,20 @@ pub fn build(b: *std.Build) void {
     });
     const optimize = b.standardOptimizeOption(.{});
 
+    // First, and before anything below reaches `b.dependency`. This is the only
+    // step here that builds on a non-Apple target, and the graph below cannot even
+    // be *described* on one: `b.dependency` runs a dependency's `build` function
+    // at configure time, and zig-objc's calls `appleSDKPath`, which panics on any
+    // OS that is not Darwin. So `zig build ring-race` on Linux aborted inside a
+    // dependency's build script before a single step ran, which is what the first
+    // CI run of the `ring-race` job did (#44). Fetching the tarball is a cost;
+    // describing the graph is the failure, and only the second one is fatal.
+    //
+    // Everything past this line is macOS-only anyway (ADR 0001), so the early
+    // return costs nothing: on Linux there is genuinely nothing else to build.
+    addRingRaceStep(b);
+    if (target.result.os.tag != .macos) return;
+
     const core: Core = .{
         .b = b,
         .target = target,
@@ -27,6 +41,16 @@ pub fn build(b: *std.Build) void {
         .clap_c = translateClap(b, target, optimize),
         .objc = b.dependency("objc", .{ .target = target, .optimize = optimize }).module("objc"),
     };
+
+    // Zig's own step, re-described. Its default text is "Copy build artifacts to
+    // prefix path", which is accurate and is read next to two project steps whose
+    // names also begin with "install" and which write somewhere else entirely. The
+    // destination is the whole distinction between them, so it is stated where it
+    // is actually read rather than left to `zig build --help`'s reader to infer.
+    //
+    // TopLevelStep is private, but install_tls is a public field, so this reaches
+    // the description without naming the type.
+    b.install_tls.description = "Assemble Fosforo.clap into zig-out (not a plug-in folder)";
 
     // Two artifacts share one implementation, differing only in whether they
     // export the CLAP entry symbol themselves. See ADR 0003.
@@ -39,7 +63,15 @@ pub fn build(b: *std.Build) void {
         .linkage = .static,
         .root_module = core.module(.{}),
     });
-    b.installArtifact(impl);
+
+    // Deliberately not on the default install step. CMake is the only consumer of
+    // this archive and it now builds the step below into a prefix of its own, so
+    // installing it here would write a file nothing reads and make `zig build`
+    // emit something other than the bundle AGENTS.md says it emits. Nothing is
+    // type-checked less: the dynamic library below compiles the same modules.
+    const install_impl = b.addInstallArtifact(impl, .{});
+    b.step("impl", "Build libfosforo_impl.a alone, which is all CMake wants from Zig")
+        .dependOn(&install_impl.step);
 
     const plugin = b.addLibrary(.{
         .name = "fosforo",
@@ -47,10 +79,33 @@ pub fn build(b: *std.Build) void {
         .root_module = core.module(.{ .export_entry = true }),
     });
 
-    installClapBundle(b, plugin);
+    const audio_unit = addAudioUnitStep(b);
+    installClapBundle(b, plugin, audio_unit);
     addTestStep(core);
     addShaderValidationStep(b);
     addSmokeSteps(core);
+}
+
+/// Build the Audio Unit, which is a CMake artifact this build system knows nothing
+/// about beyond how to ask for it.
+///
+/// The two constraints on that request used to exist only as prose. Configuring is
+/// once per worktree and building is every time, and `--target fosforo_auv2` does
+/// not build the CLAP because setting AUV2_MANUFACTURER_CODE sends
+/// make_clapfirst_plugins down a branch that adds no dependency between the two
+/// targets. Both now live in the script, which is also what CI runs, so neither can
+/// be true only locally.
+///
+/// Returns the run step rather than the top-level step, so the install steps below
+/// can depend on the work rather than on the name.
+fn addAudioUnitStep(b: *std.Build) *std.Build.Step.Run {
+    const run = b.addSystemCommand(&.{"./scripts/build-audio-unit"});
+    run.stdio = .inherit;
+    run.has_side_effects = true;
+
+    const step = b.step("audio-unit", "Build Fosforo.component into build/assets, through CMake");
+    step.dependOn(&run.step);
+    return run;
 }
 
 /// Build the CLAP bindings.
@@ -135,7 +190,11 @@ const Core = struct {
 ///
 ///   Fosforo.clap/Contents/Info.plist
 ///   Fosforo.clap/Contents/MacOS/Fosforo
-fn installClapBundle(b: *std.Build, plugin: *std.Build.Step.Compile) void {
+fn installClapBundle(
+    b: *std.Build,
+    plugin: *std.Build.Step.Compile,
+    audio_unit: *std.Build.Step.Run,
+) void {
     const contents: std.Build.InstallDir = .{ .custom = "Fosforo.clap/Contents" };
 
     const binary = b.addInstallFileWithDir(
@@ -150,39 +209,50 @@ fn installClapBundle(b: *std.Build, plugin: *std.Build.Step.Compile) void {
 
     signClapBundle(b, binary, plist);
 
-    // Both bundles, verified. Separate from `install-clap` because it spans two
-    // build systems: the Audio Unit is a CMake artifact this build knows nothing
-    // about, and the script skips it with an explanation rather than failing
-    // when CMake has not run.
-    //
-    // The verification is the point rather than a courtesy. A host loads what is
-    // installed, several worktrees compete for one install location, and a stale
-    // bundle produces results that read as passes. See the script's header.
-    const install_both = b.step(
-        "install-plugins",
-        "Install both bundles into ~/Library/Audio/Plug-Ins and verify which build landed",
-    );
-    const install_script = b.addSystemCommand(&.{"./scripts/install-plugins"});
-    install_script.step.dependOn(b.getInstallStep());
-    install_script.stdio = .inherit;
-    install_script.has_side_effects = true;
-    install_both.dependOn(&install_script.step);
+    addInstallSteps(b, audio_unit);
+}
 
-    const install_local = b.step("install-clap", "Copy the .clap into ~/Library/Audio/Plug-Ins/CLAP");
-    const copy = b.addSystemCommand(&.{
-        "sh", "-c",
-        \\set -eu
-        \\dest="$HOME/Library/Audio/Plug-Ins/CLAP"
-        \\mkdir -p "$dest"
-        \\rm -rf "$dest/Fosforo.clap"
-        \\cp -R "$1" "$dest/"
-        \\echo "installed to $dest/Fosforo.clap"
-        ,
-        "sh",
-    });
-    copy.addDirectoryArg(.{ .cwd_relative = b.getInstallPath(.{ .custom = "Fosforo.clap" }, "") });
-    copy.step.dependOn(b.getInstallStep());
-    install_local.dependOn(&copy.step);
+/// The two steps that write to ~/Library/Audio/Plug-Ins, and the one that builds
+/// both bundles without leaving the worktree.
+///
+/// One invariant holds across both install steps and is the reason they are worth
+/// distinguishing at all: **each builds exactly what it installs, and verifies what
+/// landed**. Before this, both built the CLAP and neither built the Audio Unit, so
+/// `install-plugins` installed a component only if some earlier command in some
+/// earlier session happened to have produced one. A worktree that had never run
+/// CMake kept whatever component another branch had installed, said nothing about
+/// it, and Logic loaded that instead (#43).
+///
+/// Neither runs an install of its own. `scripts/install-plugins` is the single
+/// implementation of "copy a bundle into a plug-in folder and prove it landed", and
+/// `install-clap` reaches it through --clap-only rather than through the inline
+/// `cp -R` it used to carry, which could not say what it had copied.
+fn addInstallSteps(b: *std.Build, audio_unit: *std.Build.Step.Run) void {
+    const both = b.step(
+        "plugins",
+        "Build both bundles into the worktree, without installing either",
+    );
+    both.dependOn(b.getInstallStep());
+    both.dependOn(&audio_unit.step);
+
+    const install_clap = b.addSystemCommand(&.{ "./scripts/install-plugins", "--clap-only" });
+    install_clap.step.dependOn(b.getInstallStep());
+    install_clap.stdio = .inherit;
+    install_clap.has_side_effects = true;
+    b.step(
+        "install-clap",
+        "Build the CLAP, install it into ~/Library/Audio/Plug-Ins, and verify what landed",
+    ).dependOn(&install_clap.step);
+
+    const install_both = b.addSystemCommand(&.{"./scripts/install-plugins"});
+    install_both.step.dependOn(b.getInstallStep());
+    install_both.step.dependOn(&audio_unit.step);
+    install_both.stdio = .inherit;
+    install_both.has_side_effects = true;
+    b.step(
+        "install-plugins",
+        "Build BOTH bundles, install them into ~/Library/Audio/Plug-Ins, and verify what landed",
+    ).dependOn(&install_both.step);
 }
 
 /// Sign the assembled bundle, ad-hoc unless told otherwise.
@@ -303,6 +373,102 @@ fn addSmokeSteps(core: Core) void {
     check.stdio = .inherit;
     check.has_side_effects = true;
     leaks.dependOn(&check.step);
+}
+
+/// The race harness (src/ring_race.zig and ADR 0016), which runs `Ring.write`
+/// and `Ring.read` on two threads under Thread Sanitizer.
+///
+/// **The only step here that cannot run on the machine this project is developed
+/// on.** Zig 0.16 links a `-fsanitize-thread` binary on `aarch64-macos` that
+/// segfaults before `main`, re-measured on 0.16.0 rather than inherited. The
+/// container is the one part of the signal path with no reason to stay on that
+/// target: `src/dsp/ring.zig` imports `std` and nothing else. So this step wants
+/// a Linux host, and CI supplies one. That is the same bargain
+/// `addShaderValidationStep` and `addSmokeSteps` already make, a step allowed to
+/// require a machine capability the default build must not depend on, with the
+/// capability here being *not* macOS.
+///
+/// Deliberately not wired into `zig build test`, for their reasons and ADR 0009's.
+fn addRingRaceStep(b: *std.Build) void {
+    const step = b.step("ring-race", "Race-check the history buffer under Thread Sanitizer (needs a Linux host)");
+
+    // Its own module rather than `Core.module`. That constructor adds `objc`,
+    // the translated CLAP header, the anonymous shader import and five Apple
+    // frameworks unconditionally, none of which can link off macOS.
+    //
+    // `resolveTargetQuery(.{})` rather than the shared target, which carries
+    // `os_version_min` 11.0 as a macOS deployment floor. Resolved on Linux that
+    // becomes a minimum kernel version no kernel satisfies. The ring has no
+    // deployment target, so it takes the bare host.
+    //
+    // `link_libc` is load-bearing rather than incidental: Thread Sanitizer learns
+    // about threads by intercepting `pthread_create`, and without libc Zig issues
+    // a raw `clone` that TSan never sees. Both arms then come back clean, which is
+    // the exact false pass the harness's control arm exists to catch.
+    //
+    // Debug, matching `zig build test`. Atomic orderings survive every
+    // optimization level, so this costs no coverage.
+    const target = b.resolveTargetQuery(.{});
+    const exe = b.addExecutable(.{
+        .name = "fosforo-ring-race",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ring_race.zig"),
+            .target = target,
+            .optimize = .Debug,
+            .link_libc = true,
+            .sanitize_thread = true,
+        }),
+
+        // **`sanitize_thread` alone produces a binary that detects nothing, and
+        // says nothing about it.** Zig 0.16 defaults to its self-hosted x86_64
+        // backend for a Debug build on Linux, and that backend links the Thread
+        // Sanitizer runtime while emitting none of its instrumentation. The
+        // result builds, links, runs, exits zero and reports no races, whatever
+        // you race in it. Measured by disassembling both: the default backend
+        // stores straight to the shared word, and `-fllvm` emits a
+        // `__tsan_write8` call before the same store.
+        //
+        // The first run of this job with a deliberately racing control arm
+        // reported nothing, which is exactly what that arm is for.
+        .use_llvm = true,
+    });
+
+    // Refuse rather than produce a binary that segfaults before it can say why.
+    // A cross-compiled harness is still worth building, so `-Dtarget` is not what
+    // is consulted here: the question is whether *this* host can run one.
+    if (b.graph.host.result.os.tag != .linux) {
+        const fail = b.addFail(
+            \\`zig build ring-race` needs a Linux host.
+            \\
+            \\Thread Sanitizer links on aarch64-macos and segfaults before main, which
+            \\is why this check lives in the `ring-race` job on ubuntu-latest. See
+            \\docs/adr/0016-verify-the-ring-ordering-with-tsan.md.
+            \\
+            \\To compile-check the harness from here without running it:
+            \\    zig build-exe src/ring_race.zig -fsanitize-thread -lc -target x86_64-linux-gnu
+        );
+
+        // Still built, so a type error in the harness fails this step on macOS
+        // rather than waiting for CI. Zig analyses a declaration only where it is
+        // reached, so building it is what checks it.
+        fail.step.dependOn(&exe.step);
+        step.dependOn(&fail.step);
+        return;
+    }
+
+    // Not `b.installArtifact`: plain `zig build` must keep producing only the
+    // .clap, on `addSmokeSteps`' reasoning.
+    const install = b.addInstallArtifact(exe, .{});
+
+    // The script rather than the two runs, because the criterion is an absence
+    // and an absence has to be told apart from an instrument that was not
+    // running. See the assertion order in its header.
+    const check = b.addSystemCommand(&.{"./scripts/ring-race-check"});
+    check.addFileArg(exe.getEmittedBin());
+    check.step.dependOn(&install.step);
+    check.stdio = .inherit;
+    check.has_side_effects = true;
+    step.dependOn(&check.step);
 }
 
 /// One half, as its own step, so CI can require the half that needs no window.

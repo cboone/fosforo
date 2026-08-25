@@ -128,11 +128,23 @@ jobs:
   # This is the one check in the project that can go red for reasons unrelated to
   # the code, which is the cost of being the only one that runs anything.
   #
-  # The ceiling is borrowed, not measured: this job has never run, so 8 comes from
-  # `shaders` and `clap-validator`, which do the same checkout, Zig install and
-  # build on the same runner and peak at 90s and 120s. Replace it with a real
-  # figure and sample size once this PR's runs supply one, the way every other
-  # ceiling here was set (#17).
+  # 38s max over 3 runs sampled since this job landed (34s, 38s, 38s), which is
+  # a real figure replacing the borrowed one this comment used to carry (#17).
+  #
+  # **The ceiling deliberately stays at 8 rather than dropping to 4x that.** Every
+  # other ceiling here is 4x an observed run because its worst case is
+  # statistical; this job's is structural. The plausible failure is the AppKit
+  # half wedging on a window server, and the step below already allows it two
+  # minutes to do so, so 4x38s would cut the job off below a step timeout it
+  # grants on purpose. 8 is roughly 2.7x the worst case the step budgets add up
+  # to, which is the same margin measured the other way round.
+  #
+  # The experiment this job was added to run has an answer: the AppKit half
+  # succeeded on all 3 sampled runs, so a hosted macOS runner does grant an
+  # unbundled process a window-server connection. `continue-on-error` is kept
+  # anyway for now, because promoting a check to required is a decision about
+  # what may block a merge rather than a fact about the runner, and nothing has
+  # yet observed this job across an image refresh.
   smoke:
     runs-on: macos-latest
     timeout-minutes: 8
@@ -165,6 +177,53 @@ jobs:
         if: always()
         run: |
           echo "::notice::AppKit smoke half: ${{ steps.appkit.outcome }}"
+
+  # The release/acquire pairing in `src/dsp/ring.zig` is the whole of ADR 0010's
+  # protocol between the audio thread and the render thread, and every test of
+  # that module is single-threaded, so `.monotonic` passes all of them. This job
+  # is the only thing anywhere that would notice. See ADR 0016.
+  #
+  # **Ubuntu because the check cannot run on macOS at all**, which is the reason
+  # this job exists rather than an economy on top of one. Zig 0.16 links a
+  # `-fsanitize-thread` binary on `aarch64-macos` that segfaults before `main`,
+  # so the machine this project is developed on is the one machine that cannot
+  # run it. The container is the one part of the signal path with no reason to
+  # stay on that target: it imports `std` and nothing else, no Metal, no
+  # Objective-C, no CLAP. That it also bills at a tenth of the macOS rate, as the
+  # `shell` and `typos` jobs note, is a coincidence here rather than the argument.
+  #
+  # In `ci.yml` rather than its own workflow, unlike `typos`. That question is
+  # settled by the `paths-ignore` lists at the top of this file, which cover
+  # `*.md`, `docs/**`, `LICENSE` and the agent config files. None of those can
+  # hide a change to `src/dsp/ring.zig`, `src/ring_race.zig` or `build.zig`, so
+  # this check cannot skip the change that governs it, which is exactly what a
+  # spell checker added here would have done.
+  #
+  # No pinned download and no cached tool, unlike the two Ubuntu jobs below and
+  # the validator: the sanitizer ships inside the Zig toolchain, so
+  # `build.zig.zon` is already the pin. Zig builds the runtime from the
+  # compiler-rt sources it carries on a cold cache, which is the one variable
+  # part of this job and the reason for the ceiling below.
+  #
+  # 88s max over 8 runs, which is the cold case: `mlugg/setup-zig` caches the Zig
+  # cache, so the sanitizer runtime is built from its bundled compiler-rt sources
+  # once and restored afterwards, and the warm runs land between 31s and 73s.
+  # Measured on this pull request's own runs rather than borrowed, per #17.
+  ring-race:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version-file: build.zig.zon
+
+      # The step judges two arms and one of them must be flagged, so a green
+      # result here means the sanitizer was demonstrably running. See the
+      # assertion order in `scripts/ring-race-check`'s header.
+      - name: Race-check the history buffer
+        run: zig build ring-race
 
   # The reusable workflow's `format` job runs `zig fmt --check` and nothing
   # else, so no shell tooling ran anywhere in this repository. That left the
@@ -337,12 +396,13 @@ jobs:
   # from cmake/entry.cpp here and src/main.zig there, so a defect in that seam or a
   # regression arriving with a clap-wrapper pin bump is invisible above.
   #
-  # `--target fosforo_all` rather than naming both targets. It widens automatically
-  # if FOSFORO_FORMATS grows, which is wanted: a new format should reach CI by
-  # default, not by remembering to edit a target list here. Naming fosforo_auv2 alone
-  # does *not* build the CLAP, because setting AUV2_MANUFACTURER_CODE sends
-  # make_clapfirst_plugins down its explicit-configuration branch, which never calls
-  # add_dependencies() between the two.
+  # Through `scripts/build-audio-unit` rather than the two cmake invocations it
+  # wraps, and that is the point of running it here: a build script only a developer
+  # runs is one CI cannot vouch for. It owns the choice of `--target fosforo_all`
+  # over naming either target, which widens automatically if FOSFORO_FORMATS grows
+  # and which is not interchangeable with fosforo_auv2, and it owns the
+  # configure-only-when-absent rule that this job exercises from cold on every run.
+  # Its header carries the reasoning; restating it here is how the two would drift.
   #
   # The AUv2 component is the only artifact carrying a clap-wrapper-generated
   # Info.plist, and two things about it are wrong out of the box: it claims sandbox
@@ -373,9 +433,7 @@ jobs:
           version-file: build.zig.zon
 
       - name: Build the wrapper artifacts
-        run: |
-          cmake -B build cmake/
-          cmake --build build --target fosforo_all
+        run: ./scripts/build-audio-unit
 
       - name: Assert the component claims no sandbox resources
         run: |

@@ -232,7 +232,7 @@ Two tests deliberately not written. Asserting `primitive_type_line_strip != prim
 
 ## Documentation
 
-**A new ADR 0016, on the principle and not the constants.** The vertical axis is fixed and absolute, ±1.0 is the reference, the display never rescales itself to the signal, and over-scale is shown as a rail rather than hidden or clipped away. Auto-gain is the single most common thing anyone proposes for a scope, and an ADR is the artifact that says do not relitigate this in review, supersede it. Its Consequences name what it forbids (auto-gain, peak normalization, per-window rescaling, soft compression above full scale) and what it defers (a user gain parameter in phase 4, a graticule later), both of which move the reference without touching the principle that the reference is stated. It deliberately does not pin 0.9 and 0.98, so those can move without superseding it. Add it to `docs/adr/README.md` and to the non-negotiables list in `AGENTS.md`.
+**A new ADR 0017, on the principle and not the constants.** The vertical axis is fixed and absolute, ±1.0 is the reference, the display never rescales itself to the signal, and over-scale is shown as a rail rather than hidden or clipped away. Auto-gain is the single most common thing anyone proposes for a scope, and an ADR is the artifact that says do not relitigate this in review, supersede it. Its Consequences name what it forbids (auto-gain, peak normalization, per-window rescaling, soft compression above full scale) and what it defers (a user gain parameter in phase 4, a graticule later), both of which move the reference without touching the principle that the reference is stated. It deliberately does not pin 0.9 and 0.98, so those can move without superseding it. Add it to `docs/adr/README.md` and to the non-negotiables list in `AGENTS.md`.
 
 **An amendment to ADR 0013**, following its own `## Amended by issue #5` precedent: `## Amended by issue #38: what the harness can assert about the samples`. Three things. The readback decision and the sharpened criterion above. What the harness now asserts, with the planted defects that verified each, in the table shape the #5 amendment already uses, including the plant that passes. And the `torn` finding, stated against the ADR's own "an absence has to be told apart from an instrument that did not run". While there, correct two stale lists in place and say inside the new section that they were corrected, because a silent edit to an ADR looks like what that directory's rules forbid: the `Outcome` bullet omits `no_frame_slot`, and the seam-operation list omits `upload` and `liveWindowBuffers`.
 
@@ -358,7 +358,7 @@ Sines at 0.8 amplitude, counted by peaks across the 20 ms window, came back exac
    | 1.089 | +0.74 | 10.8 / 1069.2           | 0.1 px             | Railing begins, and is **invisible**    |
    | 2.000 | +6.02 | 10.8 / 1069.2           | 443 px             | **Same row as 1.089**, now plainly flat |
 
-   **The check is that the peak climbs to 1.089 and then stops.** 1.089 and 2.000 must be pixel-identical in height, which is the whole of what ADR 0016 means by refusing to say how far over the signal is.
+   **The check is that the peak climbs to 1.089 and then stops.** 1.089 and 2.000 must be pixel-identical in height, which is the whole of what ADR 0017 means by refusing to say how far over the signal is.
 
    **Do not look for a plateau at 1.089.** It is where clamping *begins*, so it removes a tenth of a pixel of travel, and anyone hunting a flat top there will report a defect that is not one. A plateau becomes 1 px deep at 1.091 and 5 px at 1.100; the sine at 2.000 loses 443 px of travel and is unmistakable.
 
@@ -395,5 +395,5 @@ Two coercions that may need a one-line adjustment, neither of them design questi
 2. `feat: publish the trace's vertical scale on the renderer seam (#38)`
 3. `feat: draw the sample window as a line strip (#38)`
 4. `test: count uploaded windows and reopen an editor in the harness (#38)`
-5. `docs: record the absolute vertical axis as ADR 0016 (#38)`
+5. `docs: record the absolute vertical axis as ADR 0017 (#38)` (landed as 0016 and renumbered when `main` merged, which had taken 0016 for the ring-ordering ADR)
 6. `docs: amend ADR 0013 with what the harness can assert (#38)`

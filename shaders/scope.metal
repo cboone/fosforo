@@ -69,7 +69,7 @@ struct TraceOut {
 // uv runs down from the top-left. Here a positive sample is up, which is what a
 // scope means. Arriving from that function it is the absence that surprises.
 //
-// The clamp is the vertical scale's whole policy in one line, and ADR 0016 is
+// The clamp is the vertical scale's whole policy in one line, and ADR 0017 is
 // why it clamps rather than letting the rasterizer clip: clipping a line strip
 // removes the peaks and keeps the crossings, so an over-scale signal would read
 // as a quieter one with gaps.
