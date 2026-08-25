@@ -32,11 +32,16 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
-    # Borrowed rather than measured, because this job has never run. 3 comes
-    # from `shell`, which is the same Ubuntu checkout plus a pinned download
-    # plus a tree walk and peaks at 8s over 9 runs. Replace it with a real
-    # figure and sample size once this pull request's runs supply one, the way
-    # every other ceiling here was set (#17).
+    # 14s max over all 27 runs since this workflow landed, measured as run wall
+    # time and so slightly generous: it includes the queueing and job setup a
+    # job-level figure excludes. That replaces the borrowed figure this comment
+    # used to carry (#17).
+    #
+    # 3 stays rather than dropping to 4x that, on `shell`'s precedent and for
+    # `shell`'s reason. Both are the same Ubuntu checkout plus a pinned download
+    # plus a tree walk, both land in single-digit seconds, and at that scale 4x
+    # would put the ceiling inside the noise of one slow release download. 3 is
+    # the floor these two jobs share, not an unmeasured guess.
     timeout-minutes: 3
     env:
       # Pinned for the reason the shell tools are, and for one more: a
