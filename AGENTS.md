@@ -6,6 +6,12 @@ A Mac-first GPU-rendered phosphor oscilloscope and signal-analysis plugin, autho
 
 The display name is **Fósforo**; the repository, binary, and identifiers stay ASCII `fosforo`.
 
+## Current state
+
+Phase 2 of [the build plan](docs/plans/todo/2026-07-25-repo-foundation-and-phased-build-plan.md), three steps of four. The plugin loads in REAPER and Logic, passes stereo audio through, saves state, taps one channel into `src/dsp/ring.zig`, and reads a trailing 20 ms window on the render thread which `Renderer.frame` copies into a per-frame `MTLBuffer` and binds.
+
+**Nothing draws that buffer.** `shaders/scope.metal` declares exactly `fullscreen_vertex` and `clear_fragment`, and the file says "Placeholder shaders" on its first line; `Renderer.frame` draws a fullscreen triangle. So the editor is a uniform dim rectangle, the signal path is complete except for its last step, and any change that expects a trace to exist is working against a file that has none. That step is [#38](https://github.com/cboone/fosforo/issues/38); everything phosphor is phase 3 and unstarted.
+
 ## Non-negotiables
 
 These are settled decisions recorded in [`docs/adr/`](docs/adr/). Do not relitigate them in code review; supersede them with a new ADR instead.
@@ -28,6 +34,7 @@ build.zig.zon               pins Zig 0.16.0, CLAP 1.2.10, zig-objc by content ha
 cmake/                      clap-wrapper integration, used only for the AUv2 build
   CMakeLists.txt
   entry.cpp                 the only C++ in the project; builds the clap_entry symbol
+  entry.h                   declares the three extern "C" functions entry.cpp calls
   narrow-au-resource-usage  drops clap-wrapper's default AU sandbox claims
   set-au-display-name       writes the display name and description into the AU
 macos/Info.plist            the .clap bundle's plist
@@ -48,6 +55,7 @@ src/
   smoke.zig                 the out-of-band GUI smoke harness, which plays the host
   ring_race.zig             the two-thread race harness, the only check that needs a Linux host
   clap/c.zig                translated CLAP ABI plus comptime layout assertions
+  clap/clap_all.h           the header set build.zig runs through `zig cc -E`
   clap/plugin.zig           factory, descriptor, lifecycle, audio ports, process
   clap/gui.zig              the editor's lifecycle, the resize mailbox, the tick
   clap/state.zig            the versioned save/load format and its stream loops
@@ -71,6 +79,7 @@ docs/
 ```bash
 zig build                  # produces zig-out/Fosforo.clap, and nothing else
 zig build test             # unit tests
+zig build impl             # libfosforo_impl.a alone, which is all CMake wants from Zig
 zig build audio-unit       # produces build/assets/Fosforo.component, through CMake; slow, see below
 zig build plugins          # both bundles, still in the worktree
 zig build install-clap     # build the CLAP, install it, print the hash of what landed
@@ -125,6 +134,8 @@ xcrun notarytool store-credentials "fosforo-notary" \
 
 An App Store Connect API key rather than an app-specific password, because it is scoped, independently revocable, and not the Apple ID password. The `.p8` downloads once and never again, so the copy on disk is the only copy; `.gitignore` covers `*.p8` for that reason.
 
+**The certificates on hand expire 2027-02-01 and replacing them is outstanding** ([#30](https://github.com/cboone/fosforo/issues/30)). They were issued through Xcode under the G1 intermediate rather than G2, which caps both leaves at their issuer's expiry; the gotcha below has the full diagnosis and the check that surfaces it. Nothing already signed is at risk, because a secure timestamp outlives the certificate — what stops is signing anything new, and on current sequencing that happens before v0.1.0 is cut. Re-issue from the developer portal rather than Xcode, and do not revoke the superseded pair.
+
 ## Gotchas
 
 - **`xcrun` caches tool lookups.** If `xcrun metal` reports the Metal toolchain missing right after installing it, run `xcrun --kill-cache`.
@@ -155,7 +166,7 @@ An App Store Connect API key rather than an app-specific password, because it is
   **The Audio Unit is the half that goes stale, and the way it does so is by nothing happening.** `install-plugins` builds it now, so the ordinary path is covered, but `install-clap` deliberately does not, and there is no copy to compare when nothing was built. A component installed by some other branch then stays where it is, and a `shasum` of it against `build/assets/` is a comparison against a file that does not exist. That is why `scripts/install-plugins` reports an installed component it cannot account for, with its hash *and* its modification date: a component from a fortnight ago next to a CLAP from a minute ago is the whole tell, and it is what was missed once already (#43). It is a report rather than a refusal, because the CLAP-only loop is the common one.
 - **A minimum editor size binds the view, and no host is obliged to bind its window to it.** `clap_gui_resize_hints_t` carries resizability and an aspect ratio and no bounds at all, so `adjust_size` and `clap_host_gui.request_resize` are the only two mechanisms, and both are requests. REAPER 7.78 implements `request_resize`, returns true, and keeps the plugin's view at the minimum; its own FX window still drags smaller, clipping the view inside it. **That is REAPER's behaviour rather than a defect here, established with a positive control:** a third-party plugin with a fixed size in Logic is also freely resizable in REAPER, so REAPER does not constrain its window to any plugin's declared size. `Editor.pushBack` is still worth its lines, because without it REAPER leaves the `NSView` a few points under while the drawable sits at the minimum, and the two disagree about the surface being rendered into. Whether another host binds its window is untested; only REAPER and Logic are available here.
 - **A host can send a negative window dimension, and CLAP types them `u32`.** Dragging an editor's bottom edge up past its top makes REAPER send heights of 4294967295 and 4294967274, which are -1 and -22 computed as signed `CGFloat`. `clampAxis` in `src/clap/gui.zig` collapses anything above `i32`'s range to the minimum rather than the maximum, because no display is two billion points across and a drag that ran past zero is what actually happened. Left unguarded this reached Metal: the mailbox saturated the value to 65535 and asked for a 960x131070 drawable, eighty times the texture limit, from a thread with no way to refuse.
-- **The phase 1 render is indistinguishable from a black window by eye, so do not use your eyes.** `clear_fragment` writes `(0.02, 0.02, 0.03)` into a `BGRA8Unorm` drawable, which is byte `RGB(5, 5, 8)`: correct for a phosphor scope's background, and identical to failure at a glance. Two checks do work. Launch the host from a terminal and read the once-a-second `rendering at N Hz` line that debug builds emit, which is the only positive statement that frames are being presented. Or screenshot the editor and sample a pixel: the giveaway is the blue channel sitting two or three above red and green, mirroring the shader's `0.03` against `0.02`, which neither an unrendered layer nor a host's own background reproduces. `zig build smoke-appkit` asserts the same thing automatically through `Editor.framesPresented`, which exists because this deliverable cannot be seen (ADR 0013).
+- **The phase 1 render is indistinguishable from a black window by eye, so do not use your eyes.** `clear_fragment` writes `(0.02, 0.02, 0.03)` into a `BGRA8Unorm` drawable, which is byte `RGB(5, 5, 8)`: correct for a phosphor scope's background, and identical to failure at a glance. Two checks do work. Launch the host from a terminal and read the once-a-second `rendering at N Hz` line that debug builds emit, which is the only positive statement that frames are being presented. Or screenshot the editor and sample a pixel: the giveaway is the blue channel sitting two or three above red and green, mirroring the shader's `0.03` against `0.02`, which neither an unrendered layer nor a host's own background reproduces. `zig build smoke-appkit` asserts the same thing automatically through `Editor.framesPresented`, which exists because this deliverable cannot be seen (ADR 0013). [#45](https://github.com/cboone/fosforo/issues/45) proposed changing the colour so that looking would prove something, and was closed as subsumed by [#38](https://github.com/cboone/fosforo/issues/38): the trace is what makes the render visible, so the background does not have to be. Until #38 lands this bullet stands as written.
 - **Logic cannot be launched from a terminal to read the plugin's diagnostics, the way REAPER can.** Running `Logic Pro.app/Contents/MacOS/Logic Pro` directly starts it outside the launch services path it expects and most plugins then fail to register, so the run is not the one worth measuring. There is no equivalent of REAPER's terminal-launch trick, and the debug `stderr` mirror in `src/clap/log.zig` is therefore unreadable in Logic. Verify the Audio Unit by the pixel sample described above, or by `zig build smoke-appkit`, and treat the CLAP in REAPER as the place diagnostics are read.
 - **In the Audio Unit an editor is destroyed rather than hidden.** clap-wrapper's AUv2 view calls `_destroyWindow` from `viewDidMoveToWindow` and from `dealloc`, and never calls `gui->hide` at all, just as it never calls `gui->show`. So `Editor.hidden` is only ever exercised by a CLAP host: in Logic the render loop starts at `set_parent` and stops at `gui->destroy`, which means an open editor window is a running display link and a closed one has no editor behind it at all. That is what makes "N open editors" a sound way to count concurrent render loops there.
 - **`auval` cannot see this component, and neither can `AudioComponentFindNext`.** On Darwin 25.5.0 both enumerate only Apple's built-in components, from an ordinary terminal outside any sandbox, while Logic sees every installed Audio Unit including this one. A null result from either is not evidence that the component failed to register. Use a host.

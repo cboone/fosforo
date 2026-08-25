@@ -128,11 +128,23 @@ jobs:
   # This is the one check in the project that can go red for reasons unrelated to
   # the code, which is the cost of being the only one that runs anything.
   #
-  # The ceiling is borrowed, not measured: this job has never run, so 8 comes from
-  # `shaders` and `clap-validator`, which do the same checkout, Zig install and
-  # build on the same runner and peak at 90s and 120s. Replace it with a real
-  # figure and sample size once this PR's runs supply one, the way every other
-  # ceiling here was set (#17).
+  # 38s max over 3 runs sampled since this job landed (34s, 38s, 38s), which is
+  # a real figure replacing the borrowed one this comment used to carry (#17).
+  #
+  # **The ceiling deliberately stays at 8 rather than dropping to 4x that.** Every
+  # other ceiling here is 4x an observed run because its worst case is
+  # statistical; this job's is structural. The plausible failure is the AppKit
+  # half wedging on a window server, and the step below already allows it two
+  # minutes to do so, so 4x38s would cut the job off below a step timeout it
+  # grants on purpose. 8 is roughly 2.7x the worst case the step budgets add up
+  # to, which is the same margin measured the other way round.
+  #
+  # The experiment this job was added to run has an answer: the AppKit half
+  # succeeded on all 3 sampled runs, so a hosted macOS runner does grant an
+  # unbundled process a window-server connection. `continue-on-error` is kept
+  # anyway for now, because promoting a check to required is a decision about
+  # what may block a merge rather than a fact about the runner, and nothing has
+  # yet observed this job across an image refresh.
   smoke:
     runs-on: macos-latest
     timeout-minutes: 8
