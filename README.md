@@ -47,14 +47,16 @@ zig build --release=fast
 Install the CLAP for any CLAP-capable host (REAPER, Bitwig). This builds it, copies it into `~/Library/Audio/Plug-Ins/CLAP`, and prints the hash of what landed, so the build a host loads can be told apart from the build you just made:
 
 ```bash
-zig build install-clap
+zig build --release=fast install-clap
 ```
 
 Logic Pro loads only Audio Units, so it additionally needs the AUv2 build produced through [clap-wrapper](https://github.com/free-audio/clap-wrapper). This one command builds and installs both bundles, and is much slower, because CMake fetches the AudioUnit SDK:
 
 ```bash
-zig build install-plugins
+zig build --release=fast install-plugins
 ```
+
+`--release=fast` has to be repeated on each of those, because every `install-*` step builds what it installs and a plain `zig build` is a Debug build. Installing Debug is a reasonable thing to want while there is nothing to look at yet, since the render meter described below is compiled out of a release build, but it should be something you chose rather than something the flag's absence did quietly.
 
 ## Usage
 

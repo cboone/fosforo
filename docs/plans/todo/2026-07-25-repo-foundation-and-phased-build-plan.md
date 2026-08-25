@@ -132,8 +132,13 @@ src/
 ```
 
 The extensions are flat files rather than a `clap/ext/` directory, and there are
-three of them rather than five: `audio-ports`, `state` and `gui`. `params` is
-Phase 4 step 5, which is what gives it something to declare.
+three of them rather than five: `audio-ports`, `state` and `gui`. Those are the
+three `getExtension` answers to, which is what "extension" counts as here.
+`log.zig` is not a fourth, and the direction is the reason: `clap.log` is a
+*host* extension, fetched from `clap_host.get_extension` and consumed, so that
+file is a caller of someone else's interface rather than an implementer of one
+of ours. `params` is Phase 4 step 5, which is what gives it something to
+declare.
 
 **Provisional, and named here only so the eventual home is not re-argued.** Each
 arrives with the phase that has a caller for it, on the same rule
