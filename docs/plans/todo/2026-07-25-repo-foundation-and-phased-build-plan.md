@@ -37,7 +37,7 @@ The full chain is proven working: `translate-c` over normalized CLAP 1.2.10 head
 | Tool             | Status                                                                            |
 |------------------|-----------------------------------------------------------------------------------|
 | Zig 0.16.0       | Installed. Current stable, released 2026-04-13                                    |
-| CMake 4.4.0      | Installed. The below-3.5 policy risk did not materialize                          |
+| CMake 4.4.x      | Installed. The below-3.5 policy risk did not materialize                          |
 | Metal toolchain  | Installed. Needed `xcrun --kill-cache` before `xcrun` would resolve it            |
 | REAPER           | Installed. Native CLAP host, so the dev loop needs neither CMake nor a standalone |
 | Logic Pro        | Installed. AUv2 only, which is what makes clap-wrapper necessary at all           |
@@ -62,6 +62,17 @@ Each becomes an ADR under `docs/adr/`.
 | 0011 | AUv2 first. AUv3, VST3, AAX, and iPad remain later toggles with no bearing on output quality                                 |
 | 0012 | First deliverable is the phosphor oscilloscope only. Alignment and Family B lenses are deferred                              |
 
+Four more were decided during execution rather than in this pass, each because a
+phase reached a question this plan had not asked. They are listed here so the set
+is complete in one place; [`docs/adr/README.md`](../../adr/README.md) is the index.
+
+| ADR  | Decision                                                                                          | Decided in |
+|------|---------------------------------------------------------------------------------------------------|------------|
+| 0013 | The GUI smoke harness is an executable behind its own build steps, never part of `zig build test` | Phase 1    |
+| 0014 | Distribute as one signed, notarized, stapled `.pkg` placing both bundles                          | Phase 1    |
+| 0015 | Adopt `std.Io` through the single `init_single_threaded` instance in `src/platform/io.zig`        | Phase 2    |
+| 0016 | Verify the ring's release/acquire pairing with Thread Sanitizer, plus a source canary             | Phase 2    |
+
 ## Build architecture
 
 The key structural insight follows from `make_clapfirst_plugins` wanting a static library: build the core **once** as a static archive and give it **two** consumers. CMake then stays off the critical development path entirely.
@@ -69,40 +80,71 @@ The key structural insight follows from `make_clapfirst_plugins` wanting a stati
 ```text
 build.zig
 ├─ build.zig.zon          pinned: Zig 0.16.0, CLAP 1.2.10, zig-objc
-├─ tools/normalize-clap-headers.zig   rewrites #include "../x.h" -> <clap/x.h>
-├─ translate-c(normalized clap.h)     -> module "clap.c"
+├─ zig cc -E over src/clap/clap_all.h -> translate-c -> module "clap.c"
 ├─ src/                               core implementation
 ├─ libfosforo_impl.a                  exports fosforo_clap_{init,deinit,get_factory}
-│   ├─ consumer 1: zig build clap     -> Fosforo.clap        (fast loop, REAPER, no CMake)
+│   ├─ consumer 1: zig build          -> Fosforo.clap        (fast loop, REAPER, no CMake)
 │   └─ consumer 2: cmake/             -> clap-wrapper
+│                                        ├─ Fosforo.clap       (the same plugin, wrapper entry)
 │                                        ├─ Fosforo.component  (AUv2, for Logic)
-│                                        └─ Fosforo.app        (standalone)
+│                                        └─ Fosforo.app        (standalone, provisional)
 ```
+
+Two lines changed after this was written and both are worth reading as they now
+stand. **`tools/normalize-clap-headers.zig` was never built**, for the reason
+Phase 0 step 0.5 records below: preprocessing with `zig cc -E` sidesteps the
+`#pragma once` bug with no tool to maintain. And **`Fosforo.app` is provisional
+rather than pending**: `cmake/CMakeLists.txt` sets `FOSFORO_FORMATS` to `CLAP`
+and `AUV2` only, and ADR 0011 files the standalone with AUv3, VST3 and AAX as a
+later clap-wrapper toggle. CMake builds a second `.clap` beside the component,
+which was not anticipated here and which CI validates alongside the Zig-built
+one.
 
 Because REAPER loads a raw `.clap`, `zig build` alone drives the entire day-to-day loop. CMake is invoked only when the Audio Unit for Logic is needed, which keeps a C++ build system off the path where iteration speed matters.
 
 ### Source layout
 
+What exists today, which is the layout to build on:
+
 ```text
 src/
-  main.zig              exported entry points
+  main.zig              the host-facing boundary and exported entry points
+  smoke.zig             the out-of-band GUI smoke harness (ADR 0013)
+  ring_race.zig         the two-thread race harness (ADR 0016)
   clap/
-    c.zig               re-export of the translate-c module
-    plugin.zig          descriptor, factory, lifecycle
-    ext/                audio_ports, gui, params, state, log
+    c.zig               translated CLAP ABI plus comptime layout assertions
+    clap_all.h          the header set fed through `zig cc -E`
+    plugin.zig          factory, descriptor, lifecycle, audio ports, process
+    gui.zig             the editor's lifecycle, the resize mailbox, the tick
+    state.zig           the versioned save/load format
+    log.zig             diagnostics routed through the host's clap.log
   dsp/
     ring.zig            lock-free history buffer
-    decimate.zig        min/max decimation (@Vector)
-    resample.zig        polyphase bandlimited interpolation
-    trigger.zig         threshold, transient, pitch, transport
   gpu/
-    iface.zig           THE SEAM: create float texture, fullscreen pass,
-                        instanced additive quads, present. No Metal types above this
-    metal/              device, renderer, shaders.metal (@embedFile)
+    iface.zig           THE SEAM: size, upload, resize, frame, present.
+                        No Metal types above this
+    metal/renderer.zig  device, pipeline, layer, one frame
   platform/
-    objc.zig            message-send wrappers
-    view.zig            NSView + CAMetalLayer
-    displaylink.zig     CVDisplayLink
+    io.zig              the one std.Io instance (ADR 0015)
+    objc.zig            Core Graphics types and the thread assertions
+    view.zig            the NSView the host embeds
+    displaylink.zig     CVDisplayLink and its monotonic clock
+```
+
+The extensions are flat files rather than a `clap/ext/` directory, and there are
+three of them rather than five: `audio-ports`, `state` and `gui`. `params` is
+Phase 4 step 5, which is what gives it something to declare.
+
+**Provisional, and named here only so the eventual home is not re-argued.** Each
+arrives with the phase that has a caller for it, on the same rule
+[`src/gpu/iface.zig`](../../../src/gpu/iface.zig) states for the seam's own
+operations:
+
+```text
+src/dsp/
+  decimate.zig          min/max decimation (@Vector)          — phase 3 step 4
+  resample.zig          polyphase bandlimited interpolation   — phase 3 step 6
+  trigger.zig           threshold, transient, pitch, transport — phase 4
 ```
 
 ## Phase 0: repository foundation (complete)
@@ -165,7 +207,15 @@ Issues are filed **just in time**, for whichever phase is next, rather than up f
 
 Phase 2's issues were filed on that rule, when phase 1 closed. Phase 3's are not filed and should not be until phase 2 closes.
 
-## Phase 2: signal path (next)
+**Two open issues sit on no milestone, and that is deliberate.**
+[#34](https://github.com/cboone/fosforo/issues/34) is verification debt from
+phase 1 and [#30](https://github.com/cboone/fosforo/issues/30) is certificate
+maintenance for a release that is several phases out. Neither is a step of any
+phase, so putting either on a milestone would misreport that phase's remaining
+work. Both are carried in the risks table below instead, which is where a reader
+who does not open the tracker will find them.
+
+## Phase 2: signal path (in progress)
 
 **Goal:** a visible trace that follows audio.
 
@@ -176,12 +226,25 @@ Phase 2's issues were filed on that rule, when phase 1 closed. Phase 3's are not
 
 Filed against the [Phase 2 milestone](https://github.com/cboone/fosforo/milestone/2), one issue per step, sequenced so each depends only on the one above it:
 
-| Issue                                              | Step | Work                                                                                                                                                                                                                                                                                                                                                                                                                  |
-|----------------------------------------------------|------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| [#35](https://github.com/cboone/fosforo/issues/35) | 1    | `src/dsp/ring.zig`, the buffer alone with no caller. The only part of the phase needing no GPU, no window, and no host, which is why it is separate                                                                                                                                                                                                                                                                   |
-| [#36](https://github.com/cboone/fosforo/issues/36) | 2    | `process` writes the tapped **left output** channel into the ring. Sized in `activate` from the sample rate and freed in `deactivate` as this landed; #37 moved both to `create` and `destroy`, for the reason in its row below                                                                                                                                                                                       |
-| [#37](https://github.com/cboone/fosforo/issues/37) | 3    | The trailing-window read in `Editor.tick`, a per-frame buffer ring behind the seam, and `upload` on `gpu/iface.zig`. **Resolved the `deactivate` race by giving the ring the instance's lifetime**, since a host may deactivate with the editor open and no gate covers that path; capacity is a fixed constant as a consequence. Raw samples cross the seam rather than a vertex format, which phase 3 would replace |
-| [#38](https://github.com/cboone/fosforo/issues/38) | 4    | The trace itself: a line strip in `shaders/scope.metal`, drawn over the existing clear                                                                                                                                                                                                                                                                                                                                |
+| Issue                                              | Step | Work                                                                                                                                                                                                                                                                                                                                                                                                                  | Status |
+|----------------------------------------------------|------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------|
+| [#35](https://github.com/cboone/fosforo/issues/35) | 1    | `src/dsp/ring.zig`, the buffer alone with no caller. The only part of the phase needing no GPU, no window, and no host, which is why it is separate                                                                                                                                                                                                                                                                   | Done   |
+| [#36](https://github.com/cboone/fosforo/issues/36) | 2    | `process` writes the tapped **left output** channel into the ring. Sized in `activate` from the sample rate and freed in `deactivate` as this landed; #37 moved both to `create` and `destroy`, for the reason in its row below                                                                                                                                                                                       | Done   |
+| [#37](https://github.com/cboone/fosforo/issues/37) | 3    | The trailing-window read in `Editor.tick`, a per-frame buffer ring behind the seam, and `upload` on `gpu/iface.zig`. **Resolved the `deactivate` race by giving the ring the instance's lifetime**, since a host may deactivate with the editor open and no gate covers that path; capacity is a fixed constant as a consequence. Raw samples cross the seam rather than a vertex format, which phase 3 would replace | Done   |
+| [#38](https://github.com/cboone/fosforo/issues/38) | 4    | The trace itself: a line strip in `shaders/scope.metal`, drawn over the existing clear                                                                                                                                                                                                                                                                                                                                | Open   |
+
+**Steps 1 through 3 are the whole path except the drawing.** A sample tapped on
+the audio thread now reaches a per-frame `MTLBuffer` bound as a vertex argument,
+and nothing reads it: `shaders/scope.metal` still declares exactly
+`fullscreen_vertex` and `clear_fragment`, and `Renderer.frame` still draws a
+fullscreen triangle. That is why three of four issues being done does not close
+the phase, and why nothing in a host looks different yet.
+
+[#45](https://github.com/cboone/fosforo/issues/45) was raised against that
+background and closed as subsumed by #38. It observed that the clear colour
+lands in the drawable as `RGB(5, 5, 8)` and is therefore indistinguishable from
+a black window by eye, which makes every check of the editor an instrumented
+one. The trace is what answers that, so the colour did not have to.
 
 **Two mechanisms this phase needs already exist,** built ahead of their caller in phase 1, and the issues say so explicitly to stop them being rebuilt:
 
@@ -190,10 +253,10 @@ Filed against the [Phase 2 milestone](https://github.com/cboone/fosforo/mileston
 
 **Two open chores are folded into this phase** rather than left to drift, both moved onto the milestone:
 
-| Issue                                              | Work                                                                   | Why here                                                                                                                                                                                                                                                                                                                                                                   |
-|----------------------------------------------------|------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| [#22](https://github.com/cboone/fosforo/issues/22) | Make dev builds identifiable and stop worktrees overwriting each other | This is the first phase whose results can only be judged in a running host, which is exactly where an ambiguous installed build does damage. It has already voided two verification runs, and nearly voided a third: verifying #37 in Logic found a two-week-old Audio Unit installed from another branch, which [#43](https://github.com/cboone/fosforo/issues/43) covers |
-| [#29](https://github.com/cboone/fosforo/issues/29) | Decide how to handle the primitives Zig 0.16 moved behind `std.Io`     | The issue predicts a fourth local workaround will be added by whoever next needs a timer or a lock. Step 3's `deactivate` race is that moment, so the convention should be settled just before it rather than just after                                                                                                                                                   |
+| Issue                                              | Work                                                                   | Status | Why here                                                                                                                                                                                                                                                                                                                                                                   |
+|----------------------------------------------------|------------------------------------------------------------------------|--------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| [#22](https://github.com/cboone/fosforo/issues/22) | Make dev builds identifiable and stop worktrees overwriting each other | Open   | This is the first phase whose results can only be judged in a running host, which is exactly where an ambiguous installed build does damage. It has already voided two verification runs, and nearly voided a third: verifying #37 in Logic found a two-week-old Audio Unit installed from another branch, which [#43](https://github.com/cboone/fosforo/issues/43) covers |
+| [#29](https://github.com/cboone/fosforo/issues/29) | Decide how to handle the primitives Zig 0.16 moved behind `std.Io`     | Done   | The issue predicts a fourth local workaround will be added by whoever next needs a timer or a lock. Step 3's `deactivate` race is that moment, so the convention should be settled just before it rather than just after                                                                                                                                                   |
 
 **Exit criteria:** the trace tracks audio, and `process` performs no allocation, lock, or syscall.
 
@@ -233,7 +296,7 @@ Filed against the [Phase 2 milestone](https://github.com/cboone/fosforo/mileston
 ## Phase 6: ship v0.1.0
 
 1. Preset and state round-tripping; GUI polish.
-2. Code signing and notarization, plus a documented Gatekeeper path for users building from source.
+2. Code signing and notarization, plus a documented Gatekeeper path for users building from source. **Landed early, in phase 1** ([#20](https://github.com/cboone/fosforo/issues/20), [#24](https://github.com/cboone/fosforo/issues/24), ADR 0014), on the same reasoning that moved the resize mailbox: an unsigned bundle failed `codesign --verify` from the moment there was a bundle, and the three release scripts were cheaper to write beside the signing than to retrofit around a finished plugin. What remains for this phase is the Gatekeeper path itself, and re-issuing the certificates that [#30](https://github.com/cboone/fosforo/issues/30) covers.
 3. Release automation via the `release` skill, GitHub Releases, screenshots, and documentation.
 
 ## Explicitly deferred
@@ -247,28 +310,37 @@ Recorded so these read as deliberate omissions rather than oversights:
 
 ## Risks
 
-| Risk                                                                    | Status and mitigation                                                                                                      |
-|-------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------|
-| Linking a Zig static archive from CMake was unproven                    | **Retired.** Both AUv2 and CLAP build through clap-wrapper and pass `clap-validator`                                       |
-| CMake 4.4 rejects `cmake_minimum_required` below 3.5                    | **Did not materialize.** Escape hatch if a future dependency trips it: `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`                |
-| Zig `translate-c` `#pragma once` bug                                    | **Worked around** by preprocessing with `zig cc -E`. Worth reporting upstream, though `ziglang/zig` is not your repository |
-| Toolchain-generated names such as `unnamed_0` shift across Zig versions | Comptime `@sizeOf` and `@offsetOf` assertions on every struct crossing the ABI. These already caught one wrong field count |
-| Zig 0.16 is recent and most third-party audio code predates it          | Minimal dependency surface: only CLAP headers and `zig-objc`, both verified on 0.16                                        |
-| clap-wrapper is pinned to an untagged commit                            | `make_clapfirst_plugins` postdates v0.9.1. Move to a tag once one ships containing it                                      |
-| Three deployment targets must stay in step                              | `build.zig`, `cmake/CMakeLists.txt`, and `macos/Info.plist` all say macOS 11.0. A mismatch shows as a linker warning       |
+| Risk                                                                    | Status and mitigation                                                                                                                                                                                                                                                                                                                                                     |
+|-------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Linking a Zig static archive from CMake was unproven                    | **Retired.** Both AUv2 and CLAP build through clap-wrapper and pass `clap-validator`                                                                                                                                                                                                                                                                                      |
+| CMake 4.4 rejects `cmake_minimum_required` below 3.5                    | **Did not materialize.** Escape hatch if a future dependency trips it: `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`                                                                                                                                                                                                                                                               |
+| Zig `translate-c` `#pragma once` bug                                    | **Worked around** by preprocessing with `zig cc -E`. Worth reporting upstream, though `ziglang/zig` is not your repository                                                                                                                                                                                                                                                |
+| Toolchain-generated names such as `unnamed_0` shift across Zig versions | Comptime `@sizeOf` and `@offsetOf` assertions on every struct crossing the ABI. These already caught one wrong field count                                                                                                                                                                                                                                                |
+| Zig 0.16 is recent and most third-party audio code predates it          | Minimal dependency surface: only CLAP headers and `zig-objc`, both verified on 0.16                                                                                                                                                                                                                                                                                       |
+| clap-wrapper is pinned to an untagged commit                            | `make_clapfirst_plugins` postdates v0.9.1. Move to a tag once one ships containing it                                                                                                                                                                                                                                                                                     |
+| Three deployment targets must stay in step                              | `build.zig`, `cmake/CMakeLists.txt`, and `macos/Info.plist` all say macOS 11.0. A mismatch shows as a linker warning                                                                                                                                                                                                                                                      |
+| `zig-objc` is pinned to a branch tarball, not a tag or commit           | `build.zig.zon` fetches `refs/heads/main` and pins only the content hash, so the hash is the pin and a refetch after an upstream push fails rather than drifting. Move to a tag or commit when upstream cuts one                                                                                                                                                          |
+| The Developer ID certificates expire 2027-02-01                         | **Open**, [#30](https://github.com/cboone/fosforo/issues/30). Xcode issued them under the G1 intermediate rather than G2, capping both leaves at their issuer's expiry. Already-signed artifacts are unaffected, since a secure timestamp outlives the certificate; what stops is signing anything new. Re-issue from the developer portal and do not revoke the old pair |
+| The cross-display path has never executed                               | **Open**, [#34](https://github.com/cboone/fosforo/issues/34). `viewDidChangeBackingProperties` and `DisplayLink.setDisplay` shipped on code reading alone, because the development machine has one display. Manual, and filed so it does not decay into an assumed pass                                                                                                   |
 
 ## Verification
 
-| Layer      | Check                                                                                                                  |
-|------------|------------------------------------------------------------------------------------------------------------------------|
-| Build      | `zig build` produces `Fosforo.clap`; `zig fmt --check` clean                                                           |
-| Bindings   | Comptime `@sizeOf` and `@offsetOf` assertions for every CLAP struct crossing the ABI                                   |
-| Shaders    | `zig build validate-shaders` pipes each shader through `metal -fsyntax-only`                                           |
-| Plugin     | `clap-validator validate` passes for **both** `.clap` bundles, enforced in CI                                          |
-| Audio Unit | **No automated check exists.** `auval` cannot enumerate this component at all, so loading it in Logic is the only test |
-| Hosts      | Loads in REAPER, Logic Pro, and standalone; open, close, resize during playback                                        |
-| Real-time  | Debug-build assertion that `process` performs no allocation                                                            |
-| CI         | Green on `macos-latest`; `clap-validator` clean; gitleaks and TruffleHog clean                                         |
+| Layer       | Check                                                                                                                                                            |
+|-------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Build       | `zig build` produces `Fosforo.clap`; `zig fmt --check` clean                                                                                                     |
+| Bindings    | Comptime `@sizeOf` and `@offsetOf` assertions for every CLAP struct crossing the ABI                                                                             |
+| Shaders     | `zig build validate-shaders` pipes each shader through `metal -fsyntax-only`. Deliberately not in `zig build test` (ADR 0009)                                    |
+| Plugin      | `clap-validator validate` passes for **both** `.clap` bundles, enforced in CI                                                                                    |
+| Audio Unit  | **No automated check exists.** `auval` cannot enumerate this component at all, so loading it in Logic is the only test                                           |
+| GUI         | `zig build smoke-gpu` is required in CI; `smoke-appkit` runs under `continue-on-error` because a hosted runner may grant no window server (ADR 0013)             |
+| Leaks       | `zig build smoke-leaks` cycles the editor 400 times under `leaks --atExit`, plus `gpu.Renderer.liveWindowBuffers`, which counts what `leaks` cannot see          |
+| Concurrency | `zig build ring-race` runs the ring on two threads under Thread Sanitizer, on Linux; a source canary in `src/dsp/ring.zig` fails `zig build test` too (ADR 0016) |
+| Signatures  | `scripts/assert-adhoc-signature` on all three bundles in CI; `scripts/assert-distributable-signature` by hand, since no runner holds a certificate               |
+| Shell       | `shfmt -d` and `shellcheck` over every file `shfmt -f` selects, against the profile in `.editorconfig`                                                           |
+| Spelling    | `typos` over the whole tree, from its own workflow so no `paths-ignore` can exempt the files it exists to check                                                  |
+| Hosts       | Loads in REAPER and Logic Pro; open, close, resize during playback. `clap-host` is the third, manual, and the only one that shows `clap.log`                     |
+| Real-time   | A fixed-buffer allocator threaded through `process`, so no allocation is a fact about the call graph rather than a convention                                    |
+| CI          | Green on `macos-latest` and `ubuntu-latest`; `clap-validator` clean; gitleaks, TruffleHog and `typos` clean                                                      |
 
 ## Items to confirm during execution
 

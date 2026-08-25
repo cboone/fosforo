@@ -4,6 +4,8 @@ Each file records one decision, the context that forced it, and its consequences
 
 Background for all of these lives in [the design brainstorm](../design/scope-plugin-handoff.md); sequencing lives in [the build plan](../plans/todo/2026-07-25-repo-foundation-and-phased-build-plan.md).
 
+0001 through 0012 were locked in the planning pass, before any code; 0013 through 0016 record decisions a phase forced once it was under way. The distinction has no bearing on their standing — every one of them is settled — but it is why the build plan's own table of locked decisions carries the first twelve as its original set.
+
 | ADR                                                  | Decision                                                   | Status   |
 | ---------------------------------------------------- | ---------------------------------------------------------- | -------- |
 | [0001](./0001-mac-first-apple-silicon.md)            | Mac-first, Apple Silicon primary                           | Accepted |
