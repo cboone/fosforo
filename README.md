@@ -60,7 +60,7 @@ zig build install-plugins
 
 Insert it on a track as you would any analyzer: it passes audio through unchanged, so it can sit anywhere in a chain without altering the signal. Open its editor and it renders, resizably, at your display's refresh rate.
 
-There is nothing to read in it yet, for the reason in the status above. Until [#38](https://github.com/cboone/fosforo/issues/38) lands, a working editor and a broken one look alike — the background is `RGB(5, 5, 8)`, which is a phosphor screen's unlit state and also, by eye, black. A debug build prints a once-a-second `rendering at N Hz` line through `clap.log`, which is the check that distinguishes them; launch REAPER from a terminal to read it.
+There is nothing to read in it yet, for the reason in the status above. Until [#38](https://github.com/cboone/fosforo/issues/38) lands, a working editor and a broken one look alike — the background is `RGB(5, 5, 8)`, which is a phosphor screen's unlit state and also, by eye, black. A debug build emits a once-a-second `rendering at N Hz` line, which is the check that distinguishes them. It reaches the host through `clap.log`, and REAPER implements that extension and then discards what it receives, so the copy you can actually read is the one debug builds mirror to `stderr`: launch REAPER from a terminal. A release build compiles out both that mirror and the meter behind it, so nothing reports there.
 
 ## License
 

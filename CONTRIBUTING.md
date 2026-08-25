@@ -78,15 +78,21 @@ run `xcrun --kill-cache`.
 
 ### Checks that need hardware CI cannot assume
 
-Two checks exist that `zig build test` deliberately does not run, and neither is
+Three checks exist that `zig build test` deliberately does not run, and none is
 a pull request checklist item, because the machine you are on may not be able to
-run them. CI runs both.
+run them.
 
 ```bash
 zig build smoke        # runs Metal and AppKit for real; needs a GPU and a window server
 zig build smoke-leaks  # 400 editor cycles under `leaks --atExit`
 zig build ring-race    # the history buffer under Thread Sanitizer; needs a Linux host
 ```
+
+CI runs two of the three. The `smoke` job runs each half as its own step,
+requiring `smoke-gpu` and letting `smoke-appkit` fail without failing the job,
+and the `ring-race` job runs on Linux. `smoke-leaks` runs nowhere but a Mac with
+a window server, so it is the one on this list that nothing else will run for
+you.
 
 `zig build ring-race` refuses on macOS and says where it does run: Zig 0.16 links
 a `-fsanitize-thread` binary on Apple Silicon that segfaults before `main`, so it
