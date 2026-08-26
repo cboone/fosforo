@@ -221,7 +221,7 @@ phase, so putting either on a milestone would misreport that phase's remaining
 work. Both are carried in the risks table below instead, which is where a reader
 who does not open the tracker will find them.
 
-## Phase 2: signal path (in progress)
+## Phase 2: signal path (complete)
 
 **Goal:** a visible trace that follows audio.
 
@@ -237,14 +237,15 @@ Filed against the [Phase 2 milestone](https://github.com/cboone/fosforo/mileston
 | [#35](https://github.com/cboone/fosforo/issues/35) | 1    | `src/dsp/ring.zig`, the buffer alone with no caller. The only part of the phase needing no GPU, no window, and no host, which is why it is separate                                                                                                                                                                                                                                                                   | Done   |
 | [#36](https://github.com/cboone/fosforo/issues/36) | 2    | `process` writes the tapped **left output** channel into the ring. Sized in `activate` from the sample rate and freed in `deactivate` as this landed; #37 moved both to `create` and `destroy`, for the reason in its row below                                                                                                                                                                                       | Done   |
 | [#37](https://github.com/cboone/fosforo/issues/37) | 3    | The trailing-window read in `Editor.tick`, a per-frame buffer ring behind the seam, and `upload` on `gpu/iface.zig`. **Resolved the `deactivate` race by giving the ring the instance's lifetime**, since a host may deactivate with the editor open and no gate covers that path; capacity is a fixed constant as a consequence. Raw samples cross the seam rather than a vertex format, which phase 3 would replace | Done   |
-| [#38](https://github.com/cboone/fosforo/issues/38) | 4    | The trace itself: a line strip in `shaders/scope.metal`, drawn over the existing clear. **Settled the vertical axis as [ADR 0017](../../adr/0017-absolute-vertical-axis.md):** fixed and absolute, with over-scale railed rather than rescaled or clipped away                                                                                                                                                        | Open   |
+| [#38](https://github.com/cboone/fosforo/issues/38) | 4    | The trace itself: a line strip in `shaders/scope.metal`, drawn over the existing clear. **Settled the vertical axis as [ADR 0017](../../adr/0017-absolute-vertical-axis.md):** fixed and absolute, with over-scale railed rather than rescaled or clipped away                                                                                                                                                        | Done   |
 
-**All four steps are written, and the phase is still open.** A sample tapped on
-the audio thread reaches a per-frame `MTLBuffer` bound as a vertex argument, and
-`trace_vertex` now reads it: `shaders/scope.metal` encodes the background and
-the trace over it as two passes in one render pass. What is not closed is the
-exit criterion, which is a statement about a picture, and the reasoning for that
-is under **Exit criteria** below.
+**All four steps are written and the phase is closed.** A sample tapped on the
+audio thread reaches a per-frame `MTLBuffer` bound as a vertex argument, and
+`trace_vertex` reads it: `shaders/scope.metal` encodes the background and the
+trace over it as two passes in one render pass. The exit criterion is a
+statement about a picture rather than about code, so it was closed by a host
+procedure rather than by a build, and what that procedure found is under
+**Exit criteria** below.
 
 [#45](https://github.com/cboone/fosforo/issues/45) was raised while the editor
 was still a uniform dim rectangle, and closed as subsumed by #38. It observed
@@ -274,9 +275,9 @@ zero and a window frozen seconds ago both survive being looked at.
 
 Of the two chores folded onto the milestone, [#29](https://github.com/cboone/fosforo/issues/29) landed as [ADR 0015](../../adr/0015-adopt-std-io-single-instance.md) and [#22](https://github.com/cboone/fosforo/issues/22) is still open. Neither is an exit criterion.
 
-**Phase 3's issues can now be filed.** The just-in-time rule above says they should not exist until this phase closes, and it has.
+**Phase 3's issues are filed**, [#55](https://github.com/cboone/fosforo/issues/55) through [#62](https://github.com/cboone/fosforo/issues/62) on the [Phase 3 milestone](https://github.com/cboone/fosforo/milestone/3). The just-in-time rule above is why they did not exist until now: this phase closing is what permitted them.
 
-## Phase 3: the phosphor renderer
+## Phase 3: the phosphor renderer (next)
 
 **Goal:** the moat. Sequenced so every step is independently visible and yields a better screenshot.
 
