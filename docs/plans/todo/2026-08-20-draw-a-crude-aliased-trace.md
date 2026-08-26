@@ -292,8 +292,8 @@ Everything below passed. The split matters, because only the first two blocks ar
 | The same four under `--release=fast`                 | Clean                                                    |
 | `shfmt`, `shellcheck`, `markdownlint-cli2`, `typos`  | Clean                                                    |
 | The six planted defects                              | As tabulated above, with two corrections recorded below  |
-| REAPER, steps 1, 2, 3 and 5                          | Passed. Step 5's measurements are below                  |
-| REAPER step 4, steps 6 to 8, and Logic               | **Outstanding.** The author's, per the procedure below   |
+| REAPER, steps 1, 2, 3, 5 and 6                       | Passed. The measurements are below                       |
+| REAPER steps 4, 7 and 8, and Logic                   | **Outstanding.** The author's, per the procedure below   |
 
 **Two of the planted defects did not behave as the plan predicted, and both corrections are worth more than the rows they fix.**
 
@@ -321,6 +321,21 @@ A lossy screenshot cannot be measured at all. The first capture arrived as HEIC 
 That shadow is the second trap. Over a dark desktop it is near-black with a blue cast, which is also the background's signature, so an automatic crop keyed on colour alone stretched 119 rows past the real drawable and divided by the wrong height. Keying on the exact `RGB(5, 5, 8)` with the blue lead constrained to the 2-to-4 the shader produces separates them.
 
 One observation left unexplained, because it is 0.3% and did not recur: `level-1.089` lit 1914 of 1920 columns where the other three lit all 1920. The likely cause is the horizontal twin of the rail problem, the first and last vertices sitting at x = ±1 exactly, on the drawable's edge where half a one-pixel line's coverage diamond is off-screen.
+
+### The channel trap, and the half pixel at the centre line
+
+Step 6 was measured the same way, and it is the check that proves the trace is drawing the channel it claims rather than something correlated with it.
+
+| File             | Peak row | Trough row | Read back as | Columns lit    |
+| ---------------- | -------- | ---------- | ------------ | -------------- |
+| `pan-hard-left`  | 297      | 782        | +0.5000      | 1920 of 1920   |
+| `pan-hard-right` | 539      | 539        | +0.0021      | 1920 of 1920   |
+
+Hard left is pixel-identical to `level-0.500`, which is the tone arriving on output channel 0 at full level. Hard right has peak equal to trough equal to a full-width plateau, which is a flat line: channel 0 is silent, as it must be, since the tap is `out.data32[0]`.
+
+**Silence reads `+0.0021` rather than `+0.0000`, and that is one pixel rather than a residual signal.** A flat trace at `y = 0` lands on row 540.0 of a 1080-tall drawable, an exact pixel boundary, so rows 539 and 540 are equally valid and the rasterizer picks one. It picked 539. One pixel at this geometry is 0.00206 in sample units, which is the -53.7 dBFS floor this plan already documents, so the reading is off by the smallest amount the display can represent.
+
+**The half-pixel bias that would centre it is deliberately not applied.** It would be `+1.0/H` in NDC, and three things argue against it: nothing can see half a pixel; `Renderer` stores no size at all, so `resize` would have to begin keeping one purely to get `H` into `TraceUniforms`; and phase 3's beam-as-geometry replaces this rasterization outright and re-answers the question with different machinery. The failure that would change that verdict is the line *flickering* between rows 539 and 540 during playback, which is the tie-break going unstable and would read as shimmer on silence. That was watched for and did not occur.
 
 ### The mapping was measured offscreen rather than reasoned about
 
