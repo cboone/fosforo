@@ -330,7 +330,11 @@ Step 7 passed in both. REAPER's `hide` and `show` on a playing track resume the 
 
 It is also, precisely, the hazard stated in `AGENTS.md`: a window frozen seconds ago is indistinguishable from a live one against steady material. A bypassed Fósforo displays a signal that is not the current signal and says nothing about it.
 
-Left as an open question rather than fixed here, for two reasons. The plugin cannot detect bypass directly, since CLAP expresses it as a parameter flag and there are no parameters until phase 4, so any answer is a heuristic on the cursor having stopped advancing. And the same mechanism would serve a general no-signal indication, which is a feature decision rather than a correction to this issue. **Which route REAPER takes is worth establishing first and costs nothing:** the debug line reports the window count, so bypass that reports `0 sample window` means the host called `deactivate`, and one that keeps reporting `960` means it merely stopped calling `process`.
+**REAPER does not deactivate on bypass; it stops calling `process`.** Established from the debug line, which keeps reporting `960 sample window` throughout where a `deactivate` would have published zero. So the plugin stays active and `readWindow` re-reads the same trailing window every tick.
+
+That makes the gap sharper than it first looked. `windowsUploaded` keeps incrementing during bypass, because a read did happen and did succeed; it is merely reading the same samples repeatedly. `framesPresented` advances too and the torn count stays at zero. **So nothing this project currently exposes distinguishes a bypassed plugin from a live one**, which is the same blind spot in a new place. The one thing that does change is the ring's write cursor, and `Ring.written()` is already a public acquire load the render thread could watch.
+
+Left open rather than fixed here, as [#53](https://github.com/cboone/fosforo/issues/53). The plugin cannot detect bypass as such, since CLAP expresses it as a parameter flag and there are no parameters until phase 4, so any answer is a heuristic on the cursor being stationary. That is arguably the better trigger anyway, since it also covers a dead input and a host that stopped servicing the audio thread. What to draw instead is a design decision that interacts with phase 3's ownership of brightness.
 
 ### The standstill, and the jitter that hid it
 

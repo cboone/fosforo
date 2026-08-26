@@ -270,11 +270,11 @@ zero and a window frozen seconds ago both survive being looked at.
 
 **The second was met before this phase began.** `process` wraps `Instance.scratch` in a `FixedBufferAllocator` and asserts it was never drawn from, and `scratchBytes` still returns zero, so the tap's only work is a copy into storage `create` already owns.
 
-**The first is met by [#38](https://github.com/cboone/fosforo/issues/38) as far as anything automated can say so, and the rest is the author's to confirm in a host.** The harness proves windows are read, uploaded and drawn, and that an editor reopened on a still-activated plugin keeps reading; what it cannot prove is that the picture is the signal, because the drawable is `framebufferOnly` and reading it back would change the shipping renderer, which [ADR 0013](../../adr/0013-gui-smoke-harness-as-a-build-step.md)'s #38 amendment sets out. "The trace tracks audio" is closed by the host procedure in that issue's plan, and the phase should not be called complete until it has been run against hash-verified installs in REAPER and Logic.
+**The first is met by [#38](https://github.com/cboone/fosforo/issues/38), automatically as far as anything automated can reach and by hand for the rest.** The harness proves windows are read, uploaded and drawn, and that an editor reopened on a still-activated plugin keeps reading; what it cannot prove is that the picture is the signal, because the drawable is `framebufferOnly` and reading it back would change the shipping renderer, which [ADR 0013](../../adr/0013-gui-smoke-harness-as-a-build-step.md)'s #38 amendment sets out. That gap is closed by the host procedure in that issue's plan, which has been run in full against hash-verified installs in REAPER and Logic. Its results are recorded there, measured out of screenshots rather than judged by eye: the level sweep reads every level back to within a pixel and saturates at the rail, the window stands still at both the refresh rate and its second harmonic, and the tap draws the channel it claims.
 
 Of the two chores folded onto the milestone, [#29](https://github.com/cboone/fosforo/issues/29) landed as [ADR 0015](../../adr/0015-adopt-std-io-single-instance.md) and [#22](https://github.com/cboone/fosforo/issues/22) is still open. Neither is an exit criterion.
 
-**Phase 3's issues can be filed once that host check is done.** The just-in-time rule above says they should not exist until this phase closes, and that is the last thing standing between here and there.
+**Phase 3's issues can now be filed.** The just-in-time rule above says they should not exist until this phase closes, and it has.
 
 ## Phase 3: the phosphor renderer
 
