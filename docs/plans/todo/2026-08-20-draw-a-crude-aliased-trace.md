@@ -292,8 +292,8 @@ Everything below passed. The split matters, because only the first two blocks ar
 | The same four under `--release=fast`                 | Clean                                                    |
 | `shfmt`, `shellcheck`, `markdownlint-cli2`, `typos`  | Clean                                                    |
 | The six planted defects                              | As tabulated above, with two corrections recorded below  |
-| REAPER, steps 1, 2, 3, 5 and 6                       | Passed. The measurements are below                       |
-| REAPER steps 4, 7 and 8, and Logic                   | **Outstanding.** The author's, per the procedure below   |
+| REAPER, steps 1 to 6                                 | Passed. The measurements are below                       |
+| REAPER steps 7 and 8, and Logic                      | **Outstanding.** The author's, per the procedure below   |
 
 **Two of the planted defects did not behave as the plan predicted, and both corrections are worth more than the rows they fix.**
 
@@ -321,6 +321,22 @@ A lossy screenshot cannot be measured at all. The first capture arrived as HEIC 
 That shadow is the second trap. Over a dark desktop it is near-black with a blue cast, which is also the background's signature, so an automatic crop keyed on colour alone stretched 119 rows past the real drawable and divided by the wrong height. Keying on the exact `RGB(5, 5, 8)` with the blue lead constrained to the 2-to-4 the shader produces separates them.
 
 One observation left unexplained, because it is 0.3% and did not recur: `level-1.089` lit 1914 of 1920 columns where the other three lit all 1920. The likely cause is the horizontal twin of the rail problem, the first and last vertices sitting at x = ±1 exactly, on the drawable's edge where half a one-pixel line's coverage diamond is off-screen.
+
+### The standstill, and the jitter that hid it
+
+Step 4 was run on a 16-inch MacBook Pro, whose Liquid Retina XDR panel is ProMotion and therefore the case this plan originally said to skip. It works, with one condition.
+
+| Refresh | Tone  | Result                                 |
+| ------- | ----- | -------------------------------------- |
+| 120 Hz  | 120.0 | Standstill, at a 16-sample block       |
+| 60 Hz   | 60.0  | Standstill, 1.2 periods, one peak      |
+| 60 Hz   | 120.0 | Standstill, 2.4 periods, **two peaks** |
+
+**The harmonic is what makes this conclusive.** A standstill at `R` alone could be a coincidence; one at `R` and `2R` in the same configuration, distinguishable by period count, could not. It holds only if the window advances exactly `fs/R` samples per frame, which is the claim being tested.
+
+**The first attempt reported the standstill at 121.15 Hz, and that was the instrument rather than the signal.** At a 64-sample block the trace jitters by 58 degrees of phase, and a standstill cannot be located by eye to better than the jitter around it. Dropping to a 16-sample block cut the jitter to 14 degrees and the standstill moved to 120.0, the predicted value. Nothing drifted at either block size, which was the real result all along: no drift is what proves the right edge tracks the present, and the standstill frequency is a refinement on top of it.
+
+The residual jitter is block quantization and is not reducible from here: the cursor advances only when `process` runs, so it moves in whole blocks, and 48 kHz at 120 Hz needs 400 samples a frame, which no block size divides. It is exactly what phase 4's triggering removes.
 
 ### The channel trap, and the half pixel at the centre line
 
@@ -379,7 +395,13 @@ Sines at 0.8 amplitude, counted by peaks across the 20 ms window, came back exac
 1. **Silence.** A horizontal line on the centre row. Check it by pixel sample rather than by eye: sample `(W/2, H/2)` and confirm the trace colour, sample `(W/2, H/4)` and confirm `RGB(5, 5, 8)`. If the centre row is background, suspect the boundary-rasterization case above before suspecting the signal path. The front zero-padding never appears in a host, which is worth knowing before going looking for it: `activate` calls `history.clear()`, which writes a full capacity of silence *through* `Ring.write`, so the pad is unreachable and silence draws flat because the samples are zero.
 2. **Liveness, checked on the stop rather than the start.** With a sine playing, stop the transport: the trace must return to flat within about 20 ms plus a refresh period. A frozen window keeps showing the sine indefinitely, so this fails loudly where "it appeared quickly" does not. Toggle half a dozen times.
 3. **Frequency, counted as a ratio.** At 48 kHz the window is 960 samples, so 50 Hz shows 1 period, 100 Hz shows 2, 250 Hz shows 5, 1 kHz shows 20. Count 100 and 250 by eye and 1 kHz from a screenshot. **The decisive form is the ratio:** 100 → 200 → 400 Hz must give 2 → 4 → 8, which is robust to phase, to the `(n-1)` quibble, and to miscounting a partial period at an edge. Then change the device sample rate and repeat: 100 Hz must still show 2 periods at 44.1 kHz and at 96 kHz, which is the first end-to-end check that `window_seconds` is a duration rather than a sample count.
-4. **The stroboscopic standstill.** Between frames the window shifts by `fs/R` samples, so a tone at exactly the refresh rate advances one full cycle per frame and stands still. Read `N` from the debug line, set the host's block size to 64 or 128 (at 512 the cursor's block-sized jumps exceed a full period of a 100 Hz tone), play a sine at `N` Hz, confirm the standstill, then detune by 1 Hz and confirm a 1 Hz crawl. This proves the window is live, the X axis is linear in time, and the right edge tracks the present, all at once. Skip it on a ProMotion display, where the refresh rate varies.
+4. **The stroboscopic standstill.** Between frames the window shifts by `fs/R` samples, so a tone at a whole multiple of the refresh rate advances a whole number of cycles per frame and stands still. Read `R` from the debug line, play a sine at `R` Hz, confirm the standstill, then detune by 1 Hz and confirm a 1 Hz crawl. This proves the window is live, the X axis is linear in time, and the right edge tracks the present, all at once.
+
+   **Use the smallest block size the device offers, which is the whole difficulty of this check.** The cursor advances only when `process` runs, so it moves in whole blocks and no block size divides the 400 samples a frame needs at 48 kHz and 120 Hz. Consecutive frames therefore alternate between too few blocks and too many: the average is exact, which is why nothing drifts, and each frame is off by up to one block. At a 960-sample window on a 1920-wide drawable that is 2 px of horizontal jitter per sample of block, so 128-sample blocks jump a quarter of the screen and 16-sample blocks jump 32 px. **That jitter is what phase 4's triggering exists to remove**, since a trigger aligns the window to the signal rather than to the cursor.
+
+   **Confirm the harmonic rather than the single frequency.** A standstill at `R` alone could be luck; one at `R` and `2R` together cannot, and the two are distinguishable by period count, since `2R` shows twice as many. That is the form the check should take.
+
+   ProMotion is workable rather than disqualifying, which is a correction to an earlier draft of this plan. Pinning the display to a fixed rate in System Settings removes the variable-refresh confound and is worth doing if the result is ambiguous.
 5. **Level sweep**, from rendered WAVs at verified peaks rather than a gain knob. The plugin passes audio through, so the host's own meter after it is a free independent readout.
 
    **Read the peak's position, not its shape.** Railing shows up as the peak *ceasing to climb*, and a visible flat top is a secondary cue that only appears well past the threshold. Rows are for a 1920x1080 drawable, the default editor at 2x:
