@@ -292,8 +292,8 @@ Everything below passed. The split matters, because only the first two blocks ar
 | The same four under `--release=fast`                 | Clean                                                    |
 | `shfmt`, `shellcheck`, `markdownlint-cli2`, `typos`  | Clean                                                    |
 | The six planted defects                              | As tabulated above, with two corrections recorded below  |
-| REAPER, steps 1 to 6                                 | Passed. The measurements are below                       |
-| REAPER steps 7 and 8, and Logic                      | **Outstanding.** The author's, per the procedure below   |
+| REAPER and Logic, steps 1 to 7                       | Passed. The measurements are below                       |
+| Step 8                                               | Observed throughout rather than run as a step            |
 
 **Two of the planted defects did not behave as the plan predicted, and both corrections are worth more than the rows they fix.**
 
@@ -321,6 +321,16 @@ A lossy screenshot cannot be measured at all. The first capture arrived as HEIC 
 That shadow is the second trap. Over a dark desktop it is near-black with a blue cast, which is also the background's signature, so an automatic crop keyed on colour alone stretched 119 rows past the real drawable and divided by the wrong height. Keying on the exact `RGB(5, 5, 8)` with the blue lead constrained to the 2-to-4 the shader produces separates them.
 
 One observation left unexplained, because it is 0.3% and did not recur: `level-1.089` lit 1914 of 1920 columns where the other three lit all 1920. The likely cause is the horizontal twin of the rail problem, the first and last vertices sitting at x = ±1 exactly, on the drawable's edge where half a one-pixel line's coverage diamond is off-screen.
+
+### Both hosts, and what bypass revealed
+
+Step 7 passed in both. REAPER's `hide` and `show` on a playing track resume the trace, and **Logic's full `destroy` / `create` / `set_parent` on a still-activated instance brings it back live rather than flat**, which is the defect `Editor.destroy`'s comment names and the one `ReopenedEditorStalled` was added to cover. That comment is now enforced at two levels rather than being an assertion about code nobody had exercised.
+
+**Bypassing the plugin in REAPER freezes the picture on the last frame drawn, and un-bypassing resumes it.** That was not in the procedure and it is worth recording, because it is the stationary-window path reaching a host for the first time. `readWindow` says that when there is no window to read "the renderer keeps whatever it last held", and `src/smoke.zig` asserts exactly that after `deactivate`: uploads stop, frames keep presenting, the last good window is drawn again. Bypass arrives at the same state by a different route, so the behaviour is the design rather than a surprise.
+
+It is also, precisely, the hazard stated in `AGENTS.md`: a window frozen seconds ago is indistinguishable from a live one against steady material. A bypassed Fósforo displays a signal that is not the current signal and says nothing about it.
+
+Left as an open question rather than fixed here, for two reasons. The plugin cannot detect bypass directly, since CLAP expresses it as a parameter flag and there are no parameters until phase 4, so any answer is a heuristic on the cursor having stopped advancing. And the same mechanism would serve a general no-signal indication, which is a feature decision rather than a correction to this issue. **Which route REAPER takes is worth establishing first and costs nothing:** the debug line reports the window count, so bypass that reports `0 sample window` means the host called `deactivate`, and one that keeps reporting `960` means it merely stopped calling `process`.
 
 ### The standstill, and the jitter that hid it
 
