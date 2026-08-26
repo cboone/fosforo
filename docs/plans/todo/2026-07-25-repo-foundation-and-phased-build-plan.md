@@ -62,7 +62,7 @@ Each becomes an ADR under `docs/adr/`.
 | 0011 | AUv2 first. AUv3, VST3, AAX, and iPad remain later toggles with no bearing on output quality                                 |
 | 0012 | First deliverable is the phosphor oscilloscope only. Alignment and Family B lenses are deferred                              |
 
-Four more were decided during execution rather than in this pass, each because a
+Five more were decided during execution rather than in this pass, each because a
 phase reached a question this plan had not asked. They are listed here so the set
 is complete in one place; [`docs/adr/README.md`](../../adr/README.md) is the index.
 
@@ -72,6 +72,7 @@ is complete in one place; [`docs/adr/README.md`](../../adr/README.md) is the ind
 | 0014 | Distribute as one signed, notarized, stapled `.pkg` placing both bundles                          | Phase 1    |
 | 0015 | Adopt `std.Io` through the single `init_single_threaded` instance in `src/platform/io.zig`        | Phase 2    |
 | 0016 | Verify the ring's release/acquire pairing with Thread Sanitizer, plus a source canary             | Phase 2    |
+| 0017 | The vertical axis is absolute: no rescaling to the signal, and over-scale rails visibly           | Phase 2    |
 
 ## Build architecture
 
@@ -220,7 +221,7 @@ phase, so putting either on a milestone would misreport that phase's remaining
 work. Both are carried in the risks table below instead, which is where a reader
 who does not open the tracker will find them.
 
-## Phase 2: signal path (in progress)
+## Phase 2: signal path (complete)
 
 **Goal:** a visible trace that follows audio.
 
@@ -236,20 +237,23 @@ Filed against the [Phase 2 milestone](https://github.com/cboone/fosforo/mileston
 | [#35](https://github.com/cboone/fosforo/issues/35) | 1    | `src/dsp/ring.zig`, the buffer alone with no caller. The only part of the phase needing no GPU, no window, and no host, which is why it is separate                                                                                                                                                                                                                                                                   | Done   |
 | [#36](https://github.com/cboone/fosforo/issues/36) | 2    | `process` writes the tapped **left output** channel into the ring. Sized in `activate` from the sample rate and freed in `deactivate` as this landed; #37 moved both to `create` and `destroy`, for the reason in its row below                                                                                                                                                                                       | Done   |
 | [#37](https://github.com/cboone/fosforo/issues/37) | 3    | The trailing-window read in `Editor.tick`, a per-frame buffer ring behind the seam, and `upload` on `gpu/iface.zig`. **Resolved the `deactivate` race by giving the ring the instance's lifetime**, since a host may deactivate with the editor open and no gate covers that path; capacity is a fixed constant as a consequence. Raw samples cross the seam rather than a vertex format, which phase 3 would replace | Done   |
-| [#38](https://github.com/cboone/fosforo/issues/38) | 4    | The trace itself: a line strip in `shaders/scope.metal`, drawn over the existing clear                                                                                                                                                                                                                                                                                                                                | Open   |
+| [#38](https://github.com/cboone/fosforo/issues/38) | 4    | The trace itself: a line strip in `shaders/scope.metal`, drawn over the existing clear. **Settled the vertical axis as [ADR 0017](../../adr/0017-absolute-vertical-axis.md):** fixed and absolute, with over-scale railed rather than rescaled or clipped away                                                                                                                                                        | Done   |
 
-**Steps 1 through 3 are the whole path except the drawing.** A sample tapped on
-the audio thread now reaches a per-frame `MTLBuffer` bound as a vertex argument,
-and nothing reads it: `shaders/scope.metal` still declares exactly
-`fullscreen_vertex` and `clear_fragment`, and `Renderer.frame` still draws a
-fullscreen triangle. That is why three of four issues being done does not close
-the phase, and why nothing in a host looks different yet.
+**All four steps are written and the phase is closed.** A sample tapped on the
+audio thread reaches a per-frame `MTLBuffer` bound as a vertex argument, and
+`trace_vertex` reads it: `shaders/scope.metal` encodes the background and the
+trace over it as two passes in one render pass. The exit criterion is a
+statement about a picture rather than about code, so it was closed by a host
+procedure rather than by a build, and what that procedure found is under
+**Exit criteria** below.
 
-[#45](https://github.com/cboone/fosforo/issues/45) was raised against that
-background and closed as subsumed by #38. It observed that the clear colour
-lands in the drawable as `RGB(5, 5, 8)` and is therefore indistinguishable from
-a black window by eye, which makes every check of the editor an instrumented
-one. The trace is what answers that, so the colour did not have to.
+[#45](https://github.com/cboone/fosforo/issues/45) was raised while the editor
+was still a uniform dim rectangle, and closed as subsumed by #38. It observed
+that the clear colour lands in the drawable as `RGB(5, 5, 8)` and is therefore
+indistinguishable from a black window by eye, which makes every check of the
+editor an instrumented one. The trace is what answers that, so the colour did
+not have to. It does not retire the instrumented checks: a trace stuck flat at
+zero and a window frozen seconds ago both survive being looked at.
 
 **Two mechanisms this phase needs already exist,** built ahead of their caller in phase 1, and the issues say so explicitly to stop them being rebuilt:
 
@@ -265,7 +269,15 @@ one. The trace is what answers that, so the colour did not have to.
 
 **Exit criteria:** the trace tracks audio, and `process` performs no allocation, lock, or syscall.
 
-## Phase 3: the phosphor renderer
+**The second was met before this phase began.** `process` wraps `Instance.scratch` in a `FixedBufferAllocator` and asserts it was never drawn from, and `scratchBytes` still returns zero, so the tap's only work is a copy into storage `create` already owns.
+
+**The first is met by [#38](https://github.com/cboone/fosforo/issues/38), automatically as far as anything automated can reach and by hand for the rest.** The harness proves windows are read, uploaded and drawn, and that an editor reopened on a still-activated plugin keeps reading; what it cannot prove is that the picture is the signal, because the drawable is `framebufferOnly` and reading it back would change the shipping renderer, which [ADR 0013](../../adr/0013-gui-smoke-harness-as-a-build-step.md)'s #38 amendment sets out. That gap is closed by the host procedure in that issue's plan, which has been run in full against hash-verified installs in REAPER and Logic. Its results are recorded there, measured out of screenshots rather than judged by eye: the level sweep reads every level back to within a pixel and saturates at the rail, the window stands still at both the refresh rate and its second harmonic, and the tap draws the channel it claims.
+
+Of the two chores folded onto the milestone, [#29](https://github.com/cboone/fosforo/issues/29) landed as [ADR 0015](../../adr/0015-adopt-std-io-single-instance.md) and [#22](https://github.com/cboone/fosforo/issues/22) is still open. Neither is an exit criterion.
+
+**Phase 3's issues are filed**, [#55](https://github.com/cboone/fosforo/issues/55) through [#62](https://github.com/cboone/fosforo/issues/62) on the [Phase 3 milestone](https://github.com/cboone/fosforo/milestone/3). The just-in-time rule above is why they did not exist until now: this phase closing is what permitted them.
+
+## Phase 3: the phosphor renderer (next)
 
 **Goal:** the moat. Sequenced so every step is independently visible and yields a better screenshot.
 

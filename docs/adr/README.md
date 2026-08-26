@@ -4,7 +4,7 @@ Each file records one decision, the context that forced it, and its consequences
 
 Background for all of these lives in [the design brainstorm](../design/scope-plugin-handoff.md); sequencing lives in [the build plan](../plans/todo/2026-07-25-repo-foundation-and-phased-build-plan.md).
 
-0001 through 0012 were locked in the planning pass, before any code; 0013 through 0016 record decisions a phase forced once it was under way. The distinction has no bearing on their standing — every one of them is settled — but it is why the build plan's own table of locked decisions carries the first twelve as its original set.
+0001 through 0012 were locked in the planning pass, before any code; 0013 through 0017 record decisions a phase forced once it was under way. The distinction has no bearing on their standing — every one of them is settled — but it is why the build plan's own table of locked decisions carries the first twelve as its original set.
 
 | ADR                                                  | Decision                                                   | Status   |
 | ---------------------------------------------------- | ---------------------------------------------------------- | -------- |
@@ -24,3 +24,4 @@ Background for all of these lives in [the design brainstorm](../design/scope-plu
 | [0014](./0014-distribute-as-a-notarized-pkg.md)      | Distribute as a signed, notarized pkg installer            | Accepted |
 | [0015](./0015-adopt-std-io-single-instance.md)       | Adopt std.Io through one single-threaded instance          | Accepted |
 | [0016](./0016-verify-the-ring-ordering-with-tsan.md) | Verify the ring's memory ordering with Thread Sanitizer    | Accepted |
+| [0017](./0017-absolute-vertical-axis.md)             | The vertical axis is absolute and never rescales itself    | Accepted |

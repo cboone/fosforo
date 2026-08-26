@@ -46,6 +46,54 @@ pub const NativeView = *anyopaque;
 /// 32 KiB per buffer, and the backend holds one per frame in flight.
 pub const max_window_samples: usize = 8192;
 
+/// Where a sample of ±1.0 lands, as a fraction of the drawable's half-height.
+///
+/// **The vertical axis is absolute and the display never rescales itself to the
+/// signal** (ADR 0017). This is the reference that statement is about: full scale
+/// is ±1.0, it draws 5% of the height in from each edge, and nothing anywhere
+/// adjusts it to fit what is playing.
+///
+/// The margin is the point rather than a courtesy. Full scale on the drawable's
+/// exact edges leaves a peak at 0 dBFS pixel-identical to one at +6, because both
+/// are at the top; the strip between this and `trace_rail` is what makes "at full
+/// scale" and "over" two different pictures. It is worth +0.74 dB of headroom,
+/// since the rail is reached at `trace_rail / trace_full_scale`, or 1.0889, which
+/// also means phase 3's bandlimited reconstruction will draw the smaller half of
+/// a typical 0.5 to 1.5 dBTP intersample overshoot inside the margin rather than
+/// against the rail.
+///
+/// Not `1 / trace_full_scale`, which is 1.111 and +0.92 dB. That is where the
+/// trace would reach the drawable's edge if nothing clamped it, and it is
+/// unreachable precisely because `trace_rail` clamps first.
+///
+/// The consequence to know before reading a quiet signal: one backing pixel of
+/// excursion needs `1 / (trace_full_scale * height / 2)`, which is about
+/// -54 dBFS at the default editor on a 2x display and about -42 dBFS at the
+/// smallest editor on a 1x one. Below that a sine reads as flat, and that is
+/// arithmetic rather than a defect.
+pub const trace_full_scale: f32 = 0.9;
+
+/// How far a sample may travel from the centre, whatever its value.
+///
+/// A sample beyond full scale is clamped here rather than left to the rasterizer,
+/// and the rail sits inside the drawable rather than on its edge. Both halves are
+/// load-bearing and neither is obvious.
+///
+/// Clamping, because clipping a line strip does not remove the trace, it removes
+/// the peaks: segments crossing the boundary still draw up to it and segments
+/// wholly beyond it do not, so an over-scale signal would read as a *quieter*
+/// signal with gaps. A scope may say "at or above full scale" and may not say
+/// "quieter than it is".
+///
+/// Inside the edge, because a one-pixel line whose centre lands on the drawable's
+/// boundary has half its coverage diamond off-screen and may rasterize to
+/// nothing, which would make a railed signal read as an absent one. One percent
+/// is safe at every geometry `gui.clampSize` permits: the smallest editor is 270
+/// points tall, so at a scale of 1 this leaves `(1 - 0.98) * 135`, or 2.7 backing
+/// pixels. `src/clap/gui.zig` holds the test, because that is the file that knows
+/// the minimum.
+pub const trace_rail: f32 = 0.98;
+
 /// Every way starting a renderer can fail. Each is a real machine condition
 /// rather than a programming error, so each is reported rather than asserted.
 pub const Error = error{
@@ -190,6 +238,11 @@ comptime {
     // phase's way of drawing a trace rather than the trace itself, and phase 3
     // replaces it with oriented quads. `[]const f32` names nothing Metal owns
     // and needs nothing added to this file's vocabulary.
+    //
+    // #38 is the phase that could have falsified that and did not. The trace is
+    // drawn with no `MTLVertexDescriptor` at all, from a plain array indexed by
+    // `[[vertex_id]]`, so the claim held all the way down to the GPU rather than
+    // only as far as this line.
     assertSignature("upload", @TypeOf(Renderer.upload), fn (*Renderer, []const f32) void);
     assertSignature("frame", @TypeOf(Renderer.frame), fn (*Renderer) Outcome);
     assertSignature("probe", @TypeOf(Renderer.probe), fn (*Diagnostics) Error!void);

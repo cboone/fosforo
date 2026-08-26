@@ -1,10 +1,12 @@
 //! The Metal backend, and the only file in the project allowed to name a Metal
 //! type. Everything above it goes through `src/gpu/iface.zig` (ADR 0005).
 //!
-//! What it does today is clear a drawable to a dim colour. That is the whole
-//! deliverable of phase 1: the point is not the picture, it is that a shader
-//! compiled from an embedded string at runtime ran on the GPU inside someone
-//! else's DAW. The decay, additive trace, and tonemap arrive in phase 3.
+//! What it does today is clear a drawable to a dim colour and draw the sample
+//! window over it as a single aliased line strip, one device pixel wide. That is
+//! phase 2's deliverable and it is deliberately crude: no persistence, no decay,
+//! no velocity weighting, no reconstruction. Drawing something ugly first is what
+//! lets phase 3's decay, oriented beam geometry and tonemap be judged on how they
+//! look rather than on whether the signal path works at all.
 
 const std = @import("std");
 const objc = @import("objc");
@@ -41,6 +43,14 @@ const mtl = struct {
 
     const load_action_clear: u64 = 2;
     const store_action_store: u64 = 1;
+
+    /// `MTLPrimitiveTypeLineStrip` and `MTLPrimitiveTypeTriangle`. These two were
+    /// read out of `MTLRenderCommandEncoder.h` rather than recalled, which is
+    /// worth saying in a block whose header admits it has nothing to check itself
+    /// against: two independent attempts to remember the line strip's value
+    /// produced 5 and 1, and the enum runs point, line, line strip, triangle,
+    /// triangle strip from zero.
+    const primitive_type_line_strip: u64 = 2;
     const primitive_type_triangle: u64 = 3;
 
     /// `MTLResourceStorageModeShared`, which is the storage mode's zero rather
@@ -66,13 +76,75 @@ const ClearColor = extern struct {
 /// Kept in step with `clear_fragment` in `shaders/scope.metal`.
 ///
 /// Both run: the load action clears, and then the fullscreen triangle covers
-/// what it cleared. That is redundant on purpose. The clear alone would produce
-/// an identical picture while proving nothing, and the entire point of this
-/// phase is that the fragment shader executed.
+/// what it cleared. That was redundant on purpose while a flat colour was the
+/// whole picture, on the grounds that the clear alone would produce an identical
+/// one while proving nothing about the fragment shader. The trace retires that
+/// argument, and the pass stays for a different reason: phase 3's decay and
+/// tonemap *are* that pass, so keeping it means phase 3 replaces a body rather
+/// than re-adding a pass.
 const background: ClearColor = .{ .red = 0.02, .green = 0.02, .blue = 0.03, .alpha = 1.0 };
 
-const vertex_function = "fullscreen_vertex";
-const fragment_function = "clear_fragment";
+/// A pipeline's two halves, named together so `buildPipeline` can report which
+/// pair a library failed to supply rather than reporting a generic failure.
+const Functions = struct { vertex: [:0]const u8, fragment: [:0]const u8 };
+
+const clear_functions: Functions = .{ .vertex = "fullscreen_vertex", .fragment = "clear_fragment" };
+const trace_functions: Functions = .{ .vertex = "trace_vertex", .fragment = "trace_fragment" };
+
+/// Every pair the shader has to define, walked rather than listed by the test at
+/// the foot of this file, so a third pass is checked by being added here.
+const passes = [_]Functions{ clear_functions, trace_functions };
+
+/// Where `frame` binds the trace's two vertex arguments.
+///
+/// Deliberately not in `mtl` above: these are not Metal's numbers, they are this
+/// project's, and `[[buffer(0)]]` and `[[buffer(1)]]` in `shaders/scope.metal`
+/// are the other half of them. Nothing links the two declarations, which is why
+/// the test at the foot of this file searches the embedded source for the
+/// indices named here. Bind at one index and read at another and Metal reports
+/// an unbound buffer at draw time, inside a DAW, on the render thread, with
+/// nothing this project can print.
+const window_buffer_index: u64 = 0;
+const uniform_buffer_index: u64 = 1;
+
+/// What the trace's vertex function needs beyond the samples themselves.
+///
+/// `extern`, so this is the C layout MSL's own `TraceUniforms` computes. Scalars
+/// only, deliberately: MSL aligns `float2` to 8 bytes and `float4` to 16, so a
+/// vector member would introduce padding this side would have to reproduce by
+/// hand. The layout test at the foot of this file is the only thing that would
+/// notice a field added to one declaration and not the other, and the symptom of
+/// that is a plausible-looking trace at the wrong scale rather than a failure.
+///
+/// Handed over by `setVertexBytes:`, which copies into the command buffer's own
+/// transient storage at encode time. So this needs none of the slot discipline
+/// `Renderer.window` exists to describe: there is no buffer for the GPU to be
+/// mid-read of. A fourth `MTLBuffer` would also be a fourth resource `leaks`
+/// cannot see, which is a cost this project has already measured once.
+const TraceUniforms = extern struct {
+    /// Vertices in the strip, and the divisor the x mapping uses. Never below
+    /// two; `traceVertices` is what establishes that.
+    sample_count: u32,
+    full_scale: f32 = iface.trace_full_scale,
+    rail: f32 = iface.trace_rail,
+};
+
+/// The pipeline states one render pass runs, in the order `frame` encodes them.
+///
+/// One struct rather than two fields because they are taken together and given
+/// back together, on `buildWindows`' precedent: `buildPipelines` returns both or
+/// neither, and `releasePipelines` is the one place either is released.
+///
+/// The reason it is not two calls to the old `buildPipeline` is the library
+/// rather than the states. `newLibraryWithSource:` hands the source to
+/// `MTLCompilerService.xpc` out of process, which is the most expensive thing
+/// `init` does and sits on `set_parent`, where a host is waiting. Compiling the
+/// same embedded string twice to pull four functions out of it would double that
+/// for nothing.
+const Pipelines = struct {
+    clear: objc.Object,
+    trace: objc.Object,
+};
 
 /// How far the CPU may run ahead of the GPU, in frames.
 ///
@@ -156,7 +228,7 @@ fn signalCompleted(block: *const Completion.Context, buffer: objc.c.id) callconv
 pub const Renderer = struct {
     device: objc.Object,
     queue: objc.Object,
-    pipeline: objc.Object,
+    pipelines: Pipelines,
     layer: objc.Object,
 
     /// Counts free frame slots. Waited on at the top of every frame and
@@ -223,8 +295,8 @@ pub const Renderer = struct {
         }
         errdefer queue.release();
 
-        const pipeline = try buildPipeline(device, diags);
-        errdefer pipeline.release();
+        const pipelines = try buildPipelines(device, diags);
+        errdefer releasePipelines(pipelines);
 
         const in_flight = objc.Object.fromId(dispatch_semaphore_create(max_frames_in_flight) orelse {
             diags.set("libdispatch would not create the in-flight-frames semaphore");
@@ -247,7 +319,7 @@ pub const Renderer = struct {
         return .{
             .device = device,
             .queue = queue,
-            .pipeline = pipeline,
+            .pipelines = pipelines,
             .layer = layer,
             .in_flight = in_flight,
             .windows = windows,
@@ -259,9 +331,15 @@ pub const Renderer = struct {
     ///
     /// The half of starting a renderer that needs no window, and so the half
     /// that can run on a machine with a GPU and nothing else. It shares
-    /// `buildPipeline` with `init` rather than paraphrasing it, which is what
+    /// `buildPipelines` with `init` rather than paraphrasing it, which is what
     /// makes a pass here mean the shipping path compiled the shader, and not
     /// merely that some shader compiled.
+    ///
+    /// That covers strictly more than `zig build validate-shaders` does, which is
+    /// worth knowing because the two look interchangeable. `metal -fsyntax-only`
+    /// parses and type-checks and never links a pipeline state, and
+    /// `newRenderPipelineStateWithDescriptor:` is exactly where a vertex function
+    /// whose buffer arguments the pipeline cannot satisfy fails.
     ///
     /// Writes what it found into `diags` on success as well as on failure. A
     /// smoke test that reports "ok" without naming the device it acquired is
@@ -286,8 +364,8 @@ pub const Renderer = struct {
         }
         defer queue.release();
 
-        const pipeline = try buildPipeline(device, diags);
-        pipeline.release();
+        const pipelines = try buildPipelines(device, diags);
+        releasePipelines(pipelines);
 
         // Taken and given straight back, which keeps this function's first
         // sentence true. It is the cheapest of the four acquisitions and the
@@ -323,7 +401,7 @@ pub const Renderer = struct {
         releaseWindows(self.windows);
         self.in_flight.release();
         self.layer.release();
-        self.pipeline.release();
+        releasePipelines(self.pipelines);
         self.queue.release();
         self.device.release();
         self.* = undefined;
@@ -461,28 +539,62 @@ pub const Renderer = struct {
         const encoder = buffer.msgSend(objc.Object, "renderCommandEncoderWithDescriptor:", .{pass});
         if (encoder.value == null) return .no_encoder;
 
-        encoder.msgSend(void, "setRenderPipelineState:", .{self.pipeline});
-
-        // Bound although the shader currently declares no such argument, which
-        // Metal permits and which is deliberate rather than an oversight. It
-        // makes the upload a path rather than a write into memory the GPU never
-        // sees, and it is the retain `deinit` leans on: an encoder holds the
-        // resources it binds until its command buffer completes. #38 adds the
-        // vertex function that reads it.
-        encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
-            self.windows[self.slot],
-            @as(u64, 0),
-            @as(u64, 0),
-        });
-
+        // Two pipelines, one encoder, one render pass, background first. This
+        // hardware is tile-based deferred, so both draws run against tile memory
+        // and are written out once by the store action. A second encoder would
+        // end the pass, store the whole attachment and reload it, which is two
+        // round trips through the framebuffer for an identical picture.
+        //
         // A fullscreen triangle, which is cheaper than a quad and needs no
         // vertex buffer: the vertex function derives its positions from the
-        // vertex id alone. Drawing the window itself is #38.
+        // vertex id alone.
+        encoder.msgSend(void, "setRenderPipelineState:", .{self.pipelines.clear});
         encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:", .{
             mtl.primitive_type_triangle,
             @as(u64, 0),
             @as(u64, 3),
         });
+
+        // Only the draw is skipped, never the frame. The background above was
+        // encoded and this tick goes on to present it, so `.presented` stays the
+        // truthful answer, and that direction matters as much as the familiar
+        // one: an early return here would report a frame that did reach the
+        // screen as one that did not, and `src/smoke.zig`'s `waitForFrames`
+        // would time out waiting for it. Skipping it is also not theoretical.
+        // `window_len` is zero until the first upload, so an editor opened on a
+        // plugin the host has not activated sits here for as long as that lasts.
+        if (traceVertices(self.window_len)) |count| {
+            encoder.msgSend(void, "setRenderPipelineState:", .{self.pipelines.trace});
+
+            // An encoder retains what it binds until its command buffer
+            // completes, which is the retain `deinit` leans on. A frame that
+            // binds nothing is also a frame whose buffer the GPU never reads, so
+            // that argument survives the guard above intact.
+            encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
+                self.windows[self.slot],
+                @as(u64, 0),
+                window_buffer_index,
+            });
+
+            // Copied into the command buffer at encode time, so this local dying
+            // with `frame` is not a lifetime to reason about. Built from the same
+            // `count` the draw below uses rather than reading `window_len` a
+            // second time: the vertex count and the divisor the shader maps x
+            // with have to be one number, and two reads is how they stop being.
+            const uniforms: TraceUniforms = .{ .sample_count = count };
+            encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
+                &uniforms,
+                @as(u64, @sizeOf(TraceUniforms)),
+                uniform_buffer_index,
+            });
+
+            encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:", .{
+                mtl.primitive_type_line_strip,
+                @as(u64, 0),
+                @as(u64, count),
+            });
+        }
+
         encoder.msgSend(void, "endEncoding", .{});
 
         // The slot now belongs to this command buffer, and comes back when the
@@ -528,6 +640,25 @@ pub const Renderer = struct {
         @memcpy(dst[0..self.window_len], self.window[0..self.window_len]);
     }
 };
+
+/// Vertices in this frame's line strip, or nothing when there is no line.
+///
+/// Three separate reasons land on the same threshold and each would fail
+/// differently. A strip needs two endpoints before it has a segment. Metal
+/// rejects a `vertexCount` of zero outright, which under the validation layer is
+/// a terminated process rather than a dropped draw. And `trace_vertex` divides by
+/// `sample_count - 1`, which is zero at one sample. A window of one is reachable
+/// rather than hypothetical: `gui.windowSamples` returns it for every rate from
+/// 50 to 99 Hz, and `activate` accepts rates from 1 Hz up.
+///
+/// The narrowing cast is load-bearing rather than defensive. `upload` is the only
+/// writer of `window_len` and clamps to `max_window_samples` already, so this
+/// cannot truncate; what it does is produce the `uint` MSL reads. Re-clamping
+/// here would state that bound in a third place.
+fn traceVertices(window_len: usize) ?u32 {
+    if (window_len < 2) return null;
+    return @intCast(window_len);
+}
 
 /// The per-frame window buffers, all of them or none.
 ///
@@ -576,12 +707,15 @@ fn releaseWindows(windows: [max_frames_in_flight]objc.Object) void {
     _ = live_windows.fetchSub(max_frames_in_flight, .release);
 }
 
-/// Compile the embedded source and assemble a pipeline state from it.
+/// Compile the embedded source once and assemble every pass's pipeline state
+/// from it, all of them or none.
 ///
-/// Both failures carry the `NSError`'s text into `diags`. A Metal compiler
-/// diagnostic names a file, a line, and the mistake; losing it would leave a
-/// developer with nothing but an editor that refused to open.
-fn buildPipeline(device: objc.Object, diags: *iface.Diagnostics) iface.Error!objc.Object {
+/// One library rather than one per pass, which is the expensive half of this
+/// call: see `Pipelines`. The compile's failure carries the `NSError`'s text into
+/// `diags`, because a Metal compiler diagnostic names a file, a line, and the
+/// mistake, and losing it would leave a developer with nothing but an editor that
+/// refused to open.
+fn buildPipelines(device: objc.Object, diags: *iface.Diagnostics) iface.Error!Pipelines {
     var err: ?*anyopaque = null;
 
     const library = device.msgSend(objc.Object, "newLibraryWithSource:options:error:", .{
@@ -595,8 +729,33 @@ fn buildPipeline(device: objc.Object, diags: *iface.Diagnostics) iface.Error!obj
     }
     defer library.release();
 
-    const vertex = library.msgSend(objc.Object, "newFunctionWithName:", .{platform.nsString(vertex_function)});
-    const fragment = library.msgSend(objc.Object, "newFunctionWithName:", .{platform.nsString(fragment_function)});
+    const clear = try buildPipeline(device, library, clear_functions, diags);
+    errdefer clear.release();
+
+    const trace = try buildPipeline(device, library, trace_functions, diags);
+
+    return .{ .clear = clear, .trace = trace };
+}
+
+/// Give every pass's state back, and the one place either is released.
+///
+/// `releaseWindows`' shape, for `releaseWindows`' reason: `probe` takes a set and
+/// hands it straight back, and a second bare release loop there is how the two
+/// sites drift.
+fn releasePipelines(pipelines: Pipelines) void {
+    pipelines.trace.release();
+    pipelines.clear.release();
+}
+
+/// One pass's state, pulled out of an already-compiled library.
+fn buildPipeline(
+    device: objc.Object,
+    library: objc.Object,
+    comptime functions: Functions,
+    diags: *iface.Diagnostics,
+) iface.Error!objc.Object {
+    const vertex = library.msgSend(objc.Object, "newFunctionWithName:", .{platform.nsString(functions.vertex)});
+    const fragment = library.msgSend(objc.Object, "newFunctionWithName:", .{platform.nsString(functions.fragment)});
     defer vertex.release();
     defer fragment.release();
 
@@ -604,7 +763,7 @@ fn buildPipeline(device: objc.Object, diags: *iface.Diagnostics) iface.Error!obj
     // and one of the names above was not, which is a mismatch worth naming
     // precisely rather than reporting as a generic pipeline failure.
     if (vertex.value == null or fragment.value == null) {
-        diags.set("the shader compiled but does not define " ++ vertex_function ++ " and " ++ fragment_function);
+        diags.set("the shader compiled but does not define " ++ functions.vertex ++ " and " ++ functions.fragment);
         return error.PipelineCreationFailed;
     }
 
@@ -613,17 +772,23 @@ fn buildPipeline(device: objc.Object, diags: *iface.Diagnostics) iface.Error!obj
         .msgSend(objc.Object, "init", .{});
     defer descriptor.release();
 
+    // No blending on any pass, which is the default preserved rather than a
+    // choice remade. Phase 3's additive trace lands on an accumulation texture
+    // rather than on the drawable, so enabling it here would be additive against
+    // the wrong surface; and additive over a non-black background makes the
+    // trace's colour a function of the background, which belongs with the
+    // palette rather than ahead of it.
     descriptor.msgSend(void, "setVertexFunction:", .{vertex});
     descriptor.msgSend(void, "setFragmentFunction:", .{fragment});
     colorAttachment(descriptor).msgSend(void, "setPixelFormat:", .{mtl.pixel_format_bgra8_unorm});
 
-    err = null;
+    var err: ?*anyopaque = null;
     const pipeline = device.msgSend(objc.Object, "newRenderPipelineStateWithDescriptor:error:", .{
         descriptor,
         &err,
     });
     if (pipeline.value == null) {
-        describe(err, diags, "the render pipeline state could not be built");
+        describe(err, diags, "the " ++ functions.vertex ++ " pipeline state could not be built");
         return error.PipelineCreationFailed;
     }
 
@@ -725,6 +890,10 @@ test {
     // without this the message sends below are parsed and never type-checked
     // until `gui.zig` first calls them. Referencing them here is what turns a
     // wrong selector signature into a compile error in the file that owns it.
+    //
+    // `setVertexBytes:length:atIndex:` is the newest thing leaning on that, and
+    // the lean is total: nothing in `zig build test` reaches `frame`, so this
+    // block is the only place its signature is checked at all.
     testing.refAllDecls(@This());
     testing.refAllDecls(Renderer);
 }
@@ -734,12 +903,65 @@ test "the shader source is embedded and terminated for the C string API" {
     try testing.expectEqual(@as(u8, 0), shader_source[shader_source.len]);
 }
 
-test "the embedded shader defines the functions the pipeline asks for" {
-    // Cheap insurance against renaming one side and not the other. It proves
-    // only that the names appear, which is all a string can prove; `zig build
-    // validate-shaders` is what proves the file compiles.
-    try testing.expect(std.mem.indexOf(u8, shader_source, vertex_function) != null);
-    try testing.expect(std.mem.indexOf(u8, shader_source, fragment_function) != null);
+test "the embedded shader defines the functions every pipeline asks for" {
+    // Cheap insurance against renaming one side and not the other, walked rather
+    // than listed so a third pass is covered by being added to `passes`. It
+    // proves only that the names appear, which is all a string can prove; `zig
+    // build validate-shaders` proves the file compiles and `zig build smoke-gpu`
+    // proves a pipeline state can be built from it.
+    for (passes) |pass| {
+        try testing.expect(std.mem.indexOf(u8, shader_source, pass.vertex) != null);
+        try testing.expect(std.mem.indexOf(u8, shader_source, pass.fragment) != null);
+    }
+}
+
+test "the shader reads the buffers at the indices the encoder binds them to" {
+    // The other half of `window_buffer_index` and `uniform_buffer_index`, which
+    // MSL states as literals inside an attribute. Same shape of insurance as the
+    // test above, against a coupling with no compiler behind it at all: binding
+    // at one index and reading at another is a validation failure that surfaces
+    // inside a DAW, on the render thread, with nothing printable.
+    inline for (.{ window_buffer_index, uniform_buffer_index }) |index| {
+        const attribute = std.fmt.comptimePrint("buffer({d})", .{index});
+        try testing.expect(std.mem.indexOf(u8, shader_source, attribute) != null);
+    }
+}
+
+test "a window shorter than one segment draws no trace" {
+    try testing.expectEqual(@as(?u32, null), traceVertices(0));
+    try testing.expectEqual(@as(?u32, null), traceVertices(1));
+    try testing.expectEqual(@as(?u32, 2), traceVertices(2));
+}
+
+test "the trace draws one vertex per sample" {
+    // 960 is `gui.windowSamples(48_000)`, which `src/clap/gui.zig` pins against
+    // the default editor width; the bound is what `upload` truncates to.
+    try testing.expectEqual(@as(?u32, 960), traceVertices(960));
+    try testing.expectEqual(@as(?u32, iface.max_window_samples), traceVertices(iface.max_window_samples));
+}
+
+test "the trace's uniforms are laid out the way the shader reads them" {
+    // MSL computes its own offsets from its own `TraceUniforms` and nothing links
+    // the two declarations. What this catches is a field added or reordered on
+    // one side only, whose symptom is a trace at a plausible wrong scale rather
+    // than anything that fails. Apple's ceiling for `setVertexBytes:` is 4 KiB,
+    // and being far under it is the reason this is not a fourth buffer.
+    try testing.expectEqual(@as(usize, 12), @sizeOf(TraceUniforms));
+    try testing.expectEqual(@as(usize, 4), @alignOf(TraceUniforms));
+    try testing.expectEqual(@as(usize, 0), @offsetOf(TraceUniforms, "sample_count"));
+    try testing.expectEqual(@as(usize, 4), @offsetOf(TraceUniforms, "full_scale"));
+    try testing.expectEqual(@as(usize, 8), @offsetOf(TraceUniforms, "rail"));
+    try testing.expect(@sizeOf(TraceUniforms) <= 4096);
+}
+
+test "the trace's uniforms carry the seam's scale rather than a second copy of it" {
+    // The defaults are the whole mechanism by which the shader learns the
+    // vertical scale, so a `frame` that filled them in by hand would compile and
+    // draw at whatever it chose.
+    const uniforms: TraceUniforms = .{ .sample_count = 2 };
+
+    try testing.expectEqual(iface.trace_full_scale, uniforms.full_scale);
+    try testing.expectEqual(iface.trace_rail, uniforms.rail);
 }
 
 test "the drawable is sized in backing pixels and the layer in points" {
