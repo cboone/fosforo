@@ -292,13 +292,35 @@ Everything below passed. The split matters, because only the first two blocks ar
 | The same four under `--release=fast`                 | Clean                                                    |
 | `shfmt`, `shellcheck`, `markdownlint-cli2`, `typos`  | Clean                                                    |
 | The six planted defects                              | As tabulated above, with two corrections recorded below  |
-| REAPER and Logic                                     | **Outstanding.** The author's, per the procedure below   |
+| REAPER, steps 1, 2, 3 and 5                          | Passed. Step 5's measurements are below                  |
+| REAPER step 4, steps 6 to 8, and Logic               | **Outstanding.** The author's, per the procedure below   |
 
 **Two of the planted defects did not behave as the plan predicted, and both corrections are worth more than the rows they fix.**
 
 The plan expected dropping the editor's history wiring to be caught only by the harness. It is also caught by `zig build test`, against the existing test "init points the editor at the instance's history". So that row is a control showing the two levels agree, not evidence of unique coverage, and the plan was wrong to imply otherwise. Dropping `setWindow` from `activate` behaves the same way, which the plan did predict.
 
 The plant for `UploadsStopped` had to be strengthened before it tripped. A `readWindow` that stops once one *frame* has been presented still uploads a second window, because the count is captured after the first wait and the assertion asks only that it advanced; the assertion caught it only once the plant stopped after one *upload*. What `UploadsStopped` catches is a path that stopped, not one that slowed, and that is now stated where the assertion lives.
+
+### The level sweep, measured in REAPER
+
+Step 5 was run against the installed CLAP with `scripts/make-test-tones`' output, and read out of screenshots rather than by eye. The drawable was detected as exactly 1920x1080 in every capture, so the editor was at its default size on a 2x display.
+
+| File          | Peak row | Trough row | Read back as   | Actual level |
+| ------------- | -------- | ---------- | -------------- | ------------ |
+| `level-1.000` | 54       | 1025       | +1.0000        | 1.000        |
+| `level-1.050` | 29       | 1050       | +1.0514        | 1.050        |
+| `level-1.089` | 10       | 1069       | +1.0905, rails | 1.089        |
+| `level-2.000` | 10       | 1069       | +1.0905, rails | 2.000        |
+
+Every row matches the offscreen prediction exactly, and levels below the rail read back their own value to within a pixel. **The peak climbs and then stops**: 1.089 and 2.000 are identical in peak and trough, so a file peaking at 2.0 is reported as 1.089 with the amount unknowable. That is [ADR 0017](../../adr/0017-absolute-vertical-axis.md)'s claim, observed rather than argued, and it is the first evidence covering the whole chain: REAPER, the tap on output channel 0, the ring, the trailing-window read, the upload, the shader, the pixels.
+
+**Two things about the measurement were harder than the picture**, and both are recorded because they cost time and would cost it again.
+
+A lossy screenshot cannot be measured at all. The first capture arrived as HEIC with a `.png` name, and the codec smeared the one-pixel trace into a halo tens of pixels deep: the drawable held **256 distinct green levels** where a lossless render of this shader holds two, and the analyser confidently reported a full-scale signal as railed. Raising the threshold did not rescue it, because at 240 the halo still reached the top of the drawable. Capture with `screencapture -o -x -t png -W`, where `-t png` forces lossless and `-o` drops the window's drop shadow.
+
+That shadow is the second trap. Over a dark desktop it is near-black with a blue cast, which is also the background's signature, so an automatic crop keyed on colour alone stretched 119 rows past the real drawable and divided by the wrong height. Keying on the exact `RGB(5, 5, 8)` with the blue lead constrained to the 2-to-4 the shader produces separates them.
+
+One observation left unexplained, because it is 0.3% and did not recur: `level-1.089` lit 1914 of 1920 columns where the other three lit all 1920. The likely cause is the horizontal twin of the rail problem, the first and last vertices sitting at x = ±1 exactly, on the drawable's edge where half a one-pixel line's coverage diamond is off-screen.
 
 ### The mapping was measured offscreen rather than reasoned about
 
