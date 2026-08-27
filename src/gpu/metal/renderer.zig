@@ -231,10 +231,10 @@ const uniform_buffer_index: u64 = 1;
 /// Metal keeps fragment textures, fragment buffers and vertex buffers in three
 /// separate index spaces, so these three zeroes name three different slots.
 ///
-/// The source-grep test at the foot of this file covers the texture index and
-/// covers the fragment buffer index only vacuously, since `buffer(0)` already
-/// appears for the vertex-stage window. That is a known limit of a test made of
-/// string search rather than a reason to renumber the binding.
+/// All three zeroes are checked at the foot of this file by reading the index
+/// out of the declaration that carries it, rather than by searching for the
+/// attribute alone. That distinction is what makes the check mean anything:
+/// `buffer(0)` appears in this shader whatever these constants say.
 const accumulation_texture_index: u64 = 0;
 const accum_uniform_index: u64 = 0;
 
@@ -1495,26 +1495,68 @@ test "the embedded shader defines the functions every pipeline asks for" {
     }
 }
 
-test "the shader reads the buffers at the indices the encoder binds them to" {
-    // The other half of `window_buffer_index` and `uniform_buffer_index`, which
-    // MSL states as literals inside an attribute. Same shape of insurance as the
-    // test above, against a coupling with no compiler behind it at all: binding
-    // at one index and reading at another is a validation failure that surfaces
-    // inside a DAW, on the render thread, with nothing printable.
-    inline for (.{ window_buffer_index, uniform_buffer_index }) |index| {
-        const attribute = std.fmt.comptimePrint("buffer({d})", .{index});
-        try testing.expect(std.mem.indexOf(u8, shader_source, attribute) != null);
-    }
+/// The index MSL attaches to the first parameter matching `needle`, by reading
+/// the `[[<kind>(N)]]` that follows it.
+///
+/// Searching for the bare attribute is what this replaces, and the difference is
+/// the whole point. `buffer(0)` appears in this shader whatever the Zig side
+/// says, so a test that only asks whether the string is present passes when two
+/// indices are swapped, or when one declaration drifts and another happens to
+/// still use the number. Anchoring on the declaration ties an index to the
+/// parameter that has to carry it.
+fn bindingIndexAfter(comptime needle: []const u8, comptime kind: []const u8) ?u64 {
+    const start = std.mem.indexOf(u8, shader_source, needle) orelse return null;
+    const rest = shader_source[start..];
+
+    const opener = "[[" ++ kind ++ "(";
+    const at = std.mem.indexOf(u8, rest, opener) orelse return null;
+    const digits = rest[at + opener.len ..];
+    const end = std.mem.indexOfScalar(u8, digits, ')') orelse return null;
+
+    return std.fmt.parseInt(u64, digits[0..end], 10) catch null;
 }
 
-test "the shader reads the accumulation at the texture index the encoder binds it to" {
-    // The other half of `accumulation_texture_index`, which MSL states as a
-    // literal inside an attribute. Same shape of insurance as the buffer-index
-    // test above and against the same coupling with no compiler behind it:
-    // binding at one index and reading at another is a validation failure that
-    // surfaces inside a DAW, on the render thread, with nothing printable.
-    const attribute = std.fmt.comptimePrint("texture({d})", .{accumulation_texture_index});
-    try testing.expect(std.mem.indexOf(u8, shader_source, attribute) != null);
+test "every binding the encoder sets is read at the same index in the shader" {
+    // The other half of five constants MSL states as literals inside attributes,
+    // against a coupling with no compiler behind it at all: binding at one index
+    // and reading at another is a validation failure that surfaces inside a DAW,
+    // on the render thread, with nothing printable.
+    //
+    // Anchored on each declaration rather than on the attribute alone, which is
+    // what makes it non-vacuous. Fragment textures, fragment buffers and vertex
+    // buffers are three separate index spaces, so three of these are zero and a
+    // bare search for `buffer(0)` proves nothing about any of them.
+    try testing.expectEqual(
+        @as(?u64, window_buffer_index),
+        bindingIndexAfter("device const float *samples", "buffer"),
+    );
+    try testing.expectEqual(
+        @as(?u64, uniform_buffer_index),
+        bindingIndexAfter("TraceUniforms &", "buffer"),
+    );
+    try testing.expectEqual(
+        @as(?u64, accum_uniform_index),
+        bindingIndexAfter("AccumUniforms &", "buffer"),
+    );
+
+    // Both fragments that read the accumulation, named separately because each
+    // is a binding the encoder sets and either could drift alone.
+    try testing.expectEqual(
+        @as(?u64, accumulation_texture_index),
+        bindingIndexAfter("access::read> source", "texture"),
+    );
+    try testing.expectEqual(
+        @as(?u64, accumulation_texture_index),
+        bindingIndexAfter("access::read> energy", "texture"),
+    );
+}
+
+test "the binding reader finds nothing rather than guessing" {
+    // The failure this has to avoid is answering `null` for a declaration that
+    // moved and having that read as a pass. `expectEqual` against an optional
+    // covers it, and this pins the two ways `null` is reached.
+    try testing.expectEqual(@as(?u64, null), bindingIndexAfter("no such parameter", "buffer"));
+    try testing.expectEqual(@as(?u64, null), bindingIndexAfter("AccumUniforms &", "sampler"));
 }
 
 test "the accumulation's uniforms are laid out the way the shader reads them" {
