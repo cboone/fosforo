@@ -157,20 +157,6 @@ const drawable_pixel_format = mtl.pixel_format_bgra8_unorm;
 /// hold a range on.
 const decay_per_frame: f32 = 0.90;
 
-/// What the resolve multiplies accumulated energy by on its way to the drawable.
-///
-/// Derived rather than declared, so the two cannot drift apart. A pixel the beam
-/// visits every frame settles at `deposit / (1 - decay)`, so this is exactly the
-/// factor that makes a stationary trace resolve to the colour the line strip
-/// drew before any accumulation existed.
-///
-/// That equality is worth more than it looks. It means every geometry
-/// measurement taken against the phase 2 trace stays directly comparable, and it
-/// means persistence shows up only in transients, which is what forces this
-/// change to be verified with a stop, a detune or a click rather than with a
-/// screenshot of steady material.
-const resolve_gain: f32 = 1.0 - decay_per_frame;
-
 /// The drawable's size in whole backing pixels.
 ///
 /// Distinct from `iface.Size`, which is logical points everywhere above this
@@ -299,13 +285,12 @@ const Pipelines = struct {
 /// fourth resource for a slot discipline to cover and nothing for a leak check
 /// to be blind to.
 ///
-/// One struct for two passes rather than one each, because the two numbers are
-/// two halves of one decision: `gain` is defined as `1 - decay`, and splitting
-/// them across two bindings would let a future change move one without the
-/// other. The test at the foot of this file holds that relationship.
+/// One field today, and a struct rather than a bare float because #56 replaces
+/// the constant with a value computed per frame and #60 is likely to want a
+/// companion. A second field then costs a layout test line rather than a new
+/// binding.
 const AccumUniforms = extern struct {
     decay: f32 = decay_per_frame,
-    gain: f32 = resolve_gain,
 };
 
 /// How far the CPU may run ahead of the GPU, in frames.
@@ -947,11 +932,6 @@ pub const Renderer = struct {
 
         resolver.msgSend(void, "setRenderPipelineState:", .{self.pipelines.resolve});
         resolver.msgSend(void, "setFragmentTexture:atIndex:", .{ target, accumulation_texture_index });
-        resolver.msgSend(void, "setFragmentBytes:length:atIndex:", .{
-            &accum_uniforms,
-            @as(u64, @sizeOf(AccumUniforms)),
-            accum_uniform_index,
-        });
         resolver.msgSend(void, "drawPrimitives:vertexStart:vertexCount:", .{
             mtl.primitive_type_triangle,
             @as(u64, 0),
@@ -1525,10 +1505,9 @@ test "the accumulation's uniforms are laid out the way the shader reads them" {
     // links the two declarations. What this catches is a field added or
     // reordered on one side, whose symptom is a plausible picture at the wrong
     // brightness rather than anything that fails.
-    try testing.expectEqual(@as(usize, 8), @sizeOf(AccumUniforms));
+    try testing.expectEqual(@as(usize, 4), @sizeOf(AccumUniforms));
     try testing.expectEqual(@as(usize, 4), @alignOf(AccumUniforms));
     try testing.expectEqual(@as(usize, 0), @offsetOf(AccumUniforms, "decay"));
-    try testing.expectEqual(@as(usize, 4), @offsetOf(AccumUniforms, "gain"));
     try testing.expect(@sizeOf(AccumUniforms) <= 4096);
 }
 
@@ -1539,13 +1518,6 @@ test "a frame both dims what is there and shows what is left" {
     // reduces to the trace it replaced.
     try testing.expect(decay_per_frame > 0.0);
     try testing.expect(decay_per_frame < 1.0);
-
-    // Derived rather than declared, so the two cannot drift. This is the
-    // equality that makes a stationary trace resolve to exactly the colour the
-    // line strip drew, and therefore the one that keeps every geometry
-    // measurement taken against phase 2 directly comparable.
-    try testing.expectEqual(resolve_gain, 1.0 - decay_per_frame);
-    try testing.expect(resolve_gain > 0.0);
 }
 
 test "the uniforms carry the file's constants rather than a second copy of them" {
@@ -1555,7 +1527,6 @@ test "the uniforms carry the file's constants rather than a second copy of them"
     const uniforms: AccumUniforms = .{};
 
     try testing.expectEqual(decay_per_frame, uniforms.decay);
-    try testing.expectEqual(resolve_gain, uniforms.gain);
 }
 
 test "every pass names the format it is compiled against" {

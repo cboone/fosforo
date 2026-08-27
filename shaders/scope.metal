@@ -49,7 +49,6 @@ vertex VertexOut fullscreen_vertex(uint vertex_id [[vertex_id]]) {
 // would notice a field added or reordered on one side.
 struct AccumUniforms {
     float decay;
-    float gain;
 };
 
 // Dim what the phosphor already holds, reading the half of the ping-pong the
@@ -77,12 +76,18 @@ fragment float4 decay_fragment(VertexOut in [[stage_in]],
 // Put accumulated energy on the drawable. Deliberately trivial: #60's tonemap
 // and palette are what this becomes.
 //
-// The gain is what stops the picture being worse than the one it replaces. A
-// pixel the beam visits every frame settles at deposit / (1 - decay), so writing
-// the accumulation straight out would clip every lit pixel to white; scaling by
-// (1 - decay) makes a stationary trace resolve to exactly the colour the line
-// strip drew before any of this existed. What is left over is the fade, which is
-// the whole point, and it is visible only in transients.
+// No gain, no curve, no clamp: accumulated energy goes to the drawable as it is
+// and the format clips whatever exceeds 1.0. That is ADR 0007's shape, where
+// energy accumulates past full scale and a tonemap compresses it, and #60 is
+// what supplies the compressing.
+//
+// **A gain of (1 - decay) was tried here and measured wrong**, which is worth
+// recording because the arithmetic looks convincing. It normalises a stationary
+// trace to the colour the unaccumulated line strip drew, and it does that by
+// dividing a *moving* trace by ten, because a sliding trace never lights the
+// same pixel twice and so never accumulates. In REAPER a 100 Hz sine measured a
+// peak green of 53 against 255, which reads as a black display. The case it
+// optimised for is silence; the case it broke is every signal.
 //
 // The background literal moved here from the deleted `clear_fragment`, and it is
 // load-bearing beyond looking right: the screenshot tooling finds this drawable
@@ -90,9 +95,8 @@ fragment float4 decay_fragment(VertexOut in [[stage_in]],
 // and green by two to four. Emitting it where no energy has landed is what keeps
 // that crop working.
 fragment float4 resolve_fragment(VertexOut in [[stage_in]],
-                                 texture2d<float, access::read> energy [[texture(0)]],
-                                 constant AccumUniforms &uniforms [[buffer(0)]]) {
-    const float3 lit = energy.read(uint2(in.position.xy)).rgb * uniforms.gain;
+                                 texture2d<float, access::read> energy [[texture(0)]]) {
+    const float3 lit = energy.read(uint2(in.position.xy)).rgb;
     return float4(float3(0.02, 0.02, 0.03) + lit, 1.0);
 }
 
