@@ -544,6 +544,32 @@ fn oneCycle(
         return error.UploadsStopped;
     }
 
+    // Down as well as up, because a shrink is where a stale larger surface is
+    // most likely to survive unnoticed: everything still fits, so nothing reads
+    // out of bounds and nothing looks obviously wrong. Going straight to the
+    // minimum also exercises the smallest geometry the seam permits, which is
+    // the case the backend's own arithmetic is floored for.
+    if (!editor.set_size.?(p, gui.min_size.width, gui.min_size.height)) return error.SetSizeFailed;
+    try waitForFrames(instance, instance.framesPresented() + 2);
+
+    // A height no display has, which is what a host actually sends. Dragging an
+    // editor's bottom edge above its top makes REAPER 7.78 pass 4294967295,
+    // being -1 computed as a signed CGFloat and handed to a `u32` parameter.
+    //
+    // **Until now that path was exercised only by a human dragging a window.**
+    // It runs through `Editor.setSize`, `clampSize` and `clampAxis` exactly as
+    // the host's own value does, and what it guards is a surface sized from
+    // something other than the clamped result: unguarded, this once reached
+    // Metal as a request for a 960x131070 drawable. Under `smoke-leaks` it now
+    // runs 400 times rather than never.
+    if (!editor.set_size.?(p, 1280, std.math.maxInt(u32))) return error.SetSizeFailed;
+    try waitForFrames(instance, instance.framesPresented() + 2);
+
+    // Back to something ordinary, so the reopen below starts from a geometry
+    // the rest of this function's expectations were written against.
+    if (!editor.set_size.?(p, gui.default_size.width, gui.default_size.height)) return error.SetSizeFailed;
+    try waitForFrames(instance, instance.framesPresented() + 2);
+
     // An editor destroyed and reopened on a still-activated plugin, which is what
     // Logic does on every open of the plugin window because clap-wrapper's AUv2
     // view destroys rather than hides. `Editor.destroy` deliberately keeps
