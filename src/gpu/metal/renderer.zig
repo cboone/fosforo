@@ -84,6 +84,20 @@ const ClearColor = extern struct {
 /// than re-adding a pass.
 const background: ClearColor = .{ .red = 0.02, .green = 0.02, .blue = 0.03, .alpha = 1.0 };
 
+/// The drawable's size in whole backing pixels.
+///
+/// Distinct from `iface.Size`, which is logical points everywhere above this
+/// file, and deliberately backend-local: reusing the seam's type here would make
+/// "size" mean two different things in one function signature.
+///
+/// It exists because a second surface is about to have to line up with the
+/// drawable exactly. `backingPixels` rounds once, and the layer is handed a
+/// `CGSize` built from the result, so there is nothing left for CoreAnimation to
+/// round differently. Phase 3's accumulation textures are allocated from the
+/// same number, which is what makes a fragment shader's integer read of one
+/// in-bounds against the other.
+const Pixels = struct { width: u32, height: u32 };
+
 /// A pipeline's two halves, named together so `buildPipeline` can report which
 /// pair a library failed to supply rather than reporting a generic failure.
 const Functions = struct { vertex: [:0]const u8, fragment: [:0]const u8 };
@@ -264,6 +278,20 @@ pub const Renderer = struct {
     window: [iface.max_window_samples]f32 = @splat(0),
     window_len: usize = 0,
 
+    /// The drawable's current size in whole backing pixels.
+    ///
+    /// The first thing this backend has ever remembered about its own geometry.
+    /// `resize` used to forward both arguments to the layer and keep neither,
+    /// which was right while the drawable was the only surface: nothing else
+    /// needed the number, and the layer already had it.
+    ///
+    /// Phase 3's accumulation textures are what change that. They are sized from
+    /// this, reallocated when it moves, and read by a fragment shader at integer
+    /// coordinates against the drawable, so the two have to be the same number
+    /// rather than two roundings of one expression. It is also the `H` the
+    /// half-pixel centre-line bias in `AGENTS.md` was declined for wanting.
+    pixels: Pixels,
+
     /// [main-thread] Builds everything the GPU needs and hangs a layer off the
     /// host's view.
     ///
@@ -314,7 +342,11 @@ pub const Renderer = struct {
         const windows = try buildWindows(device, diags);
         errdefer releaseWindows(windows);
 
-        const layer = try attachLayer(view, device, size, scale, diags);
+        // Computed once and handed on rather than recomputed at each call site,
+        // which is the whole discipline `backingPixels` exists to enforce.
+        const pixels = backingPixels(size, scale);
+
+        const layer = try attachLayer(view, device, size, pixels, scale, diags);
 
         return .{
             .device = device,
@@ -323,6 +355,7 @@ pub const Renderer = struct {
             .layer = layer,
             .in_flight = in_flight,
             .windows = windows,
+            .pixels = pixels,
         };
     }
 
@@ -416,25 +449,41 @@ pub const Renderer = struct {
     /// be reallocating out from under a frame this thread is midway through.
     ///
     /// Phase 3's accumulation textures are reallocated here, which is why this
-    /// takes the size rather than reading it back off the layer.
-    ///
-    /// Inside a transaction because these are CoreAnimation properties being
-    /// set from somewhere that is not the main thread: it makes the pair land
-    /// as one change and skips the implicit animation CoreAnimation would
-    /// otherwise attach to each.
+    /// takes the size rather than reading it back off the layer, and why the
+    /// layer work is a separate function rather than this function's body.
     pub fn resize(self: *Renderer, size: iface.Size, scale: f64) void {
         platform.assertNotMainThread();
 
         const pool = objc.AutoreleasePool.init();
         defer pool.deinit();
 
+        const pixels = backingPixels(size, scale);
+        self.applyLayerGeometry(pixels, scale);
+        self.pixels = pixels;
+    }
+
+    /// [render-thread] Point the layer at a new drawable size and scale.
+    ///
+    /// Split out of `resize` so the CoreAnimation transaction is provably closed
+    /// before anything else runs. A `defer` fires at *function* exit, so leaving
+    /// this inline and appending texture reallocation below it would hold a
+    /// transaction open across a multi-megabyte allocation, on a thread that is
+    /// not the main one. That is not obviously harmful and is obviously not what
+    /// anyone intends, which is the kind of thing worth making structural rather
+    /// than remembering.
+    ///
+    /// Inside a transaction at all because these are CoreAnimation properties
+    /// being set from somewhere that is not the main thread: it makes the pair
+    /// land as one change and skips the implicit animation CoreAnimation would
+    /// otherwise attach to each.
+    fn applyLayerGeometry(self: *Renderer, pixels: Pixels, scale: f64) void {
         const transaction = objc.getClass("CATransaction").?;
         transaction.msgSend(void, "begin", .{});
         defer transaction.msgSend(void, "commit", .{});
         transaction.msgSend(void, "setDisableActions:", .{true});
 
         self.layer.msgSend(void, "setContentsScale:", .{scale});
-        self.layer.msgSend(void, "setDrawableSize:", .{drawableSize(size, scale)});
+        self.layer.msgSend(void, "setDrawableSize:", .{drawableSize(pixels)});
     }
 
     /// [render-thread] Hand over the window the next frame should draw.
@@ -801,10 +850,16 @@ fn buildPipeline(
 /// layer-hosting rather than layer-backed. Reversing the two lets AppKit
 /// install a layer of its own first, and the Metal layer then becomes a
 /// sublayer that does not track the view's geometry.
+/// Takes both units on purpose. The layer's `frame` is logical points, because
+/// it is a view's geometry; its `drawableSize` is backing pixels, because it is
+/// a texture's. Deriving one from the other here would put a second rounding
+/// rule beside `backingPixels`, which is the thing that file-level comment
+/// exists to prevent.
 fn attachLayer(
     view: iface.NativeView,
     device: objc.Object,
     size: iface.Size,
+    pixels: Pixels,
     scale: f64,
     diags: *iface.Diagnostics,
 ) iface.Error!objc.Object {
@@ -830,7 +885,7 @@ fn attachLayer(
     // keeps the two from drifting apart if one is ever tuned.
     layer.msgSend(void, "setMaximumDrawableCount:", .{@as(u64, max_frames_in_flight)});
     layer.msgSend(void, "setContentsScale:", .{scale});
-    layer.msgSend(void, "setDrawableSize:", .{drawableSize(size, scale)});
+    layer.msgSend(void, "setDrawableSize:", .{drawableSize(pixels)});
     layer.msgSend(void, "setFrame:", .{bounds});
 
     const host_view = objc.Object.fromId(view);
@@ -854,12 +909,48 @@ fn logicalSize(size: iface.Size) CGSize {
     };
 }
 
-/// Backing pixels. Cocoa hands out logical points, so this is the one place the
-/// scale factor is applied, and getting it wrong is a blurry render rather than
-/// a failure, which is exactly why it is worth stating in one place.
-fn drawableSize(size: iface.Size, scale: f64) CGSize {
+/// Logical points to whole backing pixels. Cocoa hands out points, so this is
+/// the one place the scale factor is applied and **the one place the result
+/// becomes an integer**.
+///
+/// Both halves of that matter, and the second one is new. Getting the scale
+/// wrong is a blurry render rather than a failure, which is why it was already
+/// worth stating once. Rounding it twice is worse than either: `Pending.Packed`
+/// quantizes the scale to 1/256ths, so a scale that is not exactly 1 or 2
+/// produces a fractional pixel count, and if this file truncated where
+/// `CAMetalLayer` rounded, an accumulation texture sized from here would be a
+/// pixel narrower than the drawable sized from there. A fragment reading one at
+/// the other's coordinates would then be out of bounds, which MSL does not
+/// define as a benign zero.
+///
+/// Saturating rather than `@intFromFloat`, which is illegal behaviour out of
+/// range, on `gui.windowSamples`' precedent and for its reason: nothing in the
+/// type system stops a caller handing over a scale this cannot represent, and
+/// the answer to one has to be a number rather than a panic.
+///
+/// Floored at one pixel per axis. Metal rejects a zero-dimension texture, and
+/// the smallest editor `gui.clampSize` permits at the smallest scale
+/// `Pending.Packed` can encode still rounds to at least one, so this guards a
+/// case the callers already exclude rather than one they produce. The test at
+/// the foot of this file is what ties those two bounds together.
+fn backingPixels(size: iface.Size, scale: f64) Pixels {
     const logical = logicalSize(size);
-    return .{ .width = logical.width * scale, .height = logical.height * scale };
+    return .{
+        .width = @max(1, std.math.lossyCast(u32, @round(logical.width * scale))),
+        .height = @max(1, std.math.lossyCast(u32, @round(logical.height * scale))),
+    };
+}
+
+/// The same pixels as a `CGSize`, which is what `setDrawableSize:` takes.
+///
+/// Separate from `backingPixels` so the integer is what travels and the float is
+/// only ever the last step. Handing the layer a size built from whole pixels is
+/// what makes the drawable and everything sized beside it agree by construction.
+fn drawableSize(pixels: Pixels) CGSize {
+    return .{
+        .width = @floatFromInt(pixels.width),
+        .height = @floatFromInt(pixels.height),
+    };
 }
 
 /// Copy an `NSError`'s description into `diags`, falling back to a fixed line
@@ -968,6 +1059,65 @@ test "the drawable is sized in backing pixels and the layer in points" {
     const size: iface.Size = .{ .width = 960, .height = 540 };
 
     try testing.expectEqual(CGSize{ .width = 960, .height = 540 }, logicalSize(size));
-    try testing.expectEqual(CGSize{ .width = 1920, .height = 1080 }, drawableSize(size, 2));
-    try testing.expectEqual(CGSize{ .width = 960, .height = 540 }, drawableSize(size, 1));
+    try testing.expectEqual(Pixels{ .width = 1920, .height = 1080 }, backingPixels(size, 2));
+    try testing.expectEqual(Pixels{ .width = 960, .height = 540 }, backingPixels(size, 1));
+}
+
+test "the layer is handed the same whole pixels everything else is sized from" {
+    // The property that keeps a fragment's integer read of one surface in bounds
+    // against another: whatever `backingPixels` decided is what reaches
+    // `setDrawableSize:`, with no second rounding in between. Phase 3's
+    // accumulation textures are the other consumer, and this is the only thing
+    // asserting the two cannot disagree.
+    const size: iface.Size = .{ .width = 960, .height = 540 };
+
+    inline for (.{ 1.0, 1.5, 2.0 }) |scale| {
+        const pixels = backingPixels(size, scale);
+        try testing.expectEqual(
+            CGSize{
+                .width = @floatFromInt(pixels.width),
+                .height = @floatFromInt(pixels.height),
+            },
+            drawableSize(pixels),
+        );
+    }
+}
+
+test "a fractional backing scale rounds once rather than truncating" {
+    // 1.5 is reachable: `Pending.Packed` carries the scale in 1/256ths, so
+    // anything a display reports that is not exactly 1 or 2 arrives here as a
+    // fraction. 540 * 1.5 is exact; 271 * 1.5 is 406.5 and is the case that
+    // separates rounding from truncation.
+    try testing.expectEqual(
+        Pixels{ .width = 1440, .height = 810 },
+        backingPixels(.{ .width = 960, .height = 540 }, 1.5),
+    );
+    try testing.expectEqual(
+        Pixels{ .width = 1440, .height = 407 },
+        backingPixels(.{ .width = 960, .height = 271 }, 1.5),
+    );
+}
+
+test "the smallest editor the seam permits still asks for at least one pixel" {
+    // 480x270 is `gui.min_size` and 1/256 is the smallest scale `Pending.Packed`
+    // can encode, restated as literals because the backend must not import the
+    // clap layer. Metal rejects a zero-dimension texture, so this is the
+    // arithmetic that says the floor in `backingPixels` guards a case the
+    // callers already exclude rather than one they produce.
+    const smallest = backingPixels(.{ .width = 480, .height = 270 }, 1.0 / 256.0);
+
+    try testing.expect(smallest.width >= 1);
+    try testing.expect(smallest.height >= 1);
+}
+
+test "a scale no integer can hold is saturated rather than illegal" {
+    // `@intFromFloat` is undefined behaviour out of range and `lossyCast` is
+    // not. Nothing should reach this, since `Pending` refuses a degenerate
+    // scale and `View.backingScale` falls back to 1.0, but the seam's own
+    // habit is to refuse rather than assert at a boundary it does not own.
+    const huge = backingPixels(.{ .width = 960, .height = 540 }, 1e300);
+    try testing.expectEqual(@as(u32, std.math.maxInt(u32)), huge.width);
+
+    const nonsense = backingPixels(.{ .width = 960, .height = 540 }, std.math.nan(f64));
+    try testing.expect(nonsense.width >= 1);
 }
