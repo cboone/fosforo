@@ -50,3 +50,14 @@ indent_style = space
 indent_size = 2
 switch_case_indent = true
 space_redirects = true
+
+# scripts/measure-trace, which is Python and cannot join the section above: the
+# four keys there are shfmt directives, and shfmt does not read this file at all.
+# Its own formatter does not either. **ruff ignores .editorconfig**, unlike
+# shfmt, so this section and ruff.toml are two independent statements of the same
+# style and are kept in step by hand. ruff is the authority; this is what stops
+# an editor fighting it before ruff has run.
+[measure-trace]
+indent_style = space
+indent_size = 4
+max_line_length = 100

@@ -1,0 +1,194 @@
+#!/usr/bin/env -S uv run --quiet --with pillow --with numpy python
+"""Measure a Fosforo trace out of a screenshot.
+
+The verification steps talk in backing pixels: a peak on row 54 rather than row
+30 is the whole of the level check, and no eye reads that off a screen. This
+reports the numbers instead.
+
+    screencapture -o -x -t png -W shot.png    # click the plugin window
+    measure-trace shot.png
+
+Every flag there is load-bearing. `-o` drops the window's drop shadow, which is
+dark with a blue cast over a dark desktop and otherwise reads as more drawable.
+`-t png` forces lossless: a lossy capture smears the one-pixel trace into a halo
+tens of pixels deep, which moved a full-scale signal's measured peak onto the
+rail. `-W` picks the window so the whole editor is in frame; the crop is found
+from the background rather than given.
+
+On a Retina display this writes backing pixels, which is the unit the plan's
+tables are in. Terminal needs Screen Recording permission or the capture comes
+back empty.
+"""
+
+import argparse
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+import numpy as np
+from PIL import Image, UnidentifiedImageError
+
+FULL_SCALE = 0.9
+RAIL = 0.98
+
+
+def open_image(path):
+    """Open a capture whatever container macOS put it in.
+
+    A screenshot named `.png` is not necessarily a PNG: depending on how it was
+    taken, macOS writes HEIC and leaves the extension alone, and Pillow reads
+    neither HEIC nor several other things the screen-capture path can produce.
+    `sips` is part of the base OS and reads everything Apple's imaging stack
+    does, so an unreadable file gets one conversion attempt before being called
+    unreadable.
+    """
+    try:
+        return Image.open(path)
+    except UnidentifiedImageError:
+        pass
+    except FileNotFoundError:
+        sys.exit(f"no such file: {path}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        converted = Path(tmp) / "converted.png"
+        done = subprocess.run(
+            ["sips", "-s", "format", "png", str(path), "--out", str(converted)],
+            capture_output=True,
+        )
+        if done.returncode != 0 or not converted.exists():
+            sys.exit(
+                f"{path} is not an image Pillow or sips can read.\n"
+                "If it came from `screencapture`, an empty or truncated file usually "
+                "means Terminal lacks Screen Recording permission:\n"
+                "  System Settings > Privacy & Security > Screen & System Audio Recording"
+            )
+        print(f"converted {Path(path).suffix or 'the capture'} to png via sips")
+        return Image.open(converted).copy()
+
+
+def find_drawable(rgb):
+    """Bounding box of Fosforo's own surface inside a larger screenshot.
+
+    The background is RGB(5, 5, 8), whose giveaway is the blue channel sitting
+    two or three above red and green. A host's chrome is grey or coloured and a
+    pure grey fails `blue > red and blue > green`, so this does not need the
+    capture cropped by hand: grab the whole window and let the background find
+    itself. Returns None when no such region exists, which is the honest answer
+    for a capture of the wrong thing.
+    """
+    r, g, b = rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2]
+    # Tight, because a window's drop shadow over a dark desktop is also near
+    # black with a blue cast and fooled a looser test: it stretched the detected
+    # region 119 rows past the real drawable. The shader writes exactly
+    # RGB(5, 5, 8), so require that, and require the blue lead to be the 2-to-4
+    # the 0.03-against-0.02 produces rather than merely positive.
+    bg = (
+        (r >= 3) & (r <= 7) & (g >= 3) & (g <= 7) & (b >= 6) & (b <= 10)
+        & (b - r >= 2) & (b - r <= 4) & (b - g >= 2) & (b - g <= 4)
+    )
+    if bg.sum() < 1000:
+        return None
+    rows, cols = np.where(bg)
+    return int(cols.min()), int(rows.min()), int(cols.max()) + 1, int(rows.max()) + 1
+
+
+def lit_rows(img, threshold):
+    """Topmost and bottommost lit row per column, or -1 where the column is dark."""
+    # The trace is green on a near-black background, so the green channel alone
+    # separates them; using luminance would also catch the background's blue.
+    green = np.asarray(img.convert("RGB"), dtype=np.int16)[:, :, 1]
+    lit = green > threshold
+    any_lit = lit.any(axis=0)
+    top = np.where(any_lit, lit.argmax(axis=0), -1)
+    bottom = np.where(any_lit, lit.shape[0] - 1 - lit[::-1].argmax(axis=0), -1)
+    return top, bottom, any_lit
+
+
+def implied_sample(row, height):
+    """Invert the documented mapping: row -> NDC -> sample value."""
+    y = 1.0 - 2.0 * row / height
+    return y / FULL_SCALE
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("image")
+    ap.add_argument("--threshold", type=int, default=64, help="green level counted as lit")
+    ap.add_argument("--periods", action="store_true", help="also count periods")
+    ap.add_argument("--no-crop", action="store_true", help="the image is already exactly the drawable")
+    ap.add_argument("--allow-lossy", action="store_true", help="measure a lossy capture anyway")
+    args = ap.parse_args()
+
+    img = open_image(args.image)
+
+    if not args.no_crop:
+        rgb = np.asarray(img.convert("RGB"), dtype=np.int16)
+        box = find_drawable(rgb)
+        if box is None:
+            print("no Fosforo background found: is this a capture of the editor?")
+            return 1
+        if box != (0, 0, img.size[0], img.size[1]):
+            print(f"drawable found at x={box[0]} y={box[1]}, cropping to it")
+        img = img.crop(box)
+
+    width, height = img.size
+
+    # A lossless capture of this shader holds two colours in the drawable: the
+    # background and the trace. Anything else means the image went through a
+    # lossy codec, which smears a one-pixel line into a halo tens of pixels deep
+    # and moves every number below. Refusing is right: a plausible wrong answer
+    # is worse than none, and this one reported a railed trace for a signal at
+    # full scale.
+    shades = len(np.unique(np.asarray(img.convert("RGB"), dtype=np.int16)[:, :, 1]))
+    if shades > 32 and not args.allow_lossy:
+        print(f"{shades} distinct green levels in the drawable; a lossless capture has 2.")
+        print("This image has been through a lossy codec and cannot be measured.")
+        print("Recapture with:  screencapture -o -x -t png -W shot.png")
+        print("  -o drops the window shadow, which otherwise confuses the crop")
+        print("  -t png forces lossless, whatever the screenshot default is")
+        print("Pass --allow-lossy to measure it anyway, knowing the peak will read high.")
+        return 1
+
+    top, bottom, any_lit = lit_rows(img, args.threshold)
+
+    if not any_lit.any():
+        print("no lit pixels found: wrong region, or the capture is of a covered window")
+        return 1
+
+    peak_top = int(top[any_lit].min())
+    peak_bottom = int(bottom[any_lit].max())
+    rail_row = (1.0 - RAIL) * height / 2
+
+    print(f"image            {width} x {height}")
+    print(f"columns lit      {int(any_lit.sum())} of {width}")
+    print(f"centre row       {height / 2:.1f}")
+    print(f"rail rows        {rail_row:.1f} / {height - rail_row:.1f}")
+    print()
+    print(f"highest peak     row {peak_top:<6} implies sample {implied_sample(peak_top, height):+.4f}")
+    print(f"lowest trough    row {peak_bottom:<6} implies sample {implied_sample(peak_bottom, height):+.4f}")
+
+    # A peak sitting on the rail means "at or above" and nothing more precise.
+    if abs(peak_top - rail_row) <= 1.5:
+        print("                 ^ on the rail: at or above +0.74 dBFS, amount unknowable")
+
+    plateau = int((top == peak_top).sum())
+    print(f"plateau width    {plateau} columns at the highest row")
+
+    if args.periods:
+        # One run per period, thresholded well above centre so a steep crossing
+        # cannot be mistaken for a peak.
+        band = (height / 2 + peak_top) / 2
+        runs, inside = 0, False
+        for x in range(width):
+            up = any_lit[x] and top[x] < band
+            if up and not inside:
+                runs += 1
+            inside = up
+        print(f"periods          {runs}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
