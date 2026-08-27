@@ -322,7 +322,17 @@ Two consequences that are easy to miss and have already been reasoned about once
 
 **`clap-host` is the exception worth knowing**, and it is what makes any concurrent host work possible at all. It takes an explicit path, so it reads the worktree rather than the shared install location, with no install step and no hash comparison. It cannot test resizing and is not a load test, so it does not replace REAPER or Logic; it does mean a second stream can confirm a render, exercise the editor lifecycle and read `clap.log` while another stream owns the installed bundle.
 
-Working order on that basis: **#64**, then **#55** (commits through the pair are compile-only and overlap freely; the measurement and the host runs are exclusive in turn), then **#63** and **#22** once nothing else needs the machine or the install path, then **#61**, then **#56**, **#57** and **#60**, which are separable from each other at the cost of a merge on the pass table each time.
+**Every issue here is an ordinary branch off `main`, and none needs another's unfinished work.** That is worth stating plainly, because the contention above is a fact about one laptop rather than about branch topology, and reading it as a queue with hand-offs is the available mistake. Three unrelated constraints are in play and only the first is about merging at all:
+
+| Constraint                   | Where it applies                                                          | What it actually requires                                                                                         |
+|------------------------------|---------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------|
+| **Code dependency**          | #56, #57 and #60 need #55; #58 and #59 need #57                           | Wait for the PR to merge, then branch from `main` as usual                                                        |
+| **Merge conflict**           | #61 against #55, both rewriting `Pipelines` and `buildPipelines`          | Nothing, strictly. Whichever lands second rebases over a rewrite of one struct, so ordering them is a convenience |
+| **Machine and install path** | #55's measurement and host runs, #63's threshold, #22, #34, #64's capture | Do not *run* two of them at the same moment. No effect on what may be branched, reviewed or merged                |
+
+The only subtle entry is [#63](https://github.com/cboone/fosforo/issues/63)'s: its RSS threshold depends on #55's baseline **number** rather than on its code, so it wants #55 merged before the figure is fixed, while its `smoke-leaks` half depends on nothing.
+
+Stacking is available and is deliberately not the recommendation. Branching #57 off #55 before #55 merges would make partial work available to it, at the usual cost: the child's diff is unreadable until the parent lands, and every parent revision forces a rebase. #55's own commits are strictly sequential anyway, so the simpler model wins.
 
 ## Phase 4: triggering
 
