@@ -286,6 +286,26 @@ Logic, where the editor is destroyed rather than hidden and the build is Release
   - **The lossless guard breaks, and it breaks by accusing the author.** `measure-trace` refuses any capture holding more than 32 distinct green levels, on the stated premise that "a lossless capture has 2", and tells the operator to recapture. A decaying trail occupies many levels by construction, so a perfectly good PNG is refused and only `--allow-lossy` gets through, which then names the wrong thing. The exception is the standstill, where the trace lands on identical pixels every frame and the drawable really does hold two shades again, so the one measurement this plan asks `measure-trace` for still works. Everything else needs [#64](https://github.com/cboone/fosforo/issues/64) first.
 - **One frame of resolve lag would be invisible.** If the resolve read the stale half of the ping-pong, the drawable would show the accumulation as of one frame ago. No instrument here can see it.
 
+## What landed differently
+
+Seven corrections, and the first four are the same discovery arriving in stages.
+
+**`leaks` cannot see a leaked accumulation texture.** Measured, as the issue required: dropping one release and running 20 cycles reports 283 leaks for 18,560 bytes against a clean 288 for 18,816, none of the 250 classes a texture under any name, while the leak runs at roughly 46 MB per cycle. Arm B, as for `MTLBuffer`.
+
+**Neither can peak RSS, and this plan asserted the opposite.** It said RSS was "a far sharper leak detector here than it was for buffers", on the strength of a leaked `MTLBuffer` moving it from 47.7 MB to 57.7 MB. A leaked texture does not move it at all: 44.3 MB against 44.1 MB clean at 40 cycles while leaking nearly two gigabytes. Shared storage is in the process's resident set and `MTLStorageModePrivate` is not. **`liveAccumulationTextures` is therefore not the better of two instruments, it is the only one**, which is a stronger position than the window buffers are in.
+
+**The counter is consequently mandatory rather than conditional**, and the commit that adds it is no longer marked as such.
+
+**The seam changed, which this plan said it would not.** `liveAccumulationTextures` is an eighth operation in the comptime wall. The prose count in `iface.zig` that has to be kept beside it by hand was updated with it.
+
+**Two planted defects are caught by nothing this project runs.** The plan listed a missing `MTLTextureUsageRenderTarget` and a resolve pipeline compiled against the wrong format as positive controls that would fail `smoke-appkit` with `NoFramePresented`. Both pass. Metal validates neither without the layer enabled, so both are undefined behaviour that happens to present a frame while the picture is wrong. `MTL_DEBUG_LAYER=1` names both exactly, `RenderPass Descriptor Validation` for the first and `Set Render Pipeline State Validation` for the second. That is the argument for the debug-layer run made against real defects, and it is worth handing to [#63](https://github.com/cboone/fosforo/issues/63).
+
+**`backingPixels` saturates and floors rather than using `@intFromFloat(@round(...))`.** `@intFromFloat` is illegal behaviour out of range, and `gui.windowSamples` already established `std.math.lossyCast` as this project's idiom at a boundary it does not own. The floor at one pixel per axis is because Metal rejects a zero-dimension texture.
+
+**The memory prediction was wrong in the same direction as the RSS finding.** This plan predicted peak RSS moving to 100 to 130 MB. Measured after the change it is 44.1 MB at 40 cycles, 55.3 at 200 and 62.9 at 400, against a pre-change 40.8, 53.5 and 68.6. The textures are simply not in that number. The 33 MB per open editor is real and is still worth stating; what is not true is that anything here can observe it.
+
+The consequence for the host procedure is that **step 10, opening and closing ten FX windows to confirm RSS does not return, cannot work.** `hide` keeping the renderer alive is still a real cost and is still worth [filing](https://github.com/cboone/fosforo/issues/22), but no instrument available in a host can measure it, and `liveAccumulationTextures` is reachable only from the smoke harness.
+
 ## Out of scope
 
 Recorded so they read as deliberate omissions rather than oversights.
