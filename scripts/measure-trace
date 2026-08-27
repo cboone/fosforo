@@ -29,8 +29,36 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, UnidentifiedImageError
 
-FULL_SCALE = 0.9
-RAIL = 0.98
+# This project's display contract, restated. Four numbers this file does not own
+# and cannot derive, copied from two files in two other languages, with a test on
+# the Zig side reading this script and asserting all four still agree. Without
+# that test a constant that moved would leave everything below reporting
+# confident numbers against the old mapping.
+FULL_SCALE = 0.9  # iface.trace_full_scale
+RAIL = 0.98  # iface.trace_rail
+BACKGROUND = (0.02, 0.02, 0.03)  # resolve_fragment's literal
+BEAM = (0.30, 1.0, 0.45)  # trace_fragment's literal
+
+# The two colours as the drawable stores them. `BGRA8Unorm` is not sRGB, so the
+# 8-bit values are linear in the shader's floats and this is the whole of the
+# conversion. Kept unrounded, because the ray prediction wants 5.1 and 7.65
+# rather than the 5 and 8 an eye reads off a screenshot.
+BG8 = tuple(c * 255.0 for c in BACKGROUND)
+BEAM8 = tuple(c * 255.0 for c in BEAM)
+
+# How far a capture may stray from the exact background before a pixel stops
+# counting as background, and how far the blue lead may stray from its nominal 3.
+# Both are empirical: they describe what the screen-capture path does to a value,
+# not what the shader writes, which is why they are numbers here rather than
+# derived from BACKGROUND the way the centres are.
+BG_WINDOW = 2
+LEAD_WINDOW = 1
+
+# The colour-ray guard. See `off_ray` for what it tests and why the shade count
+# it replaced stopped working.
+RAY_TOLERANCE = 2
+MAX_OFF_RAY = 0.005
+SATURATED = 250
 
 
 def open_image(path):
@@ -76,34 +104,81 @@ def find_drawable(rgb):
     """Bounding box of Fosforo's own surface inside a larger screenshot.
 
     The background is RGB(5, 5, 8), whose giveaway is the blue channel sitting
-    two or three above red and green. A host's chrome is grey or coloured and a
-    pure grey fails `blue > red and blue > green`, so this does not need the
-    capture cropped by hand: grab the whole window and let the background find
-    itself. Returns None when no such region exists, which is the honest answer
-    for a capture of the wrong thing.
+    three above red and green. A host's chrome is grey or coloured and a pure
+    grey fails that lead, so this does not need the capture cropped by hand: grab
+    the whole window and let the background find itself. Returns None when no
+    such region exists, which is the honest answer both for a capture of the
+    wrong thing and for one recompressed past the point where the background
+    survives.
     """
     r, g, b = rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2]
     # Tight, because a window's drop shadow over a dark desktop is also near
     # black with a blue cast and fooled a looser test: it stretched the detected
     # region 119 rows past the real drawable. The shader writes exactly
-    # RGB(5, 5, 8), so require that, and require the blue lead to be the 2-to-4
-    # the 0.03-against-0.02 produces rather than merely positive.
+    # RGB(5, 5, 8), so require that, and require the blue lead to be the 3 the
+    # 0.03-against-0.02 produces rather than merely positive.
+    #
+    # The centres come from BACKGROUND rather than being written out, so the one
+    # place this file states the background is the one the constants test checks.
+    # Only the windows either side are this function's own.
+    want = [round(c) for c in BG8]
+    lead = want[2] - want[0]
     bg = (
-        (r >= 3)
-        & (r <= 7)
-        & (g >= 3)
-        & (g <= 7)
-        & (b >= 6)
-        & (b <= 10)
-        & (b - r >= 2)
-        & (b - r <= 4)
-        & (b - g >= 2)
-        & (b - g <= 4)
+        (abs(r - want[0]) <= BG_WINDOW)
+        & (abs(g - want[1]) <= BG_WINDOW)
+        & (abs(b - want[2]) <= BG_WINDOW)
+        & (abs(b - r - lead) <= LEAD_WINDOW)
+        & (abs(b - g - lead) <= LEAD_WINDOW)
     )
     if bg.sum() < 1000:
         return None
     rows, cols = np.where(bg)
     return int(cols.min()), int(rows.min()), int(cols.max()) + 1, int(rows.max()) + 1
+
+
+def off_ray(rgb):
+    """Fraction of unsaturated pixels holding a colour this shader cannot produce.
+
+    Everything the renderer puts on the drawable is `background + c * beam` for
+    some `c >= 0`. Every deposit is the same colour and the decay multiplies the
+    whole vector, so accumulated energy is always a scalar multiple of one ray
+    through colour space. Green is the channel the beam drives hardest, so it
+    gives the best-conditioned estimate of `c`, and red and blue then follow
+    exactly rather than approximately.
+
+    **This replaces a count of distinct green levels, whose premise #55 ended.**
+    That guard refused any capture holding more than 32 shades, on the stated
+    ground that a lossless one holds two: true of a trace with no persistence and
+    false the moment one fades, because a decaying trail occupies dozens of levels
+    by construction. It refused good PNGs and told the author to recapture them.
+
+    The ray survives persistence for the reason the count does not: decay scales
+    all three channels together, so a fading pixel slides along the ray rather
+    than off it. What leaves the ray is resampling and chroma subsampling, which
+    put green into neighbouring pixels without their red and blue partners, and
+    ringing, which puts red and blue where there is no green. So this refuses a
+    strictly wider set of bad captures than the count did, including a screenshot
+    taken on a scaled display, which the count could not see at all.
+
+    Returns the fraction and the number of pixels it was measured over, because a
+    fraction of nothing has to be reported as such rather than as zero.
+    """
+    r, g, b = (rgb[:, :, i].astype(np.float32) for i in range(3))
+
+    # Green clips first, at c = 0.98, and a clipped pixel carries no usable c:
+    # red and blue keep climbing behind a green that cannot. Excluded rather than
+    # tolerated, since the beam crossing its own path is exactly where the trace
+    # is brightest and most worth measuring.
+    usable = g < SATURATED
+    examined = int(usable.sum())
+    if examined == 0:
+        return 1.0, 0
+
+    energy = (g - BG8[1]) / BEAM8[1]
+    off = (np.abs(r - (BG8[0] + BEAM8[0] * energy)) > RAY_TOLERANCE) | (
+        np.abs(b - (BG8[2] + BEAM8[2] * energy)) > RAY_TOLERANCE
+    )
+    return float(off[usable].mean()), examined
 
 
 def lit_rows(img, threshold):
@@ -132,7 +207,11 @@ def main():
     ap.add_argument(
         "--no-crop", action="store_true", help="the image is already exactly the drawable"
     )
-    ap.add_argument("--allow-lossy", action="store_true", help="measure a lossy capture anyway")
+    ap.add_argument(
+        "--measure-anyway",
+        action="store_true",
+        help="measure a capture that failed the colour check",
+    )
     args = ap.parse_args()
 
     img = open_image(args.image)
@@ -141,7 +220,16 @@ def main():
         rgb = np.asarray(img.convert("RGB"), dtype=np.int16)
         box = find_drawable(rgb)
         if box is None:
-            print("no Fosforo background found: is this a capture of the editor?")
+            # Two explanations, and the second is not obvious. A capture that has
+            # been recompressed hard enough loses the exact background before the
+            # colour guard below ever runs, so this message has to carry that
+            # possibility or it misdiagnoses the case it sees most often.
+            # Measured against synthetic captures: a JPEG at quality 60 still
+            # crops and is refused by the guard, while quality 40 fails here.
+            print("no Fosforo background found in this image.")
+            print("Either it is not a capture of the editor, or it has been recompressed")
+            print("hard enough to destroy the exact RGB(5, 5, 8) the crop looks for.")
+            print("Recapture with:  screencapture -o -x -t png -W shot.png")
             return 1
         if box != (0, 0, img.size[0], img.size[1]):
             print(f"drawable found at x={box[0]} y={box[1]}, cropping to it")
@@ -149,20 +237,23 @@ def main():
 
     width, height = img.size
 
-    # A lossless capture of this shader holds two colours in the drawable: the
-    # background and the trace. Anything else means the image went through a
-    # lossy codec, which smears a one-pixel line into a halo tens of pixels deep
-    # and moves every number below. Refusing is right: a plausible wrong answer
-    # is worse than none, and this one reported a railed trace for a signal at
-    # full scale.
-    shades = len(np.unique(np.asarray(img.convert("RGB"), dtype=np.int16)[:, :, 1]))
-    if shades > 32 and not args.allow_lossy:
-        print(f"{shades} distinct green levels in the drawable; a lossless capture has 2.")
-        print("This image has been through a lossy codec and cannot be measured.")
+    # Refusing is right when the picture cannot have come from this shader: a
+    # plausible wrong answer is worse than none, and the case that produced this
+    # guard reported a railed trace for a signal at full scale.
+    drawable = np.asarray(img.convert("RGB"), dtype=np.int16)
+    shades = len(np.unique(drawable[:, :, 1]))
+    fraction, examined = off_ray(drawable)
+
+    if fraction > MAX_OFF_RAY and not args.measure_anyway:
+        beam = ", ".join(f"{c:g}" for c in BEAM)
+        print(f"{fraction:.1%} of the drawable's unsaturated pixels are colours this")
+        print("shader cannot produce.")
+        print(f"It writes background + a * ({beam}), so red and blue follow green exactly.")
+        print("A resampled or recompressed capture breaks that and moves every number below.")
         print("Recapture with:  screencapture -o -x -t png -W shot.png")
         print("  -o drops the window shadow, which otherwise confuses the crop")
         print("  -t png forces lossless, whatever the screenshot default is")
-        print("Pass --allow-lossy to measure it anyway, knowing the peak will read high.")
+        print("Pass --measure-anyway to measure it regardless, knowing the peak will read high.")
         return 1
 
     top, bottom, any_lit = lit_rows(img, args.threshold)
@@ -179,6 +270,12 @@ def main():
     print(f"columns lit      {int(any_lit.sum())} of {width}")
     print(f"centre row       {height / 2:.1f}")
     print(f"rail rows        {rail_row:.1f} / {height - rail_row:.1f}")
+    # Kept visible rather than dropped with the guard it used to gate. It is the
+    # number every pre-#55 measurement was taken under, so anyone holding #38's
+    # tables can see at a glance which regime a capture is in, and it is the tell
+    # for whether a trail is lit at all.
+    print(f"green levels     {shades}")
+    print(f"off the ray      {fraction:.2%} of {examined} unsaturated pixels")
     print()
     print(
         f"highest peak     row {peak_top:<6} implies sample {implied_sample(peak_top, height):+.4f}"
@@ -193,6 +290,17 @@ def main():
 
     plateau = int((top == peak_top).sum())
     print(f"plateau width    {plateau} columns at the highest row")
+
+    # Persistence changes what a peak row means, and nothing about the picture
+    # says so. Two green levels is a trace with no trail, where every lit pixel
+    # belongs to this frame; more than two means a fade is present, and the
+    # topmost lit pixel in a column then belongs to whichever recent frame put
+    # the beam highest. The measurement is unchanged and its meaning is not,
+    # which is a fact about #55 rather than a defect here (#64).
+    if shades > 2:
+        print()
+        print("a trail is lit, so the rows above are the envelope over the persistence")
+        print("window rather than this frame's sample")
 
     if args.periods:
         # One run per period, thresholded well above centre so a steep crossing
