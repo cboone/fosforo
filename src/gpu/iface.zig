@@ -115,6 +115,16 @@ pub const Error = error{
     /// rather than anything about this machine's GPU, and the only member here
     /// that a second run might not reproduce.
     BufferAllocationFailed,
+    /// The accumulation textures could not be allocated.
+    ///
+    /// Separate from `BufferAllocationFailed` rather than folded into it,
+    /// because the two describe failures of different shapes. The window
+    /// buffers are a fixed 32 KiB each, sized from a constant this file
+    /// publishes, and nothing a user does can make them larger. These scale
+    /// with the editor's geometry, at several megabytes for an ordinary window
+    /// and considerably more for a large one, so this is the first failure here
+    /// that someone can provoke by dragging a window edge.
+    TextureAllocationFailed,
 };
 
 /// What became of one tick.
@@ -153,6 +163,16 @@ pub const Outcome = enum {
 
     /// The buffer would not produce an encoder, on the same reasoning.
     no_encoder,
+
+    /// The backend has no accumulation to draw into, so the tick was dropped.
+    ///
+    /// The one skip here that is about this plugin's own resources rather than
+    /// about the machine being busy, and the only one that persists: the others
+    /// describe a moment, this describes a state that lasts until a resize
+    /// succeeds in rebuilding what a previous one could not. A run of these
+    /// means an allocation failed, which at ordinary editor sizes means the
+    /// machine is out of GPU memory rather than that anything here is wrong.
+    no_accumulation,
 
     /// Whether this tick put anything on screen. The distinctions above are for
     /// a human reading a log; this is what a caller counts.
@@ -276,7 +296,13 @@ test "only a presented frame counts as having drawn" {
     // check written to catch exactly that (ADR 0013).
     try testing.expect(Outcome.presented.drew());
 
-    for ([_]Outcome{ .no_drawable, .no_frame_slot, .no_command_buffer, .no_encoder }) |skipped| {
+    for ([_]Outcome{
+        .no_drawable,
+        .no_frame_slot,
+        .no_command_buffer,
+        .no_encoder,
+        .no_accumulation,
+    }) |skipped| {
         try testing.expect(!skipped.drew());
     }
 }
