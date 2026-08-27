@@ -52,9 +52,14 @@ def open_image(path):
 
     with tempfile.TemporaryDirectory() as tmp:
         converted = Path(tmp) / "converted.png"
+        # `check=False` explicitly: a failed conversion is an ordinary outcome
+        # here, reported by the returncode test below with a message about Screen
+        # Recording permission, and raising instead would replace that with a
+        # traceback.
         done = subprocess.run(
             ["sips", "-s", "format", "png", str(path), "--out", str(converted)],
             capture_output=True,
+            check=False,
         )
         if done.returncode != 0 or not converted.exists():
             sys.exit(
@@ -84,8 +89,16 @@ def find_drawable(rgb):
     # RGB(5, 5, 8), so require that, and require the blue lead to be the 2-to-4
     # the 0.03-against-0.02 produces rather than merely positive.
     bg = (
-        (r >= 3) & (r <= 7) & (g >= 3) & (g <= 7) & (b >= 6) & (b <= 10)
-        & (b - r >= 2) & (b - r <= 4) & (b - g >= 2) & (b - g <= 4)
+        (r >= 3)
+        & (r <= 7)
+        & (g >= 3)
+        & (g <= 7)
+        & (b >= 6)
+        & (b <= 10)
+        & (b - r >= 2)
+        & (b - r <= 4)
+        & (b - g >= 2)
+        & (b - g <= 4)
     )
     if bg.sum() < 1000:
         return None
@@ -116,7 +129,9 @@ def main():
     ap.add_argument("image")
     ap.add_argument("--threshold", type=int, default=64, help="green level counted as lit")
     ap.add_argument("--periods", action="store_true", help="also count periods")
-    ap.add_argument("--no-crop", action="store_true", help="the image is already exactly the drawable")
+    ap.add_argument(
+        "--no-crop", action="store_true", help="the image is already exactly the drawable"
+    )
     ap.add_argument("--allow-lossy", action="store_true", help="measure a lossy capture anyway")
     args = ap.parse_args()
 
@@ -165,8 +180,12 @@ def main():
     print(f"centre row       {height / 2:.1f}")
     print(f"rail rows        {rail_row:.1f} / {height - rail_row:.1f}")
     print()
-    print(f"highest peak     row {peak_top:<6} implies sample {implied_sample(peak_top, height):+.4f}")
-    print(f"lowest trough    row {peak_bottom:<6} implies sample {implied_sample(peak_bottom, height):+.4f}")
+    print(
+        f"highest peak     row {peak_top:<6} implies sample {implied_sample(peak_top, height):+.4f}"
+    )
+    print(
+        f"lowest trough    row {peak_bottom:<6} implies sample {implied_sample(peak_bottom, height):+.4f}"
+    )
 
     # A peak sitting on the rail means "at or above" and nothing more precise.
     if abs(peak_top - rail_row) <= 1.5:

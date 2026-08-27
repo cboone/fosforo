@@ -302,6 +302,78 @@ jobs:
       - name: Lint shell scripts
         run: git ls-files -z | xargs -0 shfmt -f | xargs -r shellcheck
 
+  # The one Python file here, scripts/measure-trace, which nothing else can see.
+  # The `shell` job above selects with `shfmt -f`, which finds shell files by
+  # shebang, and that file's is `env -S uv run ... python`: measured rather than
+  # assumed, `git ls-files -z | xargs -0 shfmt -f` returns twelve files and not
+  # that one. So without this job the tool every number in #38's verification
+  # came out of is the only unchecked file in the repository.
+  #
+  # Pinned on typos' reasoning plus one of ruff's own. A version in a URL is not
+  # a pin, because a release asset can be replaced in place under the same tag,
+  # so the sum is the pin and this refuses to install anything else. And the rule
+  # set ships inside the binary, so an unpinned upgrade can introduce findings
+  # with no change on this side, which is not hypothetical here: 0.16.5's default
+  # set is wider than the E4/E7/E9/F it is usually described as and caught a
+  # `subprocess.run` without an explicit `check=` on its first run against a file
+  # that had been in use for weeks. Bump the two together, with `shasum -a 256`
+  # on the asset.
+  #
+  # **A vacuous pass is this job's real failure mode**, because ruff discovers
+  # Python by extension and this file has none. `ruff.toml`'s `extend-include` is
+  # what makes it visible at all, and a bare `measure-trace` there matches
+  # nothing while reporting success; see that file for the measurement. The tell
+  # is in the log rather than in an assertion: `ruff format --check` prints the
+  # number of files it read, and that number must be 1.
+  #
+  # Unmeasured, unlike every other ceiling in this workflow, because the job has
+  # never run. 3 is the floor `shell` and `typos` share and this is structurally
+  # the same thing, an Ubuntu checkout plus one pinned download plus a tree walk,
+  # both of which land in single-digit seconds. It gets a measured value once
+  # there are runs behind it, on the `shaders` precedent.
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      RUFF_VERSION: "0.16.5"
+      RUFF_SHA256: "65b8bae7e43f12a91b71036a52176012b3aefb725d5ae263e2771474110a0983"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # Into RUNNER_TEMP rather than the workspace, matching `typos` and not
+      # `shell`. That distinction is about how each job selects files: `shell`
+      # goes through `git ls-files`, so an untracked download beside the checkout
+      # is invisible to it, while this job walks the working tree the way typos
+      # does and a tarball left in the checkout would be one more thing the run
+      # depends on ruff choosing to skip.
+      #
+      # Downloaded to a file rather than piped into tar, so nothing consumes the
+      # bytes before the sum has verified them.
+      - name: Install ruff
+        run: |
+          cd "${RUNNER_TEMP}"
+          curl -sSfL -o ruff.tar.gz \
+            "https://github.com/astral-sh/ruff/releases/download/${RUFF_VERSION}/ruff-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${RUFF_SHA256}  ruff.tar.gz" | sha256sum --check --strict -
+          tar -xzf ruff.tar.gz ruff-x86_64-unknown-linux-gnu/ruff
+          sudo install ruff-x86_64-unknown-linux-gnu/ruff /usr/local/bin/ruff
+
+      # Confirms the pin resolved to the intended version, so a sum bumped
+      # without its version, or the reverse, fails here rather than silently
+      # linting against a different rule set than the file was cleared with.
+      - name: Report tool version
+        run: ruff --version
+
+      # No path arguments, matching `typos`: ruff defaults to `.`, finds
+      # ruff.toml by walking up, and respects .gitignore, which already covers
+      # build/, zig-out/ and zig-pkg/. Formatting first, because a reformat is
+      # the cheaper failure to read.
+      - name: Check Python formatting
+        run: ruff format --check .
+
+      - name: Lint Python
+        run: ruff check .
+
   # ADR 0003, AGENTS.md, and the plan's verification table all name
   # `clap-validator` as required verification, but nothing ran it except someone
   # remembering to. The failures it catches are quiet: a descriptor field going
