@@ -1107,7 +1107,7 @@ fn buildAccumulation(
         pair[taken] = texture;
     }
 
-    clearAccumulation(queue, pair);
+    try clearAccumulation(queue, pair, diags);
 
     // Counted only once the whole pair is in hand, which pairs with
     // `releaseAccumulation` giving the whole pair back. A partial failure
@@ -1133,9 +1133,23 @@ fn buildAccumulation(
 /// `Editor.tick` holds the gate across its whole body and `Gate.close` spins on
 /// the host's main thread; queue ordering already guarantees this lands before
 /// the frame that reads it, which is all the ordering that is needed.
-fn clearAccumulation(queue: objc.Object, pair: [2]objc.Object) void {
+///
+/// **It fails closed, and that is the whole reason it returns an error.** A nil
+/// command buffer or a nil encoder is rare, and `frame` already treats both as
+/// real machine conditions rather than programming errors. Skipping the clear
+/// on one would hand back a pair whose contents are whatever the driver left
+/// there, and `buildAccumulation` would go on to report it as allocated and
+/// cleared. Uninitialized `RGBA16F` is very likely a NaN, `NaN * decay` is a NaN
+/// forever, and nothing later in the frame can recover from it: that is the
+/// permanently ruined screen this function exists to prevent, reached by the one
+/// path that skipped it. Refusing instead leaves `accum` null and costs a
+/// skipped frame until a resize succeeds, which is recoverable.
+fn clearAccumulation(queue: objc.Object, pair: [2]objc.Object, diags: *iface.Diagnostics) iface.Error!void {
     const buffer = queue.msgSend(objc.Object, "commandBuffer", .{});
-    if (buffer.value == null) return;
+    if (buffer.value == null) {
+        diags.set("the command queue would not produce a buffer to clear the accumulation");
+        return error.TextureAllocationFailed;
+    }
 
     for (pair) |texture| {
         const pass = objc.getClass("MTLRenderPassDescriptor").?
@@ -1147,7 +1161,10 @@ fn clearAccumulation(queue: objc.Object, pair: [2]objc.Object) void {
         attachment.msgSend(void, "setClearColor:", .{cleared});
 
         const encoder = buffer.msgSend(objc.Object, "renderCommandEncoderWithDescriptor:", .{pass});
-        if (encoder.value == null) continue;
+        if (encoder.value == null) {
+            diags.set("an accumulation texture could not be cleared");
+            return error.TextureAllocationFailed;
+        }
         encoder.msgSend(void, "endEncoding", .{});
     }
 
