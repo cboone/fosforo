@@ -118,3 +118,32 @@ Four assertions, each verified by planting the defect it names:
 ### A second Metal resource, checked rather than assumed
 
 The trace needs a second `MTLRenderPipelineState`, and this document's own rule is that a Metal resource which is not a buffer must be checked against `leaks` with a planted leak before `smoke-leaks` is assumed to cover it. Dropping the trace pipeline's release takes a 400-cycle run from 288 leaks and 18,816 bytes to 9,880 leaks and 8,555,776 bytes, and `scripts/smoke-leak-check` reports that objects belonging to this project were leaked. So a pipeline state is visible to `leaks` where an `MTLBuffer` is not, and there is no second blind spot of the `live_windows` kind here.
+
+## Amended by issue #55: a third resource kind, and the first with no instrument
+
+The rule this document set under #38 is that a Metal resource which is not a buffer must be checked against `leaks` with a planted leak before `smoke-leaks` is assumed to cover it. Its third application produced the worst answer so far, and it changes what the harness is for.
+
+**An `MTLTexture` is invisible to `leaks`, as an `MTLBuffer` is.** Dropping one release from `releaseAccumulation` and running 20 cycles reports 283 leaks for 18,560 bytes against a clean 288 for 18,816. The leaking run reports *fewer* bytes than the clean one, none of the 250 leaked classes is a texture under any name, and the leak is real at roughly 46 MB per cycle.
+
+**Peak RSS is also blind, which does not follow from the buffer case and is the finding worth recording.** A leaked `MTLBuffer` moved peak RSS from 47.7 MB to 57.7 MB and was catchable that way, so a leaked texture was expected to be far more visible still, at 33 to 59 MB per cycle rather than 96 KiB. It does not move it at all: 44.3 MB against 44.1 MB clean at 40 cycles, while leaking nearly two gigabytes. Shared storage is in the process's resident set and `MTLStorageModePrivate` is not.
+
+So `gpu.Renderer.liveAccumulationTextures` is not the better of two instruments in the way `liveWindowBuffers` is. It is the only one, and the seam grew an eighth operation to carry it.
+
+**What the counter catches and what it does not, both planted.** It catches an allocation never handed back: removing the release from `replaceAccumulation` fails `smoke-appkit` with 20 textures outstanding across 10 cycles. It does not catch a `releaseAccumulation` that stops sending `release`, because the count returns either way, and that hole is worse here than for the window buffers precisely because RSS backstops that one and backstops nothing for this.
+
+There is also a new obligation the window buffers never had. They are allocated once and released once; these are rebuilt on every resize that changes the pixel count, so the resize path has to decrement too. `oneCycle` now performs four resizes rather than one, including a shrink to the minimum and a wrapped-negative height, so `smoke-leaks` exercises that path 400 times.
+
+### Two defects the harness cannot see at all, and what can
+
+Worth recording beside the leak result, because both were expected to be positive controls proving the harness reaches new code, and both pass:
+
+- The accumulation descriptor without `MTLTextureUsageRenderTarget`.
+- The resolve pipeline compiled against the accumulation's pixel format rather than the drawable's.
+
+Metal validates neither without the validation layer enabled, so both are undefined behaviour that happens to present a frame while the picture is wrong, and `smoke-appkit` reports a clean run. `MTL_DEBUG_LAYER=1` names both exactly, as `RenderPass Descriptor Validation` and `Set Render Pipeline State Validation`.
+
+That is a class this document did not previously account for: not a resource leak, not a lifecycle error, but a binding the API accepts and the hardware ignores. The harness is the wrong instrument for it and the validation layer is the right one. Whether that earns a build step belongs to [#63](https://github.com/cboone/fosforo/issues/63), which is where the cost of adding a check that can go red for reasons unrelated to the code is already being weighed.
+
+### And the limit that matters most, restated
+
+None of the above sees whether the picture is bright enough to look at. #55 shipped a resolve gain that rendered a sine as a black display, and it passed 160 unit tests, both smoke halves, `smoke-leaks`, `clap-validator` and the validation layer. It was found by eye in under a minute. The harness answers whether frames are presented and whether resources balance; it has never answered what the pixels became, and #51 remains the issue that would change that.
