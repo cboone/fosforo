@@ -6,9 +6,9 @@ A Mac-first GPU-rendered phosphor oscilloscope and signal-analysis plugin, autho
 
 Early development, and not yet worth installing unless you are working on it. No release has been cut.
 
-What works: the plugin loads in REAPER and in Logic Pro, through the Audio Unit that [clap-wrapper](https://github.com/free-audio/clap-wrapper) projects it into. It passes stereo audio through unchanged, saves and restores its state, and taps one channel into a lock-free history buffer the render thread reads a trailing window from. It opens a resizable editor backed by a `CAMetalLayer` and renders into it at vsync, driven by a `CVDisplayLink`.
+What works: the plugin loads in REAPER and in Logic Pro, through the Audio Unit that [clap-wrapper](https://github.com/free-audio/clap-wrapper) projects it into. It passes stereo audio through unchanged, saves and restores its state, and taps one channel into a lock-free history buffer the render thread reads a trailing window from. It opens a resizable editor backed by a `CAMetalLayer` and renders into it at vsync, driven by a `CVDisplayLink`. **It draws the signal**, as a beam depositing energy into a persistent floating-point accumulation texture that decays between frames, so the trace glows and fades rather than being redrawn from nothing.
 
-What does not work yet: **the trace.** The audio reaches the GPU and no shader draws it, so the editor is a dim, uniform rectangle. That is the work in progress ([#38](https://github.com/cboone/fosforo/issues/38)), and it is the last step of phase 2.
+What does not work yet: the beam is still a one-pixel line strip rather than geometry, its brightness does not vary with how fast it sweeps, the persistence is measured in frames rather than in seconds, and nothing tonemaps the accumulated energy, so a dwelling trace saturates to white. Those are the rest of [phase 3](https://github.com/cboone/fosforo/milestone/3), and each is an issue.
 
 ## Roadmap
 

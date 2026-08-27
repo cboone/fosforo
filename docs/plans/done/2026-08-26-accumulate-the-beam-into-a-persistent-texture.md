@@ -30,7 +30,7 @@ That is a live correctness question the moment a second surface has to line up w
 
 So a new backend-local `Pixels` type carries whole backing pixels, `backingPixels(size, scale)` is the one place the scale factor is applied and the one place the result becomes an integer, and the layer receives a `CGSize` built from those integers. There is then nothing left for the layer to disagree with. `Renderer` stores `pixels` and not `size`/`scale`, because whole backing pixels are what the textures need, what the layer needs, and what the half-pixel centre-line bias in `AGENTS.md` was declined for wanting.
 
-### The decay factor is provisional, and the resolve's gain is derived from it
+### The decay factor is provisional, and the resolve applies no gain
 
 [#56](https://github.com/cboone/fosforo/issues/56) owns decay in real elapsed time and owns the genuine open decision inside it (the `CVTimeStamp` CoreVideo hands the callback, or `display_link.monotonicNanos()`). It is not economised into this step. But **no** dimming is not an option either: a persistent texture with an additive deposit and no decay saturates to white within a second or two, which would make this step unjudgeable and turn [#56](https://github.com/cboone/fosforo/issues/56) into a blocker rather than a refinement.
 
@@ -38,9 +38,11 @@ So this step carries a constant per-frame factor, `decay_per_frame = 0.90`, and 
 
 The number is chosen so that [#56](https://github.com/cboone/fosforo/issues/56)'s absence is visible on this machine rather than hidden by it. At 120 Hz a deposit falls to 5% in 28 frames, about 237 ms; at 60 Hz the same 28 frames are 474 ms. The development machine's ProMotion panel drifts between 48 and 120 Hz, so the persistence will visibly depend on what else the machine is doing. That is the defect #56 exists to fix, and it should be legible rather than subtle.
 
-**The resolve applies a gain of `1 - decay_per_frame`, and that is what keeps this step honest.** A pixel the beam visits every frame reaches a steady state of `deposit / (1 - decay)`, so without the gain every trace pixel clips to white and the picture is worse than #38's rather than the same. With it, a stationary trace resolves to exactly the colour #38 drew, a trace the beam visits less often reads dimmer, and the fade is the only difference. Two consequences follow and both are wanted: **every geometry measurement in #38's tables stays directly comparable**, and persistence is visible only in transients, which is what forces the verification below to be built out of transients rather than out of a screenshot.
+**A gain of `1 - decay_per_frame` was planned here, written, and removed after a host measured it.** The reasoning was that a pixel the beam visits every frame reaches a steady state of `deposit / (1 - decay)`, so scaling by that factor makes a stationary trace resolve to exactly the colour #38 drew and keeps that issue's geometry tables comparable. All of that is true, and it is the wrong case to optimise: a sliding trace never lights the same pixel twice, so it never accumulates, so the gain divides every real signal by ten. In REAPER a 100 Hz sine rendered as a black display, at a measured peak green of 53 against 255.
 
-The gain is derived rather than declared, so the two cannot drift, and the test holds `0 < decay_per_frame < 1`, which is what makes a planted decay of `1.0` or `0.0` fail `zig build test` rather than needing an eye.
+So the resolve writes accumulated energy as it is and the format clips whatever exceeds 1.0. That is ADR 0007's shape rather than a retreat from it, and the arithmetic says no linear alternative exists: the ratio between a fresh deposit and a dwelt-on one is `1 / (1 - decay)`, or 10:1 here, and an 8-bit linear mapping can show one end of that or the other. A stationary trace therefore saturates toward white, which is what a dwelling beam should do and what [#60](https://github.com/cboone/fosforo/issues/60)'s tonemap exists to map.
+
+What survives from the plan is the range test: `0 < decay_per_frame < 1` is what makes a planted decay of `1.0` or `0.0` fail `zig build test` rather than needing an eye.
 
 ### The accumulation is cleared at allocation, and the clear belongs to the function that allocates
 
@@ -276,6 +278,38 @@ Logic, where the editor is destroyed rather than hidden and the build is Release
 1. Pixel-sample to confirm a render at all, since Logic has no readable diagnostics under any build mode.
 1. **Twenty open/close cycles of the plugin window on a playing track.** Each is a full `destroy`/`create`/`set_parent` on a still-activated instance, so each allocates and releases a pair. Every reopen must come back live rather than flat, and memory must return to level, watching `AUHostingServiceXPC`, not Logic, since AUv2 is hosted out of process and a crash there presents as a blank window rather than as Logic dying.
 1. The stop transient by eye, resize during playback, and two instances.
+
+### What was run, and by whom
+
+Everything above the line is repeatable by anyone; everything below it was confirmed by the author against hash-verified installs, `865a5e22fbbd` for the CLAP and `c89414585da9` for the component.
+
+| Check                                                         | Result                                                                               |
+|---------------------------------------------------------------|--------------------------------------------------------------------------------------|
+| `zig fmt --check`, `zig build test`                           | Clean, 160 tests                                                                     |
+| `zig build`, `validate-shaders`                               | Clean                                                                                |
+| `smoke-gpu`, `smoke-appkit`                                   | Clean                                                                                |
+| `smoke-appkit` under `MTL_DEBUG_LAYER=1`                      | Clean, and it caught two defects nothing else did                                    |
+| Peak RSS, 40 / 200 / 400 cycles                               | 44.1 / 55.3 / 62.9 MB, against 40.8 / 53.5 / 68.6 before. The textures are not in it |
+| `zig build smoke-leaks`                                       | Clean at 400 cycles, 288 leaks / 18,816 bytes, none this project's                   |
+| The texture-leak plant                                        | **Arm B, and worse**: invisible to `leaks` *and* to RSS                              |
+| All of the above under `--release=fast`                       | Clean                                                                                |
+| `clap-validator`                                              | 21 passed, 0 failed                                                                  |
+| `shfmt`, `shellcheck`, `markdownlint-cli2`, `typos`           | Clean                                                                                |
+| REAPER: meter, brightness, stop transient, click, resize      | Passed                                                                               |
+| REAPER: geometry regression at four levels                    | Passed, every peak row identical to #38                                              |
+| REAPER: channel trap, bypass, multi-instance                  | Passed                                                                               |
+| Logic: render, twenty open/close cycles, transient, instances | Passed                                                                               |
+| Logic: window resizing                                        | **Refused by the host**, [#65](https://github.com/cboone/fosforo/issues/65)          |
+
+Four host results are worth more than a row each.
+
+**The gain error was found by eye in under a minute, and by nothing else at all.** A 100 Hz sine rendered as a black display while 160 unit tests, both smoke halves, `smoke-leaks`, `clap-validator` and the Metal validation layer all passed. Measured off the capture: peak green 53 against 255, background exactly `RGB(5, 5, 8)` across 95.7% of the drawable, 45 distinct green levels above it. Every part of the picture was correct except that none of it was bright enough to see. That is the argument for this project's rule that an issue is not finished until it has been in a host, made against a real defect rather than in the abstract.
+
+**The geometry is unmoved**, which was the real risk in `backingPixels`. Peak rows 54, 29, 10 and 10 at samples 1.000, 1.050, 1.089 and 2.000, identical to #38's, with the last two on the rail and the plateau widening from 262 columns to all 1920. All three of #38's recorded claims reproduce: 43 px below the rail at 1.000, 19 at 1.050, and the same row for everything from 1.089 up.
+
+**One number improved and should not be trusted.** #38 measured `level-1.089` lighting 1914 of 1920 columns; every level now lights all 1920. Persistence masks a single frame's coverage rather than provably fixing it, and a screenshot of an accumulated picture cannot tell those apart. Recorded on [#57](https://github.com/cboone/fosforo/issues/57) as unmeasured rather than passing.
+
+**The frame-rate dependence is visible without instrumentation.** Pinning the display to 60 Hz doubles the fade length of a `click-2hz` click. That is [#56](https://github.com/cboone/fosforo/issues/56)'s whole subject, demonstrated in a minute, and it now carries an acceptance criterion with a measured failing baseline.
 
 ### What this does not close
 
