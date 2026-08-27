@@ -314,6 +314,22 @@ fn appkitHalf(cycles: u32) !void {
         return error.WindowBuffersLeaked;
     }
 
+    // The same argument one resource further, and a worse case. `leaks` cannot
+    // see a leaked accumulation texture either, and unlike the window buffers
+    // neither can peak RSS: a planted leak of roughly 46 MB per cycle moved the
+    // resident set by 0.2 MB across 40 cycles and reported *fewer* leaked bytes
+    // than a clean run. This assertion is the only thing anywhere that fails.
+    //
+    // It also covers more ground than the one above, because these are
+    // reallocated on every resize that changes the pixel count and `oneCycle`
+    // performs one, so a resize path that allocated without releasing would
+    // show up here rather than only a teardown that forgot.
+    const textures = gpu.Renderer.liveAccumulationTextures();
+    if (textures != 0) {
+        say("  {d} accumulation textures were never released across {d} cycles", .{ textures, cycles });
+        return error.AccumulationTexturesLeaked;
+    }
+
     say("  {d} open and close cycles clean", .{cycles});
 }
 

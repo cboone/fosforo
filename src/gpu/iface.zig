@@ -223,11 +223,19 @@ pub const Diagnostics = struct {
 /// arrived, having missed `resize`; the comptime block below is the list that
 /// cannot drift, and this one is prose that has to be kept beside it by hand.
 ///
-/// `liveWindowBuffers` is the seventh and is the same kind of thing as `probe`:
-/// a question about the backend rather than an instruction to it. It exists
-/// because `scripts/smoke-leak-check` was measured and cannot see a leaked
-/// window buffer, while it catches a leaked command queue in the same run, so
-/// the backend has to answer for that one resource itself.
+/// `liveWindowBuffers` and `liveAccumulationTextures` are the seventh and
+/// eighth, and are the same kind of thing as `probe`: questions about the
+/// backend rather than instructions to it. Both exist because the leak check
+/// was measured and cannot see the resource in question, while it catches a
+/// leaked command queue in the same run, so the backend has to answer for those
+/// two itself.
+///
+/// They are two operations rather than one because they count different things
+/// and were measured separately, which is the rule ADR 0013 set after the first
+/// of them: a resource that is not a buffer gets its own planted leak before
+/// anything is assumed about it. The second measurement found a worse answer
+/// than the first, since peak RSS catches a leaked window buffer and does not
+/// move at all for a leaked texture.
 ///
 /// `probe` is the sixth, and it has one caller: `src/smoke.zig`. It does
 /// everything `init` does except attach a surface, which makes it the half of
@@ -269,6 +277,7 @@ comptime {
     // `[thread-safe]`, and a plain count because that is all a caller can do
     // anything with: naming what is being counted would name a Metal type.
     assertSignature("liveWindowBuffers", @TypeOf(Renderer.liveWindowBuffers), fn () usize);
+    assertSignature("liveAccumulationTextures", @TypeOf(Renderer.liveAccumulationTextures), fn () usize);
 }
 
 fn assertSignature(comptime name: []const u8, comptime Found: type, comptime Want: type) void {

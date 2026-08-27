@@ -286,6 +286,42 @@ const Completion = objc.Block(struct { sema: objc.c.id }, .{objc.c.id}, void);
 /// and closed several hundred times rather than within any one of them.
 var live_windows: std.atomic.Value(usize) = .init(0);
 
+/// Accumulation textures taken and not yet given back.
+///
+/// **The same blindness as `live_windows` above, measured separately, and one
+/// instrument worse.** ADR 0013 set the rule after #38 that a Metal resource
+/// which is not a buffer must be checked against `leaks` with a planted leak
+/// before `smoke-leaks` is assumed to cover it, precisely because a pipeline
+/// state turned out to be visible where a buffer was not and neither result
+/// predicted a third kind. A texture was measured and it is invisible.
+///
+/// Dropping one of the two releases and running 20 cycles reports 283 leaks for
+/// 18,560 bytes against a clean 288 for 18,816: the leaking run reported
+/// *fewer* bytes, none of the 250 leaked classes is a texture under any name,
+/// and the leak is real at roughly 46 MB per cycle.
+///
+/// The part that does not follow from the buffer case is peak RSS. A leaked
+/// `MTLBuffer` moved it from 47.7 MB to 57.7 MB and was caught that way; a
+/// leaked texture does not move it at all, 44.3 MB against 44.1 MB clean at 40
+/// cycles while leaking nearly two gigabytes. Shared storage is in the process's
+/// resident set and `MTLStorageModePrivate` is not, so **the counter below is
+/// not the better of two instruments here, it is the only one.**
+///
+/// **What it catches and what it cannot, both measured by planting them.** It
+/// catches an allocation that is never handed back: removing the release from
+/// `replaceAccumulation` fails `smoke-appkit` with 20 textures outstanding
+/// across 10 cycles. That is the realistic failure and it is the one
+/// `live_windows` never had to cover, since window buffers are allocated once
+/// and these are rebuilt on every resize that moves the pixel count.
+///
+/// It does **not** catch a `releaseAccumulation` that stops sending `release`,
+/// because the count comes back either way; planting that passes cleanly. The
+/// same hole exists for `live_windows` and is worse here, since RSS backstops
+/// that one and backstops nothing for this. What keeps it small is that there
+/// is exactly one release site, so the failure it misses is somebody editing
+/// this function to release less than it counts.
+var live_textures: std.atomic.Value(usize) = .init(0);
+
 fn signalCompleted(block: *const Completion.Context, buffer: objc.c.id) callconv(.c) void {
     _ = buffer;
     if (block.sema) |sema| _ = dispatch_semaphore_signal(@ptrCast(sema));
@@ -799,6 +835,18 @@ pub const Renderer = struct {
         return live_windows.load(.acquire);
     }
 
+    /// [thread-safe] Accumulation textures this process has taken and not given
+    /// back.
+    ///
+    /// Zero whenever no editor is open, and the **only** check in this project
+    /// that can see a leaked one at all. `leaks` cannot, and unlike the window
+    /// buffers neither can peak RSS: see `live_textures` for both measurements.
+    /// A second backend would have to answer this question too, which is what
+    /// keeps it a seam operation rather than a hook shaped to this one's tests.
+    pub fn liveAccumulationTextures() usize {
+        return live_textures.load(.acquire);
+    }
+
     /// [render-thread] Copy staging into this frame's buffer.
     ///
     /// Split out of `frame` only so the ordering rule has somewhere to be
@@ -927,6 +975,12 @@ fn buildAccumulation(
 
     clearAccumulation(queue, pair);
 
+    // Counted only once the whole pair is in hand, which pairs with
+    // `releaseAccumulation` giving the whole pair back. A partial failure
+    // released what it took through the `errdefer` above and reports nothing
+    // here, because it is handing back textures this count never included.
+    _ = live_textures.fetchAdd(pair.len, .release);
+
     return pair;
 }
 
@@ -966,9 +1020,21 @@ fn clearAccumulation(queue: objc.Object, pair: [2]objc.Object) void {
     buffer.msgSend(void, "commit", .{});
 }
 
-/// Give the pair back. The one release site, on `releaseWindows`' precedent.
+/// Give the pair back, and say so.
+///
+/// The one release site, on `releaseWindows`' precedent and for its reason: a
+/// second bare release loop somewhere else would leave the count drifting from
+/// the releases with nothing to notice.
+///
+/// **This carries an obligation `live_windows` never had.** Window buffers are
+/// allocated once in `init` and released once in `deinit`, so their count moves
+/// twice in a renderer's life. These are reallocated on every resize that
+/// changes the pixel count, which in a drag is most ticks, so the resize path
+/// has to decrement too. It does, because `replaceAccumulation` reaches it
+/// rather than releasing by hand.
 fn releaseAccumulation(pair: [2]objc.Object) void {
     for (pair) |texture| texture.release();
+    _ = live_textures.fetchSub(pair.len, .release);
 }
 
 /// Give a whole ring back, and say so.
