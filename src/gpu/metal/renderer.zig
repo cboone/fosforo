@@ -41,8 +41,44 @@ const mtl = struct {
     /// phase.
     const pixel_format_bgra8_unorm: u64 = 80;
 
+    /// `MTLPixelFormatRGBA16Float`, the accumulation's format.
+    ///
+    /// Floating point is required rather than preferred (ADR 0007). An 8-bit
+    /// blend toward black stalls once a value is small enough that multiplying
+    /// it by the decay factor rounds back to the same integer, and what that
+    /// leaves is a ghost trail that never clears. Float has no such floor, and
+    /// it accumulates past 1.0 where the beam dwells, which is the input the
+    /// tonemap wants.
+    const pixel_format_rgba16_float: u64 = 115;
+
+    const load_action_dont_care: u64 = 0;
     const load_action_clear: u64 = 2;
     const store_action_store: u64 = 1;
+
+    /// `MTLTextureUsage`, which is an option set rather than an enum.
+    ///
+    /// **The descriptor's default is `ShaderRead` alone**, so omitting the
+    /// render-target bit is not a performance mistake, it is a nil encoder on
+    /// every frame and a permanently black editor. That failure surfaces as
+    /// `NoFramePresented` out of the smoke harness, which names the symptom and
+    /// not the cause, so it is worth knowing before it happens rather than
+    /// after.
+    const texture_usage_shader_read: u64 = 0x1;
+    const texture_usage_render_target: u64 = 0x4;
+
+    /// `MTLStorageModePrivate`. GPU-only, which is what these are: nothing on
+    /// the CPU ever reads or writes them.
+    ///
+    /// A different enum from `resource_storage_mode_shared` below, which is
+    /// `MTLResourceOptions` with the storage mode packed into bits 4 and up.
+    /// Both spell "shared" as zero, and that coincidence is exactly what makes
+    /// the two confusable.
+    ///
+    /// `Memoryless` is the trap worth naming, because it is the obvious choice
+    /// on a tile-based GPU and it is precisely wrong here: its contents do not
+    /// survive the render pass, which is the negation of the persistence these
+    /// textures exist to provide.
+    const storage_mode_private: u64 = 2;
 
     /// `MTLPrimitiveTypeLineStrip` and `MTLPrimitiveTypeTriangle`. These two were
     /// read out of `MTLRenderCommandEncoder.h` rather than recalled, which is
@@ -52,6 +88,16 @@ const mtl = struct {
     /// triangle strip from zero.
     const primitive_type_line_strip: u64 = 2;
     const primitive_type_triangle: u64 = 3;
+
+    /// `MTLBlendFactorOne` and `MTLBlendOperationAdd`, which together are the
+    /// whole of "additive": source plus destination, unweighted.
+    ///
+    /// Applied to alpha as well as to RGB so the pipeline has one story rather
+    /// than two. `resolve_fragment` reads `.rgb` and the accumulation's alpha
+    /// carries no meaning today, which is worth saying so #60 does not inherit
+    /// a channel it has to guess the intent of.
+    const blend_factor_one: u64 = 1;
+    const blend_operation_add: u64 = 0;
 
     /// `MTLResourceStorageModeShared`, which is the storage mode's zero rather
     /// than a flag: `MTLResourceOptions` packs the storage mode into bits 4 and
@@ -73,27 +119,99 @@ const ClearColor = extern struct {
     alpha: f64,
 };
 
-/// Kept in step with `clear_fragment` in `shaders/scope.metal`.
+/// Zero energy, which is what a fresh accumulation texture holds.
 ///
-/// Both run: the load action clears, and then the fullscreen triangle covers
-/// what it cleared. That was redundant on purpose while a flat colour was the
-/// whole picture, on the grounds that the clear alone would produce an identical
-/// one while proving nothing about the fragment shader. The trace retires that
-/// argument, and the pass stays for a different reason: phase 3's decay and
-/// tonemap *are* that pass, so keeping it means phase 3 replaces a body rather
-/// than re-adding a pass.
-const background: ClearColor = .{ .red = 0.02, .green = 0.02, .blue = 0.03, .alpha = 1.0 };
+/// **Not `background`, and the difference is not cosmetic.** The accumulation
+/// holds energy and the background is a colour. Clearing to the background
+/// would add its value every frame against a decay that removes a fraction of
+/// what is there, so the steady state is `background / (1 - decay)`: a bright
+/// grey field rather than a dim one, reached within a second and never
+/// recovered from.
+const cleared: ClearColor = .{ .red = 0, .green = 0, .blue = 0, .alpha = 0 };
 
-/// A pipeline's two halves, named together so `buildPipeline` can report which
-/// pair a library failed to supply rather than reporting a generic failure.
-const Functions = struct { vertex: [:0]const u8, fragment: [:0]const u8 };
+/// The format the accumulation is allocated and rendered in, named once so the
+/// descriptor and the pipelines that draw into it cannot disagree. A pipeline
+/// whose colour-attachment format differs from the texture bound at encode time
+/// is a draw-time validation failure, which `probe` never reaches.
+const accumulation_pixel_format = mtl.pixel_format_rgba16_float;
 
-const clear_functions: Functions = .{ .vertex = "fullscreen_vertex", .fragment = "clear_fragment" };
-const trace_functions: Functions = .{ .vertex = "trace_vertex", .fragment = "trace_fragment" };
+/// The drawable's format, named for the same reason and used by both the layer
+/// and the one pipeline that renders into it. Two named formats used at every
+/// site is what makes a test asserting they differ unnecessary: there is nothing
+/// left to drift.
+const drawable_pixel_format = mtl.pixel_format_bgra8_unorm;
+
+/// How much of the phosphor survives one frame.
+///
+/// **Provisional, and per frame rather than per second, which is a defect #56
+/// fixes rather than a value it tunes.** The look therefore depends on the
+/// refresh rate: 0.90 falls to 5% in 28 frames, about 237 ms at 120 Hz and
+/// 474 ms at 60. That is deliberate. The development machine's panel drifts
+/// between 48 and 120 Hz on its own, so the frame-rate dependence is visible
+/// here rather than hidden, which is the right way for a placeholder to behave.
+///
+/// It reaches the shader as a uniform rather than as an MSL literal, unlike
+/// `trace_fragment`'s colour. The colour is a look constant that #60 deletes;
+/// this is a value #56 has to compute per frame from a measured elapsed time,
+/// so the binding is needed either way and a Zig-side constant is one a test can
+/// hold a range on.
+const decay_per_frame: f32 = 0.90;
+
+/// The drawable's size in whole backing pixels.
+///
+/// Distinct from `iface.Size`, which is logical points everywhere above this
+/// file, and deliberately backend-local: reusing the seam's type here would make
+/// "size" mean two different things in one function signature.
+///
+/// It exists because a second surface is about to have to line up with the
+/// drawable exactly. `backingPixels` rounds once, and the layer is handed a
+/// `CGSize` built from the result, so there is nothing left for CoreAnimation to
+/// round differently. Phase 3's accumulation textures are allocated from the
+/// same number, which is what makes a fragment shader's integer read of one
+/// in-bounds against the other.
+const Pixels = struct { width: u32, height: u32 };
+
+/// Everything a pipeline state needs that is not the library it comes from.
+///
+/// The function names are here so `buildPipeline` can report which pair a
+/// library failed to supply rather than reporting a generic failure. **The pixel
+/// format is here because it is a third coupling with no compiler behind it**:
+/// a pipeline built against one format and encoded against a texture of another
+/// is a draw-time validation failure, inside a DAW, on the render thread, with
+/// nothing this project can print. Keeping it beside the function names is what
+/// makes the two impossible to change independently.
+const Pass = struct {
+    vertex: [:0]const u8,
+    fragment: [:0]const u8,
+    pixel_format: u64,
+    blending: enum { off, additive } = .off,
+};
+
+const decay_pass: Pass = .{
+    .vertex = "fullscreen_vertex",
+    .fragment = "decay_fragment",
+    .pixel_format = accumulation_pixel_format,
+};
+
+/// The one blended pass, and the reason blending exists here at all: energy has
+/// to add rather than replace, or a beam crossing its own path would overwrite
+/// what it already deposited instead of climbing past it.
+const trace_pass: Pass = .{
+    .vertex = "trace_vertex",
+    .fragment = "trace_fragment",
+    .pixel_format = accumulation_pixel_format,
+    .blending = .additive,
+};
+
+const resolve_pass: Pass = .{
+    .vertex = "fullscreen_vertex",
+    .fragment = "resolve_fragment",
+    .pixel_format = drawable_pixel_format,
+};
 
 /// Every pair the shader has to define, walked rather than listed by the test at
-/// the foot of this file, so a third pass is checked by being added here.
-const passes = [_]Functions{ clear_functions, trace_functions };
+/// the foot of this file, so a pass is checked by being added here.
+const passes = [_]Pass{ decay_pass, trace_pass, resolve_pass };
 
 /// Where `frame` binds the trace's two vertex arguments.
 ///
@@ -106,6 +224,19 @@ const passes = [_]Functions{ clear_functions, trace_functions };
 /// nothing this project can print.
 const window_buffer_index: u64 = 0;
 const uniform_buffer_index: u64 = 1;
+
+/// Where the two fullscreen passes find the accumulation and their uniforms.
+///
+/// Both zero, and colliding with `window_buffer_index` above only in appearance:
+/// Metal keeps fragment textures, fragment buffers and vertex buffers in three
+/// separate index spaces, so these three zeroes name three different slots.
+///
+/// All three zeroes are checked at the foot of this file by reading the index
+/// out of the declaration that carries it, rather than by searching for the
+/// attribute alone. That distinction is what makes the check mean anything:
+/// `buffer(0)` appears in this shader whatever these constants say.
+const accumulation_texture_index: u64 = 0;
+const accum_uniform_index: u64 = 0;
 
 /// What the trace's vertex function needs beyond the samples themselves.
 ///
@@ -142,8 +273,24 @@ const TraceUniforms = extern struct {
 /// same embedded string twice to pull four functions out of it would double that
 /// for nothing.
 const Pipelines = struct {
-    clear: objc.Object,
+    decay: objc.Object,
     trace: objc.Object,
+    resolve: objc.Object,
+};
+
+/// What both fullscreen passes read besides the texture they are handed.
+///
+/// `extern` for C layout, scalars only for the reason `TraceUniforms` gives, and
+/// passed by `setFragmentBytes:` rather than living in a buffer, so there is no
+/// fourth resource for a slot discipline to cover and nothing for a leak check
+/// to be blind to.
+///
+/// One field today, and a struct rather than a bare float because #56 replaces
+/// the constant with a value computed per frame and #60 is likely to want a
+/// companion. A second field then costs a layout test line rather than a new
+/// binding.
+const AccumUniforms = extern struct {
+    decay: f32 = decay_per_frame,
 };
 
 /// How far the CPU may run ahead of the GPU, in frames.
@@ -220,6 +367,42 @@ const Completion = objc.Block(struct { sema: objc.c.id }, .{objc.c.id}, void);
 /// and closed several hundred times rather than within any one of them.
 var live_windows: std.atomic.Value(usize) = .init(0);
 
+/// Accumulation textures taken and not yet given back.
+///
+/// **The same blindness as `live_windows` above, measured separately, and one
+/// instrument worse.** ADR 0013 set the rule after #38 that a Metal resource
+/// which is not a buffer must be checked against `leaks` with a planted leak
+/// before `smoke-leaks` is assumed to cover it, precisely because a pipeline
+/// state turned out to be visible where a buffer was not and neither result
+/// predicted a third kind. A texture was measured and it is invisible.
+///
+/// Dropping one of the two releases and running 20 cycles reports 283 leaks for
+/// 18,560 bytes against a clean 288 for 18,816: the leaking run reported
+/// *fewer* bytes, none of the 250 leaked classes is a texture under any name,
+/// and the leak is real at roughly 46 MB per cycle.
+///
+/// The part that does not follow from the buffer case is peak RSS. A leaked
+/// `MTLBuffer` moved it from 47.7 MB to 57.7 MB and was caught that way; a
+/// leaked texture does not move it at all, 44.3 MB against 44.1 MB clean at 40
+/// cycles while leaking nearly two gigabytes. Shared storage is in the process's
+/// resident set and `MTLStorageModePrivate` is not, so **the counter below is
+/// not the better of two instruments here, it is the only one.**
+///
+/// **What it catches and what it cannot, both measured by planting them.** It
+/// catches an allocation that is never handed back: removing the release from
+/// `replaceAccumulation` fails `smoke-appkit` with 20 textures outstanding
+/// across 10 cycles. That is the realistic failure and it is the one
+/// `live_windows` never had to cover, since window buffers are allocated once
+/// and these are rebuilt on every resize that moves the pixel count.
+///
+/// It does **not** catch a `releaseAccumulation` that stops sending `release`,
+/// because the count comes back either way; planting that passes cleanly. The
+/// same hole exists for `live_windows` and is worse here, since RSS backstops
+/// that one and backstops nothing for this. What keeps it small is that there
+/// is exactly one release site, so the failure it misses is somebody editing
+/// this function to release less than it counts.
+var live_textures: std.atomic.Value(usize) = .init(0);
+
 fn signalCompleted(block: *const Completion.Context, buffer: objc.c.id) callconv(.c) void {
     _ = buffer;
     if (block.sema) |sema| _ = dispatch_semaphore_signal(@ptrCast(sema));
@@ -263,6 +446,43 @@ pub const Renderer = struct {
     /// again rather than binding a buffer several encodes stale.
     window: [iface.max_window_samples]f32 = @splat(0),
     window_len: usize = 0,
+
+    /// The drawable's current size in whole backing pixels.
+    ///
+    /// The first thing this backend has ever remembered about its own geometry.
+    /// `resize` used to forward both arguments to the layer and keep neither,
+    /// which was right while the drawable was the only surface: nothing else
+    /// needed the number, and the layer already had it.
+    ///
+    /// Phase 3's accumulation textures are what change that. They are sized from
+    /// this, reallocated when it moves, and read by a fragment shader at integer
+    /// coordinates against the drawable, so the two have to be the same number
+    /// rather than two roundings of one expression. It is also the `H` the
+    /// half-pixel centre-line bias in `AGENTS.md` was declined for wanting.
+    pixels: Pixels,
+
+    /// The ping-pong pair the beam deposits into, or nothing when the last
+    /// attempt to allocate them failed.
+    ///
+    /// Optional because a failed reallocation is a real machine condition
+    /// rather than a programming error, and because it is the first one here a
+    /// user can provoke: these scale with the editor's geometry, and
+    /// `gui.max_size` at a backing scale of 2 describes a pair of textures
+    /// totalling four gibibytes. `frame` skips the tick when this is null and a
+    /// later resize restores it.
+    ///
+    /// The alternative, storing a nil texture and messaging it, is worse than a
+    /// skipped frame rather than equivalent to one: messaging nil is a silent
+    /// no-op returning nil, so the encoding calls would quietly do nothing and
+    /// the frame would go on to present a drawable that was never written.
+    accum: ?[2]objc.Object = null,
+
+    /// Which half of the pair holds this frame's starting energy.
+    ///
+    /// Advanced once per committed frame and never on a skipped one, which is
+    /// what makes every early return in `frame` leave the accumulation intact
+    /// rather than half-updated.
+    accum_source: u1 = 0,
 
     /// [main-thread] Builds everything the GPU needs and hangs a layer off the
     /// host's view.
@@ -314,7 +534,15 @@ pub const Renderer = struct {
         const windows = try buildWindows(device, diags);
         errdefer releaseWindows(windows);
 
-        const layer = try attachLayer(view, device, size, scale, diags);
+        // Computed once and handed on rather than recomputed at each call site,
+        // which is the whole discipline `backingPixels` exists to enforce.
+        const pixels = backingPixels(size, scale);
+
+        const accum = try buildAccumulation(device, queue, pixels, diags);
+        errdefer releaseAccumulation(accum);
+
+        // Last, so it is the one acquisition needing no `errdefer`.
+        const layer = try attachLayer(view, device, size, pixels, scale, diags);
 
         return .{
             .device = device,
@@ -323,17 +551,29 @@ pub const Renderer = struct {
             .layer = layer,
             .in_flight = in_flight,
             .windows = windows,
+            .pixels = pixels,
+            .accum = accum,
         };
     }
 
-    /// [main-thread] Everything `init` does except attach a surface, released
-    /// again before it returns.
+    /// [main-thread] Everything `init` does that needs neither a surface nor a
+    /// size, released again before it returns.
     ///
     /// The half of starting a renderer that needs no window, and so the half
     /// that can run on a machine with a GPU and nothing else. It shares
     /// `buildPipelines` with `init` rather than paraphrasing it, which is what
     /// makes a pass here mean the shipping path compiled the shader, and not
     /// merely that some shader compiled.
+    ///
+    /// **The accumulation textures are deliberately not allocated here**, and
+    /// the `buildWindows` precedent does not carry over. Those have a size the
+    /// seam publishes, so this allocates the real thing; a texture's size comes
+    /// from the editor's geometry, and inventing a nominal one would be this
+    /// function paraphrasing `init` after all. What allocating them would catch
+    /// is caught anyway: `newRenderPipelineStateWithDescriptor:` validates a
+    /// pipeline's colour-attachment format, so a wrong
+    /// `pixel_format_rgba16_float` fails here through `buildPipelines` on every
+    /// push, in the one CI job that runs Metal.
     ///
     /// That covers strictly more than `zig build validate-shaders` does, which is
     /// worth knowing because the two look interchangeable. `metal -fsyntax-only`
@@ -398,6 +638,7 @@ pub const Renderer = struct {
     pub fn deinit(self: *Renderer) void {
         platform.assertMainThread();
 
+        if (self.accum) |pair| releaseAccumulation(pair);
         releaseWindows(self.windows);
         self.in_flight.release();
         self.layer.release();
@@ -416,25 +657,80 @@ pub const Renderer = struct {
     /// be reallocating out from under a frame this thread is midway through.
     ///
     /// Phase 3's accumulation textures are reallocated here, which is why this
-    /// takes the size rather than reading it back off the layer.
-    ///
-    /// Inside a transaction because these are CoreAnimation properties being
-    /// set from somewhere that is not the main thread: it makes the pair land
-    /// as one change and skips the implicit animation CoreAnimation would
-    /// otherwise attach to each.
+    /// takes the size rather than reading it back off the layer, and why the
+    /// layer work is a separate function rather than this function's body.
     pub fn resize(self: *Renderer, size: iface.Size, scale: f64) void {
         platform.assertNotMainThread();
 
         const pool = objc.AutoreleasePool.init();
         defer pool.deinit();
 
+        const pixels = backingPixels(size, scale);
+        self.applyLayerGeometry(pixels, scale);
+
+        // A scale can change without the pixel count changing, and
+        // `Editor.onDisplayChanged` posts the current size with a freshly read
+        // scale unconditionally, so without this a redundant post throws the
+        // phosphor away and reallocates tens of megabytes for nothing. A drag
+        // delivers a size on very nearly every tick, which is what makes this a
+        // cost decision worth making rather than a micro-optimisation.
+        if (self.accum != null and std.meta.eql(pixels, self.pixels)) return;
+
+        self.pixels = pixels;
+        self.replaceAccumulation(pixels);
+    }
+
+    /// [render-thread] Throw the accumulation away and build it at a new size.
+    ///
+    /// The old pair is released before the new one is taken, which is safe for
+    /// a reason worth stating rather than inheriting: a command buffer created
+    /// through `-[MTLCommandQueue commandBuffer]` retains every resource it
+    /// references until it completes, attachments included. `release` here
+    /// therefore drops this object's claim and not the GPU's, so a frame still
+    /// executing keeps the textures it is reading. That is a stronger fact than
+    /// the "an encoder retains what it binds" `deinit` leans on, because a
+    /// render target is attached rather than bound.
+    ///
+    /// **The accumulated energy does not survive, and should not.** Its content
+    /// describes a geometry that no longer exists, so carrying it across would
+    /// mean stretching a picture of the signal rather than redrawing one. What
+    /// this looks like in a host is a trail that vanishes while a window is
+    /// being dragged and rebuilds when it stops, which reads as a defect and is
+    /// the design.
+    ///
+    /// Failure leaves `accum` null and reports nothing, because the render
+    /// thread has nowhere to report to (ADR 0010). The signal that survives is
+    /// `frame` returning `.no_accumulation` to a caller that counts it.
+    fn replaceAccumulation(self: *Renderer, pixels: Pixels) void {
+        if (self.accum) |pair| releaseAccumulation(pair);
+        self.accum = null;
+
+        var diags: iface.Diagnostics = .{};
+        self.accum = buildAccumulation(self.device, self.queue, pixels, &diags) catch null;
+    }
+
+    /// [render-thread] Point the layer at a new drawable size and scale.
+    ///
+    /// Split out of `resize` so the CoreAnimation transaction is provably closed
+    /// before anything else runs. A `defer` fires at *function* exit, so leaving
+    /// this inline and appending texture reallocation below it would hold a
+    /// transaction open across a multi-megabyte allocation, on a thread that is
+    /// not the main one. That is not obviously harmful and is obviously not what
+    /// anyone intends, which is the kind of thing worth making structural rather
+    /// than remembering.
+    ///
+    /// Inside a transaction at all because these are CoreAnimation properties
+    /// being set from somewhere that is not the main thread: it makes the pair
+    /// land as one change and skips the implicit animation CoreAnimation would
+    /// otherwise attach to each.
+    fn applyLayerGeometry(self: *Renderer, pixels: Pixels, scale: f64) void {
         const transaction = objc.getClass("CATransaction").?;
         transaction.msgSend(void, "begin", .{});
         defer transaction.msgSend(void, "commit", .{});
         transaction.msgSend(void, "setDisableActions:", .{true});
 
         self.layer.msgSend(void, "setContentsScale:", .{scale});
-        self.layer.msgSend(void, "setDrawableSize:", .{drawableSize(size, scale)});
+        self.layer.msgSend(void, "setDrawableSize:", .{drawableSize(pixels)});
     }
 
     /// [render-thread] Hand over the window the next frame should draw.
@@ -479,6 +775,12 @@ pub const Renderer = struct {
         const pool = objc.AutoreleasePool.init();
         defer pool.deinit();
 
+        // Before the semaphore, so a tick with nowhere to draw takes no slot and
+        // leaves the staged window alone. Checked every frame rather than once,
+        // because a resize can fail at any point in an editor's life and a later
+        // one can put this back.
+        const accum = self.accum orelse return .no_accumulation;
+
         // Taken before the `defer` below is registered, deliberately: a failed
         // wait acquired nothing, and signalling on the way out would hand back
         // a slot that was never held and let the semaphore climb past its
@@ -515,13 +817,13 @@ pub const Renderer = struct {
         const drawable = self.layer.msgSend(objc.Object, "nextDrawable", .{});
         if (drawable.value == null) return .no_drawable;
 
-        const pass = objc.getClass("MTLRenderPassDescriptor").?
-            .msgSend(objc.Object, "renderPassDescriptor", .{});
-        const attachment = colorAttachment(pass);
-        attachment.msgSend(void, "setTexture:", .{drawable.msgSend(objc.Object, "texture", .{})});
-        attachment.msgSend(void, "setLoadAction:", .{mtl.load_action_clear});
-        attachment.msgSend(void, "setStoreAction:", .{mtl.store_action_store});
-        attachment.msgSend(void, "setClearColor:", .{background});
+        // The half the beam deposits into this frame, and the half it reads.
+        // They swap only once the command buffer below is committed, which is
+        // what leaves the pair untouched on every early return between here and
+        // there: the source still holds valid energy and the target holds stale
+        // data the next frame's decay draw overwrites completely.
+        const source = accum[self.accum_source];
+        const target = accum[self.accum_source ^ 1];
 
         // Both can be nil under memory pressure or device loss, and both are
         // skipped on the same reasoning as `nextDrawable` above.
@@ -536,26 +838,40 @@ pub const Renderer = struct {
         const buffer = self.queue.msgSend(objc.Object, "commandBuffer", .{});
         if (buffer.value == null) return .no_command_buffer;
 
-        const encoder = buffer.msgSend(objc.Object, "renderCommandEncoderWithDescriptor:", .{pass});
+        const encoder = buffer.msgSend(objc.Object, "renderCommandEncoderWithDescriptor:", .{
+            accumulationPass(target),
+        });
         if (encoder.value == null) return .no_encoder;
 
-        // Two pipelines, one encoder, one render pass, background first. This
+        const accum_uniforms: AccumUniforms = .{};
+
+        // Two pipelines, one encoder, one render pass, decay first. This
         // hardware is tile-based deferred, so both draws run against tile memory
-        // and are written out once by the store action. A second encoder would
-        // end the pass, store the whole attachment and reload it, which is two
-        // round trips through the framebuffer for an identical picture.
+        // and are written out once by the store action. A second encoder here
+        // would end the pass, store the whole attachment and reload it, which is
+        // two round trips through the framebuffer for an identical picture.
+        //
+        // That argument is why the *resolve* is a second pass and these two are
+        // not: it has a different attachment, and the accumulation has to be
+        // stored before anything can read it as a texture.
         //
         // A fullscreen triangle, which is cheaper than a quad and needs no
         // vertex buffer: the vertex function derives its positions from the
         // vertex id alone.
-        encoder.msgSend(void, "setRenderPipelineState:", .{self.pipelines.clear});
+        encoder.msgSend(void, "setRenderPipelineState:", .{self.pipelines.decay});
+        encoder.msgSend(void, "setFragmentTexture:atIndex:", .{ source, accumulation_texture_index });
+        encoder.msgSend(void, "setFragmentBytes:length:atIndex:", .{
+            &accum_uniforms,
+            @as(u64, @sizeOf(AccumUniforms)),
+            accum_uniform_index,
+        });
         encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:", .{
             mtl.primitive_type_triangle,
             @as(u64, 0),
             @as(u64, 3),
         });
 
-        // Only the draw is skipped, never the frame. The background above was
+        // Only the draw is skipped, never the frame. The decay above was
         // encoded and this tick goes on to present it, so `.presented` stays the
         // truthful answer, and that direction matters as much as the familiar
         // one: an early return here would report a frame that did reach the
@@ -597,6 +913,32 @@ pub const Renderer = struct {
 
         encoder.msgSend(void, "endEncoding", .{});
 
+        // Pass two, onto the drawable. A second descriptor and a second encoder,
+        // because the attachment is different; `DontCare` because the fullscreen
+        // triangle covers every pixel, which is also what retired the load
+        // action's clear and the `background` colour that went with it.
+        const resolve_pass_descriptor = drawablePass();
+        const resolve_attachment = colorAttachment(resolve_pass_descriptor);
+        resolve_attachment.msgSend(void, "setTexture:", .{drawable.msgSend(objc.Object, "texture", .{})});
+
+        const resolver = buffer.msgSend(objc.Object, "renderCommandEncoderWithDescriptor:", .{
+            resolve_pass_descriptor,
+        });
+        // Returned without committing, deliberately. The `defer` hands the slot
+        // back, no completion handler was registered, and `accum_source` has not
+        // advanced, so pass one's encoded-but-never-executed work leaves the
+        // accumulation exactly where it was.
+        if (resolver.value == null) return .no_encoder;
+
+        resolver.msgSend(void, "setRenderPipelineState:", .{self.pipelines.resolve});
+        resolver.msgSend(void, "setFragmentTexture:atIndex:", .{ target, accumulation_texture_index });
+        resolver.msgSend(void, "drawPrimitives:vertexStart:vertexCount:", .{
+            mtl.primitive_type_triangle,
+            @as(u64, 0),
+            @as(u64, 3),
+        });
+        resolver.msgSend(void, "endEncoding", .{});
+
         // The slot now belongs to this command buffer, and comes back when the
         // GPU is finished with it. Registered before `commit`, because after it
         // the buffer may already have completed.
@@ -606,6 +948,12 @@ pub const Renderer = struct {
 
         buffer.msgSend(void, "presentDrawable:", .{drawable});
         buffer.msgSend(void, "commit", .{});
+
+        // Only now, and the asymmetry with `slot` above is deliberate. `slot`
+        // advances on a successful wait, because a successful wait is what
+        // proves the buffer is free. This advances on a commit, because a commit
+        // is what proves the target was written. Two invariants, two points.
+        self.accum_source ^= 1;
 
         return .presented;
     }
@@ -619,6 +967,18 @@ pub const Renderer = struct {
     /// have to answer rather than a hook shaped to this one's tests.
     pub fn liveWindowBuffers() usize {
         return live_windows.load(.acquire);
+    }
+
+    /// [thread-safe] Accumulation textures this process has taken and not given
+    /// back.
+    ///
+    /// Zero whenever no editor is open, and the **only** check in this project
+    /// that can see a leaked one at all. `leaks` cannot, and unlike the window
+    /// buffers neither can peak RSS: see `live_textures` for both measurements.
+    /// A second backend would have to answer this question too, which is what
+    /// keeps it a seam operation rather than a hook shaped to this one's tests.
+    pub fn liveAccumulationTextures() usize {
+        return live_textures.load(.acquire);
     }
 
     /// [render-thread] Copy staging into this frame's buffer.
@@ -697,6 +1057,137 @@ fn buildWindows(device: objc.Object, diags: *iface.Diagnostics) iface.Error![max
     return windows;
 }
 
+/// The accumulation pair, allocated and cleared, or neither.
+///
+/// Both or none, on `buildWindows`' shape and for its reason: a failure partway
+/// through has to hand back what it already took.
+///
+/// **The clear is part of this function rather than a step beside it**, so that
+/// "an allocated accumulation holds defined data" is a property of one call
+/// instead of a property of a call sequence somebody has to keep in order.
+/// `newTextureWithDescriptor:` does not contract that it returns zeroed memory,
+/// and the consequence of trusting the zero fill Apple Silicon happens to
+/// perform is not a transient smudge: an `RGBA16F` full of arbitrary bits is
+/// very likely full of NaNs, and a NaN multiplied by any decay factor is a NaN
+/// forever. That is a permanently ruined screen, not a first frame worth
+/// ignoring.
+fn buildAccumulation(
+    device: objc.Object,
+    queue: objc.Object,
+    pixels: Pixels,
+    diags: *iface.Diagnostics,
+) iface.Error![2]objc.Object {
+    const descriptor = objc.getClass("MTLTextureDescriptor").?.msgSend(
+        objc.Object,
+        "texture2DDescriptorWithPixelFormat:width:height:mipmapped:",
+        .{ accumulation_pixel_format, @as(u64, pixels.width), @as(u64, pixels.height), false },
+    );
+    if (descriptor.value == null) {
+        diags.set("Metal would not describe an accumulation texture");
+        return error.TextureAllocationFailed;
+    }
+
+    // Both bits, and the render-target one is the whole ballgame: without it
+    // `renderCommandEncoderWithDescriptor:` returns nil rather than failing
+    // loudly. See the constants for what that looks like from the outside.
+    descriptor.msgSend(void, "setUsage:", .{mtl.texture_usage_render_target | mtl.texture_usage_shader_read});
+    descriptor.msgSend(void, "setStorageMode:", .{mtl.storage_mode_private});
+
+    var pair: [2]objc.Object = undefined;
+
+    var taken: usize = 0;
+    errdefer for (pair[0..taken]) |texture| texture.release();
+
+    while (taken < pair.len) : (taken += 1) {
+        const texture = device.msgSend(objc.Object, "newTextureWithDescriptor:", .{descriptor});
+        if (texture.value == null) {
+            diags.set("the Metal device would not allocate an accumulation texture");
+            return error.TextureAllocationFailed;
+        }
+        pair[taken] = texture;
+    }
+
+    try clearAccumulation(queue, pair, diags);
+
+    // Counted only once the whole pair is in hand, which pairs with
+    // `releaseAccumulation` giving the whole pair back. A partial failure
+    // released what it took through the `errdefer` above and reports nothing
+    // here, because it is handing back textures this count never included.
+    _ = live_textures.fetchAdd(pair.len, .release);
+
+    return pair;
+}
+
+/// Zero both textures, on the GPU, without waiting for it.
+///
+/// Two render passes that clear and store and draw nothing, which is the
+/// cheapest way to write a known value into a private texture: no blit, no
+/// staging buffer, and nothing the CPU has to be able to see.
+///
+/// **Both, rather than only the one the next frame reads.** The second is a
+/// target before it is ever a source, so clearing it is arguably redundant
+/// today; it stops being redundant the moment anything changes which index is
+/// read first, and the invariant is worth more than the microsecond.
+///
+/// Committed and not waited on. Nothing here may add an unbounded wait, because
+/// `Editor.tick` holds the gate across its whole body and `Gate.close` spins on
+/// the host's main thread; queue ordering already guarantees this lands before
+/// the frame that reads it, which is all the ordering that is needed.
+///
+/// **It fails closed, and that is the whole reason it returns an error.** A nil
+/// command buffer or a nil encoder is rare, and `frame` already treats both as
+/// real machine conditions rather than programming errors. Skipping the clear
+/// on one would hand back a pair whose contents are whatever the driver left
+/// there, and `buildAccumulation` would go on to report it as allocated and
+/// cleared. Uninitialized `RGBA16F` is very likely a NaN, `NaN * decay` is a NaN
+/// forever, and nothing later in the frame can recover from it: that is the
+/// permanently ruined screen this function exists to prevent, reached by the one
+/// path that skipped it. Refusing instead leaves `accum` null and costs a
+/// skipped frame until a resize succeeds, which is recoverable.
+fn clearAccumulation(queue: objc.Object, pair: [2]objc.Object, diags: *iface.Diagnostics) iface.Error!void {
+    const buffer = queue.msgSend(objc.Object, "commandBuffer", .{});
+    if (buffer.value == null) {
+        diags.set("the command queue would not produce a buffer to clear the accumulation");
+        return error.TextureAllocationFailed;
+    }
+
+    for (pair) |texture| {
+        const pass = objc.getClass("MTLRenderPassDescriptor").?
+            .msgSend(objc.Object, "renderPassDescriptor", .{});
+        const attachment = colorAttachment(pass);
+        attachment.msgSend(void, "setTexture:", .{texture});
+        attachment.msgSend(void, "setLoadAction:", .{mtl.load_action_clear});
+        attachment.msgSend(void, "setStoreAction:", .{mtl.store_action_store});
+        attachment.msgSend(void, "setClearColor:", .{cleared});
+
+        const encoder = buffer.msgSend(objc.Object, "renderCommandEncoderWithDescriptor:", .{pass});
+        if (encoder.value == null) {
+            diags.set("an accumulation texture could not be cleared");
+            return error.TextureAllocationFailed;
+        }
+        encoder.msgSend(void, "endEncoding", .{});
+    }
+
+    buffer.msgSend(void, "commit", .{});
+}
+
+/// Give the pair back, and say so.
+///
+/// The one release site, on `releaseWindows`' precedent and for its reason: a
+/// second bare release loop somewhere else would leave the count drifting from
+/// the releases with nothing to notice.
+///
+/// **This carries an obligation `live_windows` never had.** Window buffers are
+/// allocated once in `init` and released once in `deinit`, so their count moves
+/// twice in a renderer's life. These are reallocated on every resize that
+/// changes the pixel count, which in a drag is most ticks, so the resize path
+/// has to decrement too. It does, because `replaceAccumulation` reaches it
+/// rather than releasing by hand.
+fn releaseAccumulation(pair: [2]objc.Object) void {
+    for (pair) |texture| texture.release();
+    _ = live_textures.fetchSub(pair.len, .release);
+}
+
 /// Give a whole ring back, and say so.
 ///
 /// The one place window buffers are released, which is what stops the count
@@ -729,12 +1220,15 @@ fn buildPipelines(device: objc.Object, diags: *iface.Diagnostics) iface.Error!Pi
     }
     defer library.release();
 
-    const clear = try buildPipeline(device, library, clear_functions, diags);
-    errdefer clear.release();
+    const decay = try buildPipeline(device, library, decay_pass, diags);
+    errdefer decay.release();
 
-    const trace = try buildPipeline(device, library, trace_functions, diags);
+    const trace = try buildPipeline(device, library, trace_pass, diags);
+    errdefer trace.release();
 
-    return .{ .clear = clear, .trace = trace };
+    const resolve = try buildPipeline(device, library, resolve_pass, diags);
+
+    return .{ .decay = decay, .trace = trace, .resolve = resolve };
 }
 
 /// Give every pass's state back, and the one place either is released.
@@ -743,19 +1237,20 @@ fn buildPipelines(device: objc.Object, diags: *iface.Diagnostics) iface.Error!Pi
 /// hands it straight back, and a second bare release loop there is how the two
 /// sites drift.
 fn releasePipelines(pipelines: Pipelines) void {
+    pipelines.resolve.release();
     pipelines.trace.release();
-    pipelines.clear.release();
+    pipelines.decay.release();
 }
 
 /// One pass's state, pulled out of an already-compiled library.
 fn buildPipeline(
     device: objc.Object,
     library: objc.Object,
-    comptime functions: Functions,
+    comptime pass: Pass,
     diags: *iface.Diagnostics,
 ) iface.Error!objc.Object {
-    const vertex = library.msgSend(objc.Object, "newFunctionWithName:", .{platform.nsString(functions.vertex)});
-    const fragment = library.msgSend(objc.Object, "newFunctionWithName:", .{platform.nsString(functions.fragment)});
+    const vertex = library.msgSend(objc.Object, "newFunctionWithName:", .{platform.nsString(pass.vertex)});
+    const fragment = library.msgSend(objc.Object, "newFunctionWithName:", .{platform.nsString(pass.fragment)});
     defer vertex.release();
     defer fragment.release();
 
@@ -763,7 +1258,7 @@ fn buildPipeline(
     // and one of the names above was not, which is a mismatch worth naming
     // precisely rather than reporting as a generic pipeline failure.
     if (vertex.value == null or fragment.value == null) {
-        diags.set("the shader compiled but does not define " ++ functions.vertex ++ " and " ++ functions.fragment);
+        diags.set("the shader compiled but does not define " ++ pass.vertex ++ " and " ++ pass.fragment);
         return error.PipelineCreationFailed;
     }
 
@@ -772,15 +1267,27 @@ fn buildPipeline(
         .msgSend(objc.Object, "init", .{});
     defer descriptor.release();
 
-    // No blending on any pass, which is the default preserved rather than a
-    // choice remade. Phase 3's additive trace lands on an accumulation texture
-    // rather than on the drawable, so enabling it here would be additive against
-    // the wrong surface; and additive over a non-black background makes the
-    // trace's colour a function of the background, which belongs with the
-    // palette rather than ahead of it.
     descriptor.msgSend(void, "setVertexFunction:", .{vertex});
     descriptor.msgSend(void, "setFragmentFunction:", .{fragment});
-    colorAttachment(descriptor).msgSend(void, "setPixelFormat:", .{mtl.pixel_format_bgra8_unorm});
+
+    const attachment = colorAttachment(descriptor);
+
+    // The format the state is compiled against, and the reason `Pass` carries
+    // it. The prediction the comment here used to make came true exactly as
+    // written: the additive trace now lands on an accumulation texture rather
+    // than on the drawable, so it is additive against the right surface and the
+    // background is no longer underneath it to tint the result.
+    attachment.msgSend(void, "setPixelFormat:", .{pass.pixel_format});
+
+    if (pass.blending == .additive) {
+        attachment.msgSend(void, "setBlendingEnabled:", .{true});
+        attachment.msgSend(void, "setRgbBlendOperation:", .{mtl.blend_operation_add});
+        attachment.msgSend(void, "setAlphaBlendOperation:", .{mtl.blend_operation_add});
+        attachment.msgSend(void, "setSourceRGBBlendFactor:", .{mtl.blend_factor_one});
+        attachment.msgSend(void, "setDestinationRGBBlendFactor:", .{mtl.blend_factor_one});
+        attachment.msgSend(void, "setSourceAlphaBlendFactor:", .{mtl.blend_factor_one});
+        attachment.msgSend(void, "setDestinationAlphaBlendFactor:", .{mtl.blend_factor_one});
+    }
 
     var err: ?*anyopaque = null;
     const pipeline = device.msgSend(objc.Object, "newRenderPipelineStateWithDescriptor:error:", .{
@@ -788,7 +1295,7 @@ fn buildPipeline(
         &err,
     });
     if (pipeline.value == null) {
-        describe(err, diags, "the " ++ functions.vertex ++ " pipeline state could not be built");
+        describe(err, diags, "the " ++ pass.fragment ++ " pipeline state could not be built");
         return error.PipelineCreationFailed;
     }
 
@@ -801,10 +1308,16 @@ fn buildPipeline(
 /// layer-hosting rather than layer-backed. Reversing the two lets AppKit
 /// install a layer of its own first, and the Metal layer then becomes a
 /// sublayer that does not track the view's geometry.
+/// Takes both units on purpose. The layer's `frame` is logical points, because
+/// it is a view's geometry; its `drawableSize` is backing pixels, because it is
+/// a texture's. Deriving one from the other here would put a second rounding
+/// rule beside `backingPixels`, which is the thing that file-level comment
+/// exists to prevent.
 fn attachLayer(
     view: iface.NativeView,
     device: objc.Object,
     size: iface.Size,
+    pixels: Pixels,
     scale: f64,
     diags: *iface.Diagnostics,
 ) iface.Error!objc.Object {
@@ -821,7 +1334,7 @@ fn attachLayer(
     const bounds: CGRect = .{ .size = logicalSize(size) };
 
     layer.msgSend(void, "setDevice:", .{device});
-    layer.msgSend(void, "setPixelFormat:", .{mtl.pixel_format_bgra8_unorm});
+    layer.msgSend(void, "setPixelFormat:", .{drawable_pixel_format});
     // Nothing reads back from the drawable, which lets Metal choose a cheaper
     // storage mode. Phase 3's accumulation textures are separate from it.
     layer.msgSend(void, "setFramebufferOnly:", .{true});
@@ -830,7 +1343,7 @@ fn attachLayer(
     // keeps the two from drifting apart if one is ever tuned.
     layer.msgSend(void, "setMaximumDrawableCount:", .{@as(u64, max_frames_in_flight)});
     layer.msgSend(void, "setContentsScale:", .{scale});
-    layer.msgSend(void, "setDrawableSize:", .{drawableSize(size, scale)});
+    layer.msgSend(void, "setDrawableSize:", .{drawableSize(pixels)});
     layer.msgSend(void, "setFrame:", .{bounds});
 
     const host_view = objc.Object.fromId(view);
@@ -838,6 +1351,37 @@ fn attachLayer(
     host_view.msgSend(void, "setWantsLayer:", .{true});
 
     return layer;
+}
+
+/// A render pass writing into one half of the accumulation.
+///
+/// `DontCare` rather than `Load` or `Clear` because the decay draw covers every
+/// pixel with an opaque write, so whatever the target held is overwritten in
+/// full. On a tile-based GPU that means the tile is never loaded, which is the
+/// cheapest of the three and the only one that is not doing work twice.
+fn accumulationPass(target: objc.Object) objc.Object {
+    const pass = objc.getClass("MTLRenderPassDescriptor").?
+        .msgSend(objc.Object, "renderPassDescriptor", .{});
+    const attachment = colorAttachment(pass);
+    attachment.msgSend(void, "setTexture:", .{target});
+    attachment.msgSend(void, "setLoadAction:", .{mtl.load_action_dont_care});
+    attachment.msgSend(void, "setStoreAction:", .{mtl.store_action_store});
+    return pass;
+}
+
+/// A render pass writing into the drawable, whose texture the caller sets.
+///
+/// `DontCare` for the same reason, and that is what retired the clear colour
+/// this file used to hold in step with the shader by hand: the resolve covers
+/// every pixel and emits the background itself where no energy has landed, so
+/// there is no longer a second place for it to be wrong.
+fn drawablePass() objc.Object {
+    const pass = objc.getClass("MTLRenderPassDescriptor").?
+        .msgSend(objc.Object, "renderPassDescriptor", .{});
+    const attachment = colorAttachment(pass);
+    attachment.msgSend(void, "setLoadAction:", .{mtl.load_action_dont_care});
+    attachment.msgSend(void, "setStoreAction:", .{mtl.store_action_store});
+    return pass;
 }
 
 /// The layer's `colorAttachments[0]`, which Objective-C reaches through
@@ -854,12 +1398,48 @@ fn logicalSize(size: iface.Size) CGSize {
     };
 }
 
-/// Backing pixels. Cocoa hands out logical points, so this is the one place the
-/// scale factor is applied, and getting it wrong is a blurry render rather than
-/// a failure, which is exactly why it is worth stating in one place.
-fn drawableSize(size: iface.Size, scale: f64) CGSize {
+/// Logical points to whole backing pixels. Cocoa hands out points, so this is
+/// the one place the scale factor is applied and **the one place the result
+/// becomes an integer**.
+///
+/// Both halves of that matter, and the second one is new. Getting the scale
+/// wrong is a blurry render rather than a failure, which is why it was already
+/// worth stating once. Rounding it twice is worse than either: `Pending.Packed`
+/// quantizes the scale to 1/256ths, so a scale that is not exactly 1 or 2
+/// produces a fractional pixel count, and if this file truncated where
+/// `CAMetalLayer` rounded, an accumulation texture sized from here would be a
+/// pixel narrower than the drawable sized from there. A fragment reading one at
+/// the other's coordinates would then be out of bounds, which MSL does not
+/// define as a benign zero.
+///
+/// Saturating rather than `@intFromFloat`, which is illegal behaviour out of
+/// range, on `gui.windowSamples`' precedent and for its reason: nothing in the
+/// type system stops a caller handing over a scale this cannot represent, and
+/// the answer to one has to be a number rather than a panic.
+///
+/// Floored at one pixel per axis. Metal rejects a zero-dimension texture, and
+/// the smallest editor `gui.clampSize` permits at the smallest scale
+/// `Pending.Packed` can encode still rounds to at least one, so this guards a
+/// case the callers already exclude rather than one they produce. The test at
+/// the foot of this file is what ties those two bounds together.
+fn backingPixels(size: iface.Size, scale: f64) Pixels {
     const logical = logicalSize(size);
-    return .{ .width = logical.width * scale, .height = logical.height * scale };
+    return .{
+        .width = @max(1, std.math.lossyCast(u32, @round(logical.width * scale))),
+        .height = @max(1, std.math.lossyCast(u32, @round(logical.height * scale))),
+    };
+}
+
+/// The same pixels as a `CGSize`, which is what `setDrawableSize:` takes.
+///
+/// Separate from `backingPixels` so the integer is what travels and the float is
+/// only ever the last step. Handing the layer a size built from whole pixels is
+/// what makes the drawable and everything sized beside it agree by construction.
+fn drawableSize(pixels: Pixels) CGSize {
+    return .{
+        .width = @floatFromInt(pixels.width),
+        .height = @floatFromInt(pixels.height),
+    };
 }
 
 /// Copy an `NSError`'s description into `diags`, falling back to a fixed line
@@ -915,16 +1495,117 @@ test "the embedded shader defines the functions every pipeline asks for" {
     }
 }
 
-test "the shader reads the buffers at the indices the encoder binds them to" {
-    // The other half of `window_buffer_index` and `uniform_buffer_index`, which
-    // MSL states as literals inside an attribute. Same shape of insurance as the
-    // test above, against a coupling with no compiler behind it at all: binding
-    // at one index and reading at another is a validation failure that surfaces
-    // inside a DAW, on the render thread, with nothing printable.
-    inline for (.{ window_buffer_index, uniform_buffer_index }) |index| {
-        const attribute = std.fmt.comptimePrint("buffer({d})", .{index});
-        try testing.expect(std.mem.indexOf(u8, shader_source, attribute) != null);
+/// The index MSL attaches to the first parameter matching `needle`, by reading
+/// the `[[<kind>(N)]]` that follows it.
+///
+/// Searching for the bare attribute is what this replaces, and the difference is
+/// the whole point. `buffer(0)` appears in this shader whatever the Zig side
+/// says, so a test that only asks whether the string is present passes when two
+/// indices are swapped, or when one declaration drifts and another happens to
+/// still use the number. Anchoring on the declaration ties an index to the
+/// parameter that has to carry it.
+fn bindingIndexAfter(comptime needle: []const u8, comptime kind: []const u8) ?u64 {
+    const start = std.mem.indexOf(u8, shader_source, needle) orelse return null;
+    const rest = shader_source[start..];
+
+    const opener = "[[" ++ kind ++ "(";
+    const at = std.mem.indexOf(u8, rest, opener) orelse return null;
+    const digits = rest[at + opener.len ..];
+    const end = std.mem.indexOfScalar(u8, digits, ')') orelse return null;
+
+    return std.fmt.parseInt(u64, digits[0..end], 10) catch null;
+}
+
+test "every binding the encoder sets is read at the same index in the shader" {
+    // The other half of five constants MSL states as literals inside attributes,
+    // against a coupling with no compiler behind it at all: binding at one index
+    // and reading at another is a validation failure that surfaces inside a DAW,
+    // on the render thread, with nothing printable.
+    //
+    // Anchored on each declaration rather than on the attribute alone, which is
+    // what makes it non-vacuous. Fragment textures, fragment buffers and vertex
+    // buffers are three separate index spaces, so three of these are zero and a
+    // bare search for `buffer(0)` proves nothing about any of them.
+    try testing.expectEqual(
+        @as(?u64, window_buffer_index),
+        bindingIndexAfter("device const float *samples", "buffer"),
+    );
+    try testing.expectEqual(
+        @as(?u64, uniform_buffer_index),
+        bindingIndexAfter("TraceUniforms &", "buffer"),
+    );
+    try testing.expectEqual(
+        @as(?u64, accum_uniform_index),
+        bindingIndexAfter("AccumUniforms &", "buffer"),
+    );
+
+    // Both fragments that read the accumulation, named separately because each
+    // is a binding the encoder sets and either could drift alone.
+    try testing.expectEqual(
+        @as(?u64, accumulation_texture_index),
+        bindingIndexAfter("access::read> source", "texture"),
+    );
+    try testing.expectEqual(
+        @as(?u64, accumulation_texture_index),
+        bindingIndexAfter("access::read> energy", "texture"),
+    );
+}
+
+test "the binding reader finds nothing rather than guessing" {
+    // The failure this has to avoid is answering `null` for a declaration that
+    // moved and having that read as a pass. `expectEqual` against an optional
+    // covers it, and this pins the two ways `null` is reached.
+    try testing.expectEqual(@as(?u64, null), bindingIndexAfter("no such parameter", "buffer"));
+    try testing.expectEqual(@as(?u64, null), bindingIndexAfter("AccumUniforms &", "sampler"));
+}
+
+test "the accumulation's uniforms are laid out the way the shader reads them" {
+    // MSL computes its own offsets from its own `AccumUniforms`, and nothing
+    // links the two declarations. What this catches is a field added or
+    // reordered on one side, whose symptom is a plausible picture at the wrong
+    // brightness rather than anything that fails.
+    try testing.expectEqual(@as(usize, 4), @sizeOf(AccumUniforms));
+    try testing.expectEqual(@as(usize, 4), @alignOf(AccumUniforms));
+    try testing.expectEqual(@as(usize, 0), @offsetOf(AccumUniforms, "decay"));
+    try testing.expect(@sizeOf(AccumUniforms) <= 4096);
+}
+
+test "a frame both dims what is there and shows what is left" {
+    // The range is the whole claim, and it is what makes two of this issue's
+    // planted defects fail here rather than needing an eye. At 1.0 nothing
+    // decays and the picture saturates; at 0.0 nothing persists and this change
+    // reduces to the trace it replaced.
+    try testing.expect(decay_per_frame > 0.0);
+    try testing.expect(decay_per_frame < 1.0);
+}
+
+test "the uniforms carry the file's constants rather than a second copy of them" {
+    // The defaults are the whole mechanism by which the shader learns both
+    // numbers, so a `frame` that filled them in by hand would compile and draw
+    // at whatever it chose. Same reasoning as the `TraceUniforms` test above.
+    const uniforms: AccumUniforms = .{};
+
+    try testing.expectEqual(decay_per_frame, uniforms.decay);
+}
+
+test "every pass names the format it is compiled against" {
+    // Not an assertion that the constants say what they say: it is that the
+    // trace deposits into the same surface the decay writes, and that exactly
+    // one pass targets the drawable. Getting either wrong is a draw-time
+    // validation failure `probe` never reaches, because it builds pipeline
+    // states and never encodes against a texture.
+    try testing.expectEqual(decay_pass.pixel_format, trace_pass.pixel_format);
+    try testing.expectEqual(accumulation_pixel_format, trace_pass.pixel_format);
+    try testing.expectEqual(drawable_pixel_format, resolve_pass.pixel_format);
+
+    // And that the deposit is the only blended one. Additive on the resolve
+    // would add the drawable's previous contents to every frame.
+    var additive: usize = 0;
+    for (passes) |pass| {
+        if (pass.blending == .additive) additive += 1;
     }
+    try testing.expectEqual(@as(usize, 1), additive);
+    try testing.expect(trace_pass.blending == .additive);
 }
 
 test "a window shorter than one segment draws no trace" {
@@ -968,6 +1649,65 @@ test "the drawable is sized in backing pixels and the layer in points" {
     const size: iface.Size = .{ .width = 960, .height = 540 };
 
     try testing.expectEqual(CGSize{ .width = 960, .height = 540 }, logicalSize(size));
-    try testing.expectEqual(CGSize{ .width = 1920, .height = 1080 }, drawableSize(size, 2));
-    try testing.expectEqual(CGSize{ .width = 960, .height = 540 }, drawableSize(size, 1));
+    try testing.expectEqual(Pixels{ .width = 1920, .height = 1080 }, backingPixels(size, 2));
+    try testing.expectEqual(Pixels{ .width = 960, .height = 540 }, backingPixels(size, 1));
+}
+
+test "the layer is handed the same whole pixels everything else is sized from" {
+    // The property that keeps a fragment's integer read of one surface in bounds
+    // against another: whatever `backingPixels` decided is what reaches
+    // `setDrawableSize:`, with no second rounding in between. Phase 3's
+    // accumulation textures are the other consumer, and this is the only thing
+    // asserting the two cannot disagree.
+    const size: iface.Size = .{ .width = 960, .height = 540 };
+
+    inline for (.{ 1.0, 1.5, 2.0 }) |scale| {
+        const pixels = backingPixels(size, scale);
+        try testing.expectEqual(
+            CGSize{
+                .width = @floatFromInt(pixels.width),
+                .height = @floatFromInt(pixels.height),
+            },
+            drawableSize(pixels),
+        );
+    }
+}
+
+test "a fractional backing scale rounds once rather than truncating" {
+    // 1.5 is reachable: `Pending.Packed` carries the scale in 1/256ths, so
+    // anything a display reports that is not exactly 1 or 2 arrives here as a
+    // fraction. 540 * 1.5 is exact; 271 * 1.5 is 406.5 and is the case that
+    // separates rounding from truncation.
+    try testing.expectEqual(
+        Pixels{ .width = 1440, .height = 810 },
+        backingPixels(.{ .width = 960, .height = 540 }, 1.5),
+    );
+    try testing.expectEqual(
+        Pixels{ .width = 1440, .height = 407 },
+        backingPixels(.{ .width = 960, .height = 271 }, 1.5),
+    );
+}
+
+test "the smallest editor the seam permits still asks for at least one pixel" {
+    // 480x270 is `gui.min_size` and 1/256 is the smallest scale `Pending.Packed`
+    // can encode, restated as literals because the backend must not import the
+    // clap layer. Metal rejects a zero-dimension texture, so this is the
+    // arithmetic that says the floor in `backingPixels` guards a case the
+    // callers already exclude rather than one they produce.
+    const smallest = backingPixels(.{ .width = 480, .height = 270 }, 1.0 / 256.0);
+
+    try testing.expect(smallest.width >= 1);
+    try testing.expect(smallest.height >= 1);
+}
+
+test "a scale no integer can hold is saturated rather than illegal" {
+    // `@intFromFloat` is undefined behaviour out of range and `lossyCast` is
+    // not. Nothing should reach this, since `Pending` refuses a degenerate
+    // scale and `View.backingScale` falls back to 1.0, but the seam's own
+    // habit is to refuse rather than assert at a boundary it does not own.
+    const huge = backingPixels(.{ .width = 960, .height = 540 }, 1e300);
+    try testing.expectEqual(@as(u32, std.math.maxInt(u32)), huge.width);
+
+    const nonsense = backingPixels(.{ .width = 960, .height = 540 }, std.math.nan(f64));
+    try testing.expect(nonsense.width >= 1);
 }

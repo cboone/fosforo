@@ -182,6 +182,38 @@ function make_saws() {
   done
 }
 
+# Transients, which is the only way persistence can be seen at all.
+#
+# The accumulation resolves a *stationary* trace to exactly the colour the
+# unaccumulated line strip drew, deliberately, so steady material looks identical
+# with the phosphor and without it. What differs is what happens after the signal
+# changes, and these two files are what make that difference countable rather
+# than a matter of opinion.
+#
+# **A click, not an impulse.** One sample is one column at the default geometry
+# and vanishes into the rasterizer; 1 ms at 48 kHz is 48 samples, which is about
+# 96 backing pixels on a 2x display and unmissable. Repeating at 2 Hz is what
+# turns the persistence into a count: without it exactly one click is ever lit,
+# and with it the number visible at once reads tau directly in half-seconds.
+#
+# The gated sine gives a rise and a decay in one file, which is the shape to
+# watch when judging whether the fade looks like a phosphor or like a fade.
+#
+# `lt()`, `gt()` and `mod()` are ffmpeg's own; the commas inside them need the
+# same escaping the saws already do, for the same reason.
+function make_transients() {
+  local click_window="lt(mod(t\\,0.5)\\,0.001)"
+  local burst_window="lt(mod(t\\,1.0)\\,0.1)"
+  local click="0.8*${click_window}*sin(2*PI*1000*t)"
+  local burst="0.5*${burst_window}*sin(2*PI*${SWEEP_HZ}*t)"
+
+  render "click-2hz" "${click}" "${click}"
+  verify "click-2hz" 0.8
+
+  render "burst-100hz-gated" "${burst}" "${burst}"
+  verify "burst-100hz-gated" 0.5
+}
+
 function main() {
   if [[ $# -gt 1 ]]; then
     die "${E_USAGE}" "usage: make-test-tones [OUTDIR]"
@@ -200,6 +232,7 @@ function main() {
   make_levels
   make_pans
   make_saws
+  make_transients
 
   warn "every peak above was read back out of the finished file"
 }
