@@ -310,10 +310,30 @@ fn signClapBundle(
     b.getInstallStep().dependOn(&sign.step);
 }
 
+/// The unit tests, and the one import that exists only for them.
+///
+/// `scripts/measure-trace` restates four constants this project owns, two from
+/// `src/gpu/iface.zig` and two from `shaders/scope.metal`, with nothing in Python
+/// or MSL linking any of them. The test that checks them reads the script as text,
+/// the way the shader tests read the embedded shader source, so the file has to be
+/// reachable through the import table.
+///
+/// **Added to the test module alone, deliberately.** `Core.module` builds the
+/// module every shipping artifact compiles from, and registering this there would
+/// put a Python script within reach of `@embedFile` in a release build. Each call
+/// to `Core.module` is a separate `createModule`, so this import exists in exactly
+/// one of the two and that is structural rather than something to measure
+/// afterwards.
 fn addTestStep(core: Core) void {
-    const tests = core.b.addTest(.{ .root_module = core.module(.{}) });
-    const run = core.b.addRunArtifact(tests);
-    core.b.step("test", "Run unit tests").dependOn(&run.step);
+    const b = core.b;
+    const mod = core.module(.{});
+    mod.addAnonymousImport("measure-trace", .{
+        .root_source_file = b.path("scripts/measure-trace"),
+    });
+
+    const tests = b.addTest(.{ .root_module = mod });
+    const run = b.addRunArtifact(tests);
+    b.step("test", "Run unit tests").dependOn(&run.step);
 }
 
 /// Shaders are compiled at runtime from embedded source (ADR 0009), so the

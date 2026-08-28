@@ -1,0 +1,501 @@
+#!/usr/bin/env -S uv run --quiet --with pillow --with numpy python
+"""Measure a Fosforo trace out of a screenshot.
+
+The verification steps talk in backing pixels: a peak on row 54 rather than row
+30 is the whole of the level check, and no eye reads that off a screen. This
+reports the numbers instead.
+
+    screencapture -o -x -t png -W shot.png    # click the plugin window
+    measure-trace shot.png
+
+Every flag there is load-bearing. `-o` drops the window's drop shadow, which is
+dark with a blue cast over a dark desktop and otherwise reads as more drawable.
+`-t png` forces lossless: a lossy capture smears the one-pixel trace into a halo
+tens of pixels deep, which moved a full-scale signal's measured peak onto the
+rail. `-W` picks the window so the whole editor is in frame; the crop is found
+from the background rather than given.
+
+On a Retina display this writes backing pixels, which is the unit the plan's
+tables are in. Terminal needs Screen Recording permission or the capture comes
+back empty.
+
+A capture is refused when it holds colours this shader cannot produce, which is
+what catches a recompressed or resampled screenshot. `--explain` prints the
+distribution that check is read off, and is how its two constants were set and
+how they get re-derived.
+
+**A screenshot is written in the display's colour space, not the framebuffer's**,
+so this converts to sRGB before measuring anything. See `to_srgb`: on a P3 display
+the numbers in the file are not the numbers the shader wrote, and the discrepancy
+hides at the low end where it is easiest to check.
+"""
+
+import argparse
+import io
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+import numpy as np
+from PIL import Image, ImageCms, UnidentifiedImageError
+
+# This project's display contract, restated. Four numbers this file does not own
+# and cannot derive, copied from two files in two other languages, with a test on
+# the Zig side reading this script and asserting all four still agree. Without
+# that test a constant that moved would leave everything below reporting
+# confident numbers against the old mapping.
+FULL_SCALE = 0.9  # iface.trace_full_scale
+RAIL = 0.98  # iface.trace_rail
+BACKGROUND = (0.02, 0.02, 0.03)  # resolve_fragment's literal
+BEAM = (0.30, 1.0, 0.45)  # trace_fragment's literal
+
+# The two colours as the drawable stores them. `BGRA8Unorm` is not sRGB, so the
+# 8-bit values are linear in the shader's floats and this is the whole of the
+# conversion. Kept unrounded, because the ray prediction wants 5.1 and 7.65
+# rather than the 5 and 8 an eye reads off a screenshot.
+BG8 = tuple(c * 255.0 for c in BACKGROUND)
+BEAM8 = tuple(c * 255.0 for c in BEAM)
+
+# How far a capture may stray from the exact background before a pixel stops
+# counting as background, and how far the blue lead may stray from its nominal 3.
+# Both are empirical: they describe what the screen-capture path does to a value,
+# not what the shader writes, which is why they are numbers here rather than
+# derived from BACKGROUND the way the centres are.
+BG_WINDOW = 2
+LEAD_WINDOW = 1
+
+# The colour-ray guard. See `ray_deviation` for what it tests and why the shade
+# count it replaced stopped working.
+#
+# Both numbers are measured rather than chosen, from a REAPER capture at
+# 2018x1778 and a quality-60 JPEG of that same file, read after `to_srgb`:
+#
+#                       lossless      JPEG q60
+#   off the ray at 1     0.9446%      98.7932%
+#   off the ray at 2     0.0074%      23.7258%
+#   off the ray at 3     0.0072%      19.5761%
+#   max deviation           8.64        170.73
+#
+# **A tolerance of 1 is what makes 2 a floor rather than a preference**: it puts
+# a good capture at 0.94%, above the threshold below, so it would refuse the very
+# picture this tool exists to measure. 2 is the tightest that does not, and 3 buys
+# nothing. The threshold then sits 67x above a good capture and 47x below a
+# recompressed one, which is room enough that neither has to be re-measured for a
+# different editor size.
+RAY_TOLERANCE = 2
+MAX_OFF_RAY = 0.005
+
+# Measured on the same capture, and it earns its place: dropping the exclusion
+# entirely takes a good picture from 0.0074% off the ray to 0.1161% and its max
+# deviation from 8.64 to 110.89, because a clipped green sits under red and blue
+# that are still climbing. Where exactly the cut falls does not matter, which is
+# the useful part: 240, 250 and 254 give identical results, since the population
+# it removes is at 255 exactly. 3774 pixels of that capture were excluded.
+SATURATED = 250
+
+
+def open_image(path):
+    """Open a capture whatever container macOS put it in.
+
+    A screenshot named `.png` is not necessarily a PNG: depending on how it was
+    taken, macOS writes HEIC and leaves the extension alone, and Pillow reads
+    neither HEIC nor several other things the screen-capture path can produce.
+    `sips` is part of the base OS and reads everything Apple's imaging stack
+    does, so an unreadable file gets one conversion attempt before being called
+    unreadable.
+    """
+    try:
+        return Image.open(path)
+    except UnidentifiedImageError:
+        pass
+    except FileNotFoundError:
+        sys.exit(f"no such file: {path}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        converted = Path(tmp) / "converted.png"
+        # `check=False` explicitly: a failed conversion is an ordinary outcome
+        # here, reported by the returncode test below with a message about Screen
+        # Recording permission, and raising instead would replace that with a
+        # traceback.
+        done = subprocess.run(
+            ["sips", "-s", "format", "png", str(path), "--out", str(converted)],
+            capture_output=True,
+            check=False,
+        )
+        if done.returncode != 0 or not converted.exists():
+            sys.exit(
+                f"{path} is not an image Pillow or sips can read.\n"
+                "If it came from `screencapture`, an empty or truncated file usually "
+                "means Terminal lacks Screen Recording permission:\n"
+                "  System Settings > Privacy & Security > Screen & System Audio Recording"
+            )
+        print(f"converted {Path(path).suffix or 'the capture'} to png via sips")
+        return Image.open(converted).copy()
+
+
+def to_srgb(img):
+    """Undo the display's colour space, which is what a screenshot is written in.
+
+    **This is the difference between the colour guard working and not, and it is
+    invisible until measured.** The plugin writes into a `BGRA8Unorm` drawable,
+    whose values the compositor treats as sRGB; the compositor then converts them
+    for whatever display is showing them, and `screencapture` writes those
+    *display* values with the display's profile attached. On a P3 display the
+    numbers in the file are therefore not the numbers the shader wrote.
+
+    What makes it a trap rather than an inconvenience is where the distortion
+    lives. It is proportional to saturation and vanishes at black, so the
+    background survives as exactly `RGB(5, 5, 8)` and the capture looks faithful
+    at precisely the point anyone would check it. Measured on a real REAPER
+    capture at 2018x1778, before and after this conversion:
+
+        green 200-240   red 119.0 -> 70.9   against a predicted 70.9
+        off the ray        2.7372% -> 0.0074%
+        max deviation        55.73 -> 8.64
+
+    The green channel barely moves, so every row this tool reports is unchanged:
+    that capture's peak row is 459 either way, and #38's published tables are not
+    affected. What the conversion fixes is chroma, which is all the guard reads.
+
+    A file with no profile is taken as sRGB already, which is the honest default
+    and is what a synthesized or hand-made image will be.
+
+    The name reported back is whatever the profile calls itself, which for a
+    calibrated display is often just "Display". That is not this function failing
+    to identify it; `sips` names the same capture's profile "Display P3" only
+    after rewriting it.
+    """
+    icc = img.info.get("icc_profile")
+    rgb = img.convert("RGB")
+    if icc is None:
+        return rgb, None
+
+    source = ImageCms.ImageCmsProfile(io.BytesIO(icc))
+    converted = ImageCms.profileToProfile(
+        rgb, source, ImageCms.createProfile("sRGB"), outputMode="RGB"
+    )
+    return converted, ImageCms.getProfileDescription(source).strip()
+
+
+def find_drawable(rgb):
+    """Bounding box of Fosforo's own surface inside a larger screenshot.
+
+    The background is RGB(5, 5, 8), whose giveaway is the blue channel sitting
+    three above red and green. A host's chrome is grey or coloured and a pure
+    grey fails that lead, so this does not need the capture cropped by hand: grab
+    the whole window and let the background find itself. Returns None when no
+    such region exists, which is the honest answer both for a capture of the
+    wrong thing and for one recompressed past the point where the background
+    survives.
+    """
+    r, g, b = rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2]
+    # Tight, because a window's drop shadow over a dark desktop is also near
+    # black with a blue cast and fooled a looser test: it stretched the detected
+    # region 119 rows past the real drawable. So this looks for the background's
+    # own value, and for the blue lead of 3 that 0.03-against-0.02 produces
+    # rather than for a merely positive one.
+    #
+    # **Tolerant rather than exact, and that is not an oversight.** The shader
+    # writes exactly RGB(5, 5, 8) into the framebuffer; this reads a screenshot,
+    # which `to_srgb` explains is a different thing, identity at the background
+    # only to within rounding. BG_WINDOW and LEAD_WINDOW are what absorb that and
+    # their declarations say so. Do not tighten them to zero on the strength of
+    # the word "exactly" anywhere else in this file.
+    #
+    # The centres come from BACKGROUND rather than being written out, so the one
+    # place this file states the background is the one the constants test checks.
+    # Only the windows either side are this function's own.
+    want = [round(c) for c in BG8]
+    lead = want[2] - want[0]
+    bg = (
+        (abs(r - want[0]) <= BG_WINDOW)
+        & (abs(g - want[1]) <= BG_WINDOW)
+        & (abs(b - want[2]) <= BG_WINDOW)
+        & (abs(b - r - lead) <= LEAD_WINDOW)
+        & (abs(b - g - lead) <= LEAD_WINDOW)
+    )
+    if bg.sum() < 1000:
+        return None
+    rows, cols = np.where(bg)
+    return int(cols.min()), int(rows.min()), int(cols.max()) + 1, int(rows.max()) + 1
+
+
+def ray_deviation(rgb):
+    """How far each unsaturated pixel sits from the colour this shader can produce.
+
+    Everything the renderer puts on the drawable is `background + c * beam` for
+    some `c >= 0`. Every deposit is the same colour and the decay multiplies the
+    whole vector, so accumulated energy is always a scalar multiple of one ray
+    through colour space. Green is the channel the beam drives hardest, so it
+    gives the best-conditioned estimate of `c`, and red and blue then follow
+    exactly rather than approximately.
+
+    **This replaces a count of distinct green levels, whose premise #55 ended.**
+    That guard refused any capture holding more than 32 shades, on the stated
+    ground that a lossless one holds two: true of a trace with no persistence and
+    false the moment one fades, because a decaying trail occupies dozens of levels
+    by construction. It refused good PNGs and told the author to recapture them.
+
+    The ray survives persistence for the reason the count does not: decay scales
+    all three channels together, so a fading pixel slides along the ray rather
+    than off it. What leaves the ray is resampling and chroma subsampling, which
+    put green into neighbouring pixels without their red and blue partners, and
+    ringing, which puts red and blue where there is no green. So this refuses a
+    strictly wider set of bad captures than the count did, including a screenshot
+    taken on a scaled display, which the count could not see at all.
+
+    Returns one deviation per unsaturated pixel, in 8-bit levels, and how many
+    that was: the larger of the red and blue distances, since a pixel is off the
+    ray when either channel is, and the count separately because a fraction of
+    nothing has to be reported as such rather than as zero.
+    """
+    r, g, b = (rgb[:, :, i].astype(np.float32) for i in range(3))
+
+    # Green clips first, at c = 0.98, and a clipped pixel carries no usable c:
+    # red and blue keep climbing behind a green that cannot. Excluded rather than
+    # tolerated, since the beam crossing its own path is exactly where the trace
+    # is brightest and most worth measuring.
+    usable = g < SATURATED
+    examined = int(usable.sum())
+    if examined == 0:
+        return np.empty(0, dtype=np.float32), 0
+
+    energy = (g - BG8[1]) / BEAM8[1]
+    from_red = np.abs(r - (BG8[0] + BEAM8[0] * energy))
+    from_blue = np.abs(b - (BG8[2] + BEAM8[2] * energy))
+    return np.maximum(from_red, from_blue)[usable], examined
+
+
+def off_ray(deviation, examined):
+    """Fraction of unsaturated pixels holding a colour this shader cannot produce.
+
+    `None` when there are no unsaturated pixels at all, which is emphatically not
+    the same as 100%: it is the absence of an answer rather than the worst one.
+    Returning a fraction there made the guard announce "100.0% of 0 unsaturated
+    pixels are colours this shader cannot produce" and blame a codec for an image
+    that simply had nothing in it to measure.
+    """
+    if examined == 0:
+        return None
+    return float((deviation > RAY_TOLERANCE).mean())
+
+
+def explain_ray(deviation, examined):
+    """Report what sets RAY_TOLERANCE and MAX_OFF_RAY, so neither has to be a guess.
+
+    The two constants are the only judgement calls in the guard, and picking them
+    from one aggregate number would be picking them blind. This prints the
+    distribution instead, and the fraction each candidate tolerance would refuse,
+    so a threshold can be read off a table and re-derived later by anyone holding
+    the same capture.
+
+    It exists in the tool rather than as a probe beside it deliberately. #38's
+    verification produced exactly one throwaway offscreen probe, it lived on one
+    machine, and it is gone; losing this tool the same way is what #64 is about.
+    """
+    if examined == 0:
+        print("every pixel is saturated, so there is no ray to measure against")
+        return
+
+    print()
+    print(f"ray deviation across {examined} unsaturated pixels, in 8-bit levels")
+    for label, value in (
+        ("median", float(np.percentile(deviation, 50))),
+        ("99th", float(np.percentile(deviation, 99))),
+        ("99.9th", float(np.percentile(deviation, 99.9))),
+        ("max", float(deviation.max())),
+    ):
+        print(f"  {label:<8} {value:7.2f}")
+
+    print()
+    print("  tolerance   would refuse")
+    for tolerance in (1, 2, 3, 4):
+        fraction = float((deviation > tolerance).mean())
+        here = "  <- RAY_TOLERANCE" if tolerance == RAY_TOLERANCE else ""
+        print(f"  {tolerance:>9}   {fraction:12.4%}{here}")
+    print(f"  refusing above {MAX_OFF_RAY:.4%}")
+
+
+def lit_rows(img, threshold):
+    """Topmost and bottommost lit row per column, or -1 where the column is dark."""
+    # The trace is green on a near-black background, so the green channel alone
+    # separates them; using luminance would also catch the background's blue.
+    green = np.asarray(img.convert("RGB"), dtype=np.int16)[:, :, 1]
+    lit = green > threshold
+    any_lit = lit.any(axis=0)
+    top = np.where(any_lit, lit.argmax(axis=0), -1)
+    bottom = np.where(any_lit, lit.shape[0] - 1 - lit[::-1].argmax(axis=0), -1)
+    return top, bottom, any_lit
+
+
+def implied_sample(row, height):
+    """Invert the documented mapping: row -> NDC -> sample value."""
+    y = 1.0 - 2.0 * row / height
+    return y / FULL_SCALE
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("image")
+    ap.add_argument("--threshold", type=int, default=64, help="green level counted as lit")
+    ap.add_argument("--periods", action="store_true", help="also count periods")
+    ap.add_argument(
+        "--no-crop", action="store_true", help="the image is already exactly the drawable"
+    )
+    ap.add_argument(
+        "--measure-anyway",
+        action="store_true",
+        help="measure a capture that failed the colour check",
+    )
+    ap.add_argument(
+        "--explain",
+        action="store_true",
+        help="report the deviation distribution the colour check's constants come from",
+    )
+    args = ap.parse_args()
+
+    img = open_image(args.image)
+
+    # Before the crop and before any measurement, because everything below reads
+    # colours and none of them are the shader's until this has run.
+    img, profile = to_srgb(img)
+    if profile is None:
+        print("no colour profile in the capture; measuring it as sRGB")
+    else:
+        print(f"converted from {profile} to sRGB")
+
+    if not args.no_crop:
+        rgb = np.asarray(img.convert("RGB"), dtype=np.int16)
+        box = find_drawable(rgb)
+        if box is None:
+            # Two explanations, and the second is not obvious. A capture that has
+            # been recompressed hard enough loses the exact background before the
+            # colour guard below ever runs, so this message has to carry that
+            # possibility or it misdiagnoses the case it sees most often.
+            # Measured against synthetic captures: a JPEG at quality 60 still
+            # crops and is refused by the guard, while quality 40 fails here.
+            print("no Fosforo background found in this image.")
+            print("Either it is not a capture of the editor, or it has been recompressed")
+            print("hard enough to destroy the exact RGB(5, 5, 8) the crop looks for.")
+            print("Recapture with:  screencapture -o -x -t png -W shot.png")
+            return 1
+        if box != (0, 0, img.size[0], img.size[1]):
+            print(f"drawable found at x={box[0]} y={box[1]}, cropping to it")
+        img = img.crop(box)
+
+    width, height = img.size
+
+    # Refusing is right when the picture cannot have come from this shader: a
+    # plausible wrong answer is worse than none, and the case that produced this
+    # guard reported a railed trace for a signal at full scale.
+    drawable = np.asarray(img.convert("RGB"), dtype=np.int16)
+    shades = len(np.unique(drawable[:, :, 1]))
+    deviation, examined = ray_deviation(drawable)
+    fraction = off_ray(deviation, examined)
+
+    # No unsaturated pixel means no usable estimate of the beam's scalar anywhere,
+    # so the ray has nothing to say and the guard below would say it anyway. Its
+    # own refusal is unconditional rather than overridable, unlike the colour one:
+    # `--measure-anyway` trades accuracy for a number, and here there is no number
+    # to trade for. Every row below would read zero.
+    #
+    # Reachable only with `--no-crop`, since `find_drawable` wants a thousand
+    # background pixels and an all-saturated image has none, so the message names
+    # that rather than a codec.
+    if fraction is None:
+        print("every pixel in the measured region is saturated, so there is no")
+        print("unsaturated pixel to check the beam's colour against.")
+        print("This is not a recompressed capture; it is the wrong region. Drop")
+        print("--no-crop and let the background find the drawable, or recapture:")
+        print("  screencapture -o -x -t png -W shot.png")
+        if args.explain:
+            explain_ray(deviation, examined)
+        return 1
+
+    if fraction > MAX_OFF_RAY and not args.measure_anyway:
+        # `:.2f` rather than `:g`, which would print the beam as (0.3, 1, 0.45)
+        # and make it harder to recognise as the shader's own literal.
+        beam = ", ".join(f"{c:.2f}" for c in BEAM)
+        print(f"{fraction:.1%} of the drawable's unsaturated pixels are colours this shader")
+        print("cannot produce.")
+        print(f"It writes background + a * ({beam}), so red and blue follow green exactly.")
+        print("A resampled or recompressed capture breaks that and moves every number below.")
+        print("Recapture with:  screencapture -o -x -t png -W shot.png")
+        print("  -o drops the window shadow, which otherwise confuses the crop")
+        print("  -t png forces lossless, whatever the screenshot default is")
+        print("Pass --measure-anyway to measure it regardless, knowing the peak will read high.")
+        # Printed on the refusing path too, and this is the path where it is
+        # most wanted: a capture that was refused is exactly the one whose
+        # deviation distribution decides whether the constants or the capture is
+        # at fault.
+        if args.explain:
+            explain_ray(deviation, examined)
+        return 1
+
+    top, bottom, any_lit = lit_rows(img, args.threshold)
+
+    if not any_lit.any():
+        print("no lit pixels found: wrong region, or the capture is of a covered window")
+        return 1
+
+    peak_top = int(top[any_lit].min())
+    peak_bottom = int(bottom[any_lit].max())
+    rail_row = (1.0 - RAIL) * height / 2
+
+    print(f"image            {width} x {height}")
+    print(f"columns lit      {int(any_lit.sum())} of {width}")
+    print(f"centre row       {height / 2:.1f}")
+    print(f"rail rows        {rail_row:.1f} / {height - rail_row:.1f}")
+    # Kept visible rather than dropped with the guard it used to gate. It is the
+    # number every pre-#55 measurement was taken under, so anyone holding #38's
+    # tables can see at a glance which regime a capture is in, and it is the tell
+    # for whether a trail is lit at all.
+    print(f"green levels     {shades}")
+    print(f"off the ray      {fraction:.2%} of {examined} unsaturated pixels")
+    print()
+    print(
+        f"highest peak     row {peak_top:<6} implies sample {implied_sample(peak_top, height):+.4f}"
+    )
+    print(
+        f"lowest trough    row {peak_bottom:<6} implies sample {implied_sample(peak_bottom, height):+.4f}"
+    )
+
+    # A peak sitting on the rail means "at or above" and nothing more precise.
+    if abs(peak_top - rail_row) <= 1.5:
+        print("                 ^ on the rail: at or above +0.74 dBFS, amount unknowable")
+
+    plateau = int((top == peak_top).sum())
+    print(f"plateau width    {plateau} columns at the highest row")
+
+    # Persistence changes what a peak row means, and nothing about the picture
+    # says so. Two green levels is a trace with no trail, where every lit pixel
+    # belongs to this frame; more than two means a fade is present, and the
+    # topmost lit pixel in a column then belongs to whichever recent frame put
+    # the beam highest. The measurement is unchanged and its meaning is not,
+    # which is a fact about #55 rather than a defect here (#64).
+    if shades > 2:
+        print()
+        print("a trail is lit, so the rows above are the envelope over the persistence")
+        print("window rather than this frame's sample")
+
+    if args.periods:
+        # One run per period, thresholded well above centre so a steep crossing
+        # cannot be mistaken for a peak.
+        band = (height / 2 + peak_top) / 2
+        runs, inside = 0, False
+        for x in range(width):
+            up = any_lit[x] and top[x] < band
+            if up and not inside:
+                runs += 1
+            inside = up
+        print(f"periods          {runs}")
+
+    if args.explain:
+        explain_ray(deviation, examined)
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

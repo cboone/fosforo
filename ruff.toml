@@ -1,0 +1,56 @@
+# ruff's configuration, for the one Python file here: scripts/measure-trace.
+#
+# Deliberately not a pyproject.toml. There is no Python package here and never
+# will be; this configures a tool, not a distribution.
+#
+# **ruff does not read .editorconfig**, unlike shfmt, which reads it natively and
+# is why the shell profile lives there. So indentation and line length are stated
+# in both places and kept in step by hand. This file is the authority; the
+# [measure-trace] section in .editorconfig is what stops an editor fighting it
+# before ruff has run.
+
+# **Load-bearing, and the `**/` is load-bearing within it.** ruff discovers Python
+# by extension and this file has none, deliberately, matching every other script
+# in scripts/. Without an include entry a walk of the tree finds no Python at all
+# and both `ruff check` and `ruff format --check` exit zero having read nothing:
+# a green job that checked no file.
+#
+# A bare `measure-trace` is that same silent pass, and it is the spelling anyone
+# would write first. ruff matches these globs with a literal path separator, so a
+# pattern containing no `/` matches only at the repository root and never
+# `scripts/measure-trace`. Measured rather than reasoned about: with an unused
+# import planted in the script, `measure-trace` reports nothing while
+# `**/measure-trace`, `*/measure-trace` and `scripts/measure-trace` all report it.
+# `**/` is preferred over naming the directory so the file can move without this
+# passing vacuously from its new home.
+extend-include = ["**/measure-trace"]
+
+# ruff formats Python fenced in Markdown, which puts all 53 .md files here in its
+# remit, and that is wrong for this repository specifically. ci.yml carries
+# `paths-ignore` for `*.md` and `docs/**` on both triggers, so a Markdown-only
+# change can never run the job that would check it: a doc committed with an
+# unformatted fence goes green, and then the next Zig change turns the job red
+# for a reason that has nothing to do with it. That is the asymmetry typos.yml
+# was split out of ci.yml to avoid, and the narrow fix here is to keep ruff's
+# remit to the file the job exists for.
+extend-exclude = ["**/*.md"]
+
+# 100 rather than the default 88, measured rather than chosen: the longest line
+# in the script is 109 characters and the next four are 103, 103, 96 and 91, all
+# of them argparse declarations that read worse broken across lines than left
+# alone. 100 keeps four of the five intact and lets `ruff format` fold the one
+# outlier.
+line-length = 100
+
+[lint]
+# ruff's default set as it stands at the pinned version, plus `I` for import
+# sorting, which is the one thing here the formatter will not fix on its own.
+#
+# **That default is wider than the E4/E7/E9/F it is usually described as**, and
+# assuming otherwise costs a surprise: at 0.16.5 it also carries pylint's PLW and
+# flake8-executable's EXE, which is how `subprocess.run` without an explicit
+# `check=` was caught in a file this repository had been running for weeks. It is
+# also a reason the version is pinned rather than floating, on typos' exact
+# precedent: the rule set ships inside the binary, so an unpinned upgrade can
+# introduce findings with no change on this side.
+extend-select = ["I"]

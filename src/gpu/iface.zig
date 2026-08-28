@@ -71,6 +71,10 @@ pub const max_window_samples: usize = 8192;
 /// -54 dBFS at the default editor on a 2x display and about -42 dBFS at the
 /// smallest editor on a 1x one. Below that a sine reads as flat, and that is
 /// arithmetic rather than a defect.
+///
+/// Restated in `scripts/measure-trace`, which inverts this mapping to report a
+/// sample value from a row in a screenshot, and tied back here by a test in
+/// `src/gpu/metal/renderer.zig` that reads the script as text.
 pub const trace_full_scale: f32 = 0.9;
 
 /// How far a sample may travel from the centre, whatever its value.
@@ -92,6 +96,10 @@ pub const trace_full_scale: f32 = 0.9;
 /// points tall, so at a scale of 1 this leaves `(1 - 0.98) * 135`, or 2.7 backing
 /// pixels. `src/clap/gui.zig` holds the test, because that is the file that knows
 /// the minimum.
+///
+/// Restated in `scripts/measure-trace`, which reports the rail's rows so a peak
+/// sitting on one can be read as "at or above" rather than as a value, and tied
+/// back here alongside `trace_full_scale`.
 pub const trace_rail: f32 = 0.98;
 
 /// Every way starting a renderer can fail. Each is a real machine condition

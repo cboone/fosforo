@@ -24,6 +24,16 @@ extend-ignore-re = [
 # precession. Not a misspelling of "processing", despite the audio context.
 precessing = "precessing"
 
+# A pluralised acronym has to go in `extend-identifiers` rather than here, and
+# the difference is not cosmetic: `extend-words` allows a *word* wherever it
+# appears, while typos splits "PNGs" into words and objects to the "PN" inside
+# it. Keying this table on "PNGs" therefore suppresses nothing, silently, and
+# keying it on "PN" would allow that fragment everywhere.
+[default.extend-identifiers]
+# This repository talks about PNG captures constantly, in the screenshot tooling
+# and in every host verification section, so it is a class rather than one word.
+PNGs = "PNGs"
+
 [files]
 extend-exclude = [
   "zig-out/",

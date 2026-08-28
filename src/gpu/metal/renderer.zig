@@ -1559,6 +1559,121 @@ test "the binding reader finds nothing rather than guessing" {
     try testing.expectEqual(@as(?u64, null), bindingIndexAfter("AccumUniforms &", "sampler"));
 }
 
+/// The bare number following `needle`, for a Python assignment like `RAIL = 0.98`.
+fn scalarAfter(comptime source: []const u8, comptime needle: []const u8) ?f64 {
+    const start = std.mem.indexOf(u8, source, needle) orelse return null;
+    const rest = source[start + needle.len ..];
+
+    const end = std.mem.indexOfNone(u8, rest, "0123456789.+-eE") orelse rest.len;
+    if (end == 0) return null;
+
+    return std.fmt.parseFloat(f64, rest[0..end]) catch null;
+}
+
+/// Exactly `n` comma-separated numbers from the first `opener` following `anchor`.
+///
+/// Two needles rather than one, because the MSL side cannot be reached with a
+/// single search. `float3(0.02, 0.02, 0.03)` sits inside a `return float4(...)`,
+/// and the first `(` after a fragment's name opens its *parameter list*; while
+/// anchoring on `float3(` alone would be the vacuous search `bindingIndexAfter`
+/// exists to avoid, since nothing ties that spelling to the function meant.
+///
+/// Exactly `n`, not at least `n`: a fourth component appearing in a Python tuple
+/// has to fail rather than be ignored, which is the same reason the layout tests
+/// above pin `@sizeOf` instead of checking that the fields they know about exist.
+fn scalarsAfter(
+    comptime source: []const u8,
+    comptime anchor: []const u8,
+    comptime opener: []const u8,
+    comptime n: usize,
+) ?[n]f64 {
+    const at = std.mem.indexOf(u8, source, anchor) orelse return null;
+    const rest = source[at + anchor.len ..];
+
+    const open = std.mem.indexOf(u8, rest, opener) orelse return null;
+    const body = rest[open + opener.len ..];
+    const close = std.mem.indexOfScalar(u8, body, ')') orelse return null;
+
+    var out: [n]f64 = undefined;
+    var fields = std.mem.splitScalar(u8, body[0..close], ',');
+    for (&out) |*value| {
+        const field = std.mem.trim(u8, fields.next() orelse return null, " \t\n");
+        value.* = std.fmt.parseFloat(f64, field) catch return null;
+    }
+    if (fields.next() != null) return null;
+
+    return out;
+}
+
+test "the screenshot tool still holds this project's numbers" {
+    // `scripts/measure-trace` is the only instrument that answers what the pixels
+    // became, which is the gap #51 exists to close and which nothing automated
+    // here can see. It restates four constants it does not own: two from the seam
+    // and two from this shader, in a third language, with nothing linking any of
+    // them. A constant that moved would leave it reporting confident numbers
+    // against the old mapping, which is the failure the layout tests above are
+    // also about and is worse here, because these numbers get published.
+    //
+    // Embedded inside the test rather than at file scope, so a plain `zig build`
+    // never analyses it: `build.zig` registers this import on the test module
+    // alone, and no shipping artifact carries a Python script's bytes.
+    const script = @embedFile("measure-trace");
+
+    // The seam's two, compared at f32 rather than f64. `trace_full_scale` is an
+    // f32 holding the nearest representable 0.9, and widening that to f64 gives
+    // 0.899999976..., which is not the 0.9 `parseFloat` returns from the text.
+    // Narrowing the parsed value is the comparison that means what it looks like.
+    const full_scale = scalarAfter(script, "FULL_SCALE = ") orelse return error.NotFound;
+    const rail = scalarAfter(script, "RAIL = ") orelse return error.NotFound;
+    try testing.expectEqual(iface.trace_full_scale, @as(f32, @floatCast(full_scale)));
+    try testing.expectEqual(iface.trace_rail, @as(f32, @floatCast(rail)));
+
+    // The shader's two. Both sides spell these the same way, so the parsed f64s
+    // are bit-identical and no narrowing is needed.
+    //
+    // The script's crop depends on the first: it locates this plugin's surface
+    // inside a window capture by looking for exactly the background, and the
+    // guard that refuses a recompressed capture depends on both, because it
+    // predicts red and blue from green along the ray they define.
+    const background = scalarsAfter(script, "BACKGROUND = ", "(", 3) orelse return error.NotFound;
+    const beam = scalarsAfter(script, "BEAM = ", "(", 3) orelse return error.NotFound;
+
+    const written = scalarsAfter(
+        shader_source,
+        "fragment float4 " ++ resolve_pass.fragment,
+        "float3(",
+        3,
+    ) orelse return error.NotFound;
+    const deposited = scalarsAfter(
+        shader_source,
+        "fragment float4 " ++ trace_pass.fragment,
+        "float4(",
+        4,
+    ) orelse return error.NotFound;
+
+    try testing.expectEqualSlices(f64, &written, &background);
+    try testing.expectEqualSlices(f64, deposited[0..3], &beam);
+
+    // The deposit's alpha, which the script has no copy of and does not need: it
+    // is here so the four-component read above cannot silently start matching a
+    // three-component one that happens to sit where a `float4(` was.
+    try testing.expectEqual(@as(f64, 1.0), deposited[3]);
+}
+
+test "the script reader finds nothing rather than guessing" {
+    // Same reasoning as the binding reader's own negative test, and the same
+    // hazard: a needle that stopped matching must fail rather than answer `null`
+    // and have that read as a pass. Three ways `null` is reached, one per stage.
+    const script = @embedFile("measure-trace");
+
+    try testing.expectEqual(@as(?f64, null), scalarAfter(script, "NO_SUCH_CONSTANT = "));
+    try testing.expectEqual(@as(?[3]f64, null), scalarsAfter(script, "NO_SUCH_TUPLE", "(", 3));
+
+    // A constant that exists, read at the wrong arity. This is what stops a field
+    // being added to one of the tuples and going unnoticed.
+    try testing.expectEqual(@as(?[4]f64, null), scalarsAfter(script, "BEAM = ", "(", 4));
+}
+
 test "the accumulation's uniforms are laid out the way the shader reads them" {
     // MSL computes its own offsets from its own `AccumUniforms`, and nothing
     // links the two declarations. What this catches is a field added or
