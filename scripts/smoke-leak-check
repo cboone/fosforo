@@ -89,8 +89,8 @@ readonly PROGRAM_NAME="${0##*/}"
 # bytes four times and 285 for 18,464 once, so a tenfold change in depth moves it
 # by under 2% and only run to run. AppKit's chatter is a fixed startup cost rather
 # than a per-cycle one. What depth actually buys is repetition of the rare paths
-# inside `oneCycle`: the every-fourth-cycle teardown through `plugin.destroy`, and the
-# four resizes including the wrapped-negative height REAPER sends. 40 reaches
+# inside `oneCycle`: the every-fourth-cycle teardown through `plugin.destroy`,
+# and the four resizes including the wrapped-negative height REAPER sends. 40 reaches
 # those 10 and 40 times, which is why it is enough for CI, and 400 is kept here
 # because a by-hand run is not paying for a runner.
 readonly DEFAULT_CYCLES=400
@@ -101,8 +101,8 @@ readonly REPORT_MARKER='leaks Report Version'
 
 # The ceiling on total leaked bytes, whatever the classes say.
 #
-# One mebibyte, against a baseline measured at exactly 18,816 bytes — identical
-# at 40 and at 400 cycles, and identical across repeated runs on this machine.
+# One mebibyte, against a baseline that sits between 18,464 and 18,816 bytes
+# across six runs at 40 and at 400 cycles on this machine.
 # **It is deliberately loose, and that looseness is the property that makes it
 # work on a machine nobody has a shell on.** It sits 56 times above the observed
 # baseline, so a hosted runner's own AppKit chatter has two orders of magnitude
@@ -110,7 +110,9 @@ readonly REPORT_MARKER='leaks Report Version'
 # the history ring is 1 MiB and one is dropped per cycle, so even a single cycle
 # would clear this. A threshold with that much room on both sides does not need
 # calibrating against the machine it runs on, which is exactly what a peak-RSS
-# slope would have needed and could not have (#63).
+# slope would have needed and could not have (#63). Confirmed rather than hoped:
+# the first CI run reported 18,656 bytes, inside the same 2% band as this machine,
+# so a hosted runner's chatter did not differ measurably at all.
 readonly MAXIMUM_LEAKED_BYTES=1048576
 
 # Class-name prefixes this project is responsible for, as `leaks` spells them.
