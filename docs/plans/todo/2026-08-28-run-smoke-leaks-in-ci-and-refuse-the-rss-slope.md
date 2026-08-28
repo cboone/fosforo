@@ -24,11 +24,13 @@ The issue proposed two steps in the existing `smoke` job. Planning found three t
 | Gating                               | `continue-on-error: true`                                                                       | ADR 0013: it depends on the AppKit half, and promoting a GUI check to required is a separate decision                                              |
 | Reporting                            | Figures emitted on **every** run, green ones included                                           | The sample is the point. A number you have to open a passing job's log to read is a number nobody collects                                         |
 | `MTL_DEBUG_LAYER`                    | Out of scope                                                                                    | [#69](https://github.com/cboone/fosforo/issues/69) owns it, including the `AGENTS.md` pointer correction. Do not touch `AGENTS.md:184`             |
-| Promoting `smoke-appkit` to required | Out of scope, but **file the issue** both #63 and #69 promise exists and neither created        | `liveAccumulationTextures` is the project's only instrument for its largest resource and currently cannot fail a build                             |
+| Promoting `smoke-appkit` to required | Out of scope. Filed as [#72](https://github.com/cboone/fosforo/issues/72)                       | `liveAccumulationTextures` is the project's only instrument for its largest resource and currently cannot fail a build                             |
 
 ## Why the RSS slope check is refused
 
-Coverage of each plausible planted defect, by instrument. `L` is `leaks` through `scripts/smoke-leak-check`; `R` is the proposed RSS slope; `W` and `A` are `liveWindowBuffers` and `liveAccumulationTextures`, both asserted by `smoke-appkit` in CI today; `T` is `zig build test` under `testing.allocator`.
+Coverage of each plausible planted defect, by instrument, **as of planning**. One cell was a prediction and is marked with what it turned out to be: the `history` row was `unknown` for `leaks`, measured as **no**, and is now **yes** because this issue added the byte bound that closes it.
+
+ `L` is `leaks` through `scripts/smoke-leak-check`; `R` is the proposed RSS slope; `W` and `A` are `liveWindowBuffers` and `liveAccumulationTextures`, both asserted by `smoke-appkit` in CI today; `T` is `zig build test` under `testing.allocator`.
 
 | Planted defect                                      | L           | R       | W       | A       | T   |
 | --------------------------------------------------- | ----------- | ------- | ------- | ------- | --- |
@@ -37,7 +39,7 @@ Coverage of each plausible planted defect, by instrument. `L` is `leaks` through
 | Accumulation pair never handed back                 | no          | no      | no      | **yes** | no  |
 | `releaseAccumulation` decrements without releasing  | no          | no      | no      | no      | no  |
 | Command queue or pipeline state release dropped     | **yes**     | no      | no      | no      | no  |
-| `history` ring not freed in `plugin.destroy`        | **unknown** | yes     | no      | no      | yes |
+| `history` ring not freed in `plugin.destroy`        | **no**, now yes | yes | no  | no      | yes |
 | A future uncounted *shared*-storage buffer          | no          | **yes** | no      | no      | no  |
 | A future uncounted *private*-storage texture        | no          | no      | no      | no      | no  |
 
