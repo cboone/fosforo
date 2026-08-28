@@ -233,7 +233,7 @@ jobs:
             echo "### Leak check (${{ steps.leaks.outcome }})"
             echo
             echo '```'
-            grep '^smoke-leak-check:' leaks.log || echo "no report; see the step log"
+            grep '^smoke-leak-check:' leaks.log 2>/dev/null || echo "no report; see the step log"
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
 

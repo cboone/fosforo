@@ -298,10 +298,18 @@ function main() {
   # Fourth, and the one that reaches allocations with no Objective-C class. See
   # the header: a dropped `history.deinit` leaks tens of megabytes and the check
   # above calls it clean, because a malloc block is not written as `<ClassName>`.
+  #
+  # **The message says what this knows rather than what it suspects.** Reaching
+  # here means no class matched `PLUGIN_OWNED`, and a classless block is only the
+  # likelier of two readings: the other is a leaked class the allowlist does not
+  # name, which is the exact mistake the `AGXG17XFamilyCommandQueue` note in the
+  # header records somebody already making once. Both are named.
   if [[ "${bytes}" -gt "${MAXIMUM_LEAKED_BYTES}" ]]; then
     warn "${bytes} bytes leaked, above the ${MAXIMUM_LEAKED_BYTES}-byte bound"
-    warn "no leaked class belongs to this project, so this is an allocation with no class at all"
-    warn "start at what this project allocates itself, and at plugin.destroy in particular"
+    warn "no leaked class matched PLUGIN_OWNED, which is consistent with two different things"
+    warn "  an allocation carrying no class at all, which is what a planted history-ring leak looks like"
+    warn "  a leaked class this allowlist does not name, the way MTLCommandQueue did not name AGXG17XFamilyCommandQueue"
+    warn "check the report's largest blocks before assuming the first; the classes above are what it saw"
     return "${E_DATAERR}"
   fi
 
