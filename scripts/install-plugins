@@ -39,19 +39,16 @@
 # compared against, and used to be described only by its modification date.
 #
 # Usage:
-#   install-plugins [--clap-only | --symlink-audio-unit]
+#   install-plugins [--clap-only]
 #
 #   --clap-only   Skip the Audio Unit even if it has been built. What is already
 #                 installed is still reported, because the question the report
 #                 answers does not go away when the copy is skipped.
 #
-#   --symlink-audio-unit
-#                 Link the shared Components location at this worktree's build
-#                 instead of copying into it, so `ls -l` answers which worktree owns
-#                 it and a rebuild needs no reinstall. The Audio Unit only: a CLAP
-#                 host must honour CLAP_PATH and can be pointed straight at a
-#                 worktree, while AudioComponentRegistrar scans only the two standard
-#                 directories and has no equivalent.
+# There is deliberately no way to install the Audio Unit as a symlink, which #22
+# proposed and which was built and then refused: macOS does not register a symlinked
+# component. See `link_note` below and ADR 0018. The CLAP needs no such thing, because
+# a host must honour CLAP_PATH and can be pointed straight at a worktree.
 #
 # Exit codes:
 #   0  - Everything installed was verified against the build it came from
@@ -87,11 +84,9 @@ function warn() {
 
 function usage() {
   cat >&2 << 'USAGE'
-usage: install-plugins [--clap-only | --symlink-audio-unit]
+usage: install-plugins [--clap-only]
 
-  --clap-only            Skip the Audio Unit even if it has been built.
-  --symlink-audio-unit   Link the Components location at this worktree's build
-                         rather than copying into it.
+  --clap-only   Skip the Audio Unit even if it has been built.
 USAGE
 }
 
@@ -140,9 +135,18 @@ function provenance() {
 
 # Say whether an installed bundle is a symlink, and whether it still resolves.
 #
-# Only `--symlink-audio-unit` creates one, but it is read on every path: once the
-# shared location can hold a link, every report about what is installed has to be able
-# to describe one, including the reports written before the mode existed.
+# **Nothing here creates one, and that is the finding rather than an omission.**
+# Issue #22 proposed pointing the shared Components directory at the active worktree,
+# so that `ls -l` would answer which build is installed and switching would cost one
+# command. It was built, measured against Logic, and refused: macOS does not register
+# a symlinked component at all. Logic's own scan log is the instrument, and the A/B/A
+# is unambiguous — 60 Audio Units with `Fósforo` present as a copy, 59 with it absent
+# as a symlink, 60 again when the copy is restored. See ADR 0018.
+#
+# So this stays as a *diagnostic*, and the refusal is what makes it worth having.
+# A symlink someone made by hand produces a plugin that is silently missing from
+# Logic, with no error anywhere and nothing in the bundle wrong, which is precisely
+# the class of failure this whole script exists to end.
 # Arguments:
 #   $1 - the installed bundle path
 # Outputs:
@@ -157,8 +161,9 @@ function link_note() {
   local target
   target="$(readlink "${installed}")"
 
-  # `-e` follows the link, so this is the dangling test. A worktree that has been
-  # removed, or a `rm -rf build` inside one, leaves exactly this.
+  # `-e` follows the link, so this is the dangling test. Both cases are reported the
+  # same way about registration, because neither is registered: a resolving symlink
+  # fails for the reason above, and a dangling one has nothing to register.
   if [[ -e "${installed}" ]]; then
     echo "symlink to ${target}"
   else
@@ -207,7 +212,7 @@ function install_bundle() {
   mkdir -p "${dest_dir}"
 
   # `rm -rf` on a symlink removes the link and not what it points at, which is what
-  # makes this safe to run over an install left by --symlink-audio-unit. Note the
+  # makes this the fix for a hand-made link that Logic was silently ignoring. Note the
   # absent trailing slash: adding one would make this follow the link and delete the
   # worktree's own build directory.
   rm -rf "${installed}"
@@ -238,72 +243,6 @@ function install_bundle() {
 
   if [[ -n "${outgoing}" && "${outgoing}" != "${incoming}" ]]; then
     warn "${label}:   replaced ${outgoing}"
-  fi
-}
-
-# Point the shared location at this worktree's build instead of copying into it.
-#
-# The Audio Unit is the only format that needs this. A CLAP host must honour
-# `CLAP_PATH`, so the CLAP can be loaded straight out of a worktree and the shared
-# directory avoided entirely; `AudioComponentRegistrar` scans only the two standard
-# Components directories and there is no `AU_PATH`, so the Audio Unit has to land in
-# the one place whatever else is true.
-#
-# **This does not remove staleness, it changes its shape**, and that is the whole of
-# what it buys. A copy can be another branch's build with nothing here to compare it
-# to; a link is always this worktree's `build/assets`, so what remains is only the
-# ordinary question of whether CMake has been re-run, which the provenance line and
-# the modification date both answer. `ls -l` answers the ownership question with no
-# tooling at all.
-#
-# The hash comparison the copy path ends with would be vacuous here, since the
-# installed file *is* the built file, so it is replaced by a report of where the link
-# points rather than printed as a match that could not have failed.
-function link_bundle() {
-  local label="${1}"
-  local source="${2}"
-  local dest_dir="${3}"
-  local binary="${4}"
-
-  local installed
-  installed="${dest_dir}/$(basename "${source}")"
-
-  # Same guard and the same reasoning as the copy path: the destructive step comes
-  # first, so a source with no Mach-O in it must not take the working install with it.
-  if [[ ! -f "${source}/${binary}" ]]; then
-    warn "${label}: ${source} has no ${binary}; nothing was linked"
-    warn "${label}:   the build is incomplete, and whatever is installed is untouched"
-    return "${E_NOINPUT}"
-  fi
-
-  local outgoing=""
-  local outgoing_link=""
-  if [[ -e "${installed}" ]]; then
-    outgoing="$(provenance "${installed}")"
-    outgoing_link="$(link_note "${installed}")"
-  fi
-
-  mkdir -p "${dest_dir}"
-  rm -rf "${installed}"
-  ln -s "${source}" "${installed}"
-
-  # Asserted rather than assumed. `ln` is quiet about a great deal, and a link that
-  # resolves to nothing looks identical to a working one in every listing that does
-  # not follow it.
-  if [[ ! -f "${installed}/${binary}" ]]; then
-    warn "${label}: linked ${installed} but it does not resolve to a binary"
-    return "${E_DATAERR}"
-  fi
-
-  warn "${label}: linked  ${installed}"
-  warn "${label}:   -> ${source}"
-  warn "${label}:   built from $(provenance "${installed}")"
-  warn "${label}:   a rebuild here now changes what the host loads, with no reinstall"
-
-  if [[ -n "${outgoing_link}" ]]; then
-    warn "${label}:   replaced a ${outgoing_link}"
-  elif [[ -n "${outgoing}" ]]; then
-    warn "${label}:   replaced a copy built from ${outgoing}"
   fi
 }
 
@@ -358,16 +297,16 @@ function report_audio_unit() {
 
   local installed="${AU_DEST}/${AU_BUNDLE}"
 
-  # Before the `-d` test below, which follows symlinks and would therefore call a
-  # dangling one "none installed". That is the wrong report and the misleading half of
-  # it is the reassuring half: a dangling link *is* installed, is what a host finds,
-  # and resolves to nothing. It is what a removed worktree or a `rm -rf build` inside
-  # one leaves behind, so it is the ordinary failure of --symlink-audio-unit rather
-  # than an exotic one.
-  if [[ -L "${installed}" && ! -e "${installed}" ]]; then
+  # Before the `-d` test below, which follows symlinks and would call a resolving one
+  # an ordinary directory and a dangling one "none installed". Both reports would be
+  # wrong, and the misleading half of the second is the reassuring half: a link *is*
+  # installed and is what a host meets. Neither is registered by macOS, so the two are
+  # one case here and the distinction is left to `link_note`.
+  if [[ -L "${installed}" ]]; then
     warn "audio unit: ${installed} is a $(link_note "${installed}")"
-    warn "audio unit:   Logic will find nothing there, and say nothing about it"
-    warn "audio unit:   rebuild in the worktree it names, or reinstall from here"
+    warn "audio unit:   macOS does not register a symlinked component, so Logic sees none"
+    warn "audio unit:   measured, not assumed: see link_note above and ADR 0018"
+    warn "audio unit:   run \`zig build install-plugins\` to replace it with a copy"
     return 0
   fi
 
@@ -433,16 +372,11 @@ function report_audio_unit() {
 
 function main() {
   local clap_only=false
-  local symlink_au=false
 
   while [[ "${#}" -gt 0 ]]; do
     case "${1}" in
       --clap-only)
         clap_only=true
-        shift
-        ;;
-      --symlink-audio-unit)
-        symlink_au=true
         shift
         ;;
       -h | --help)
@@ -456,15 +390,6 @@ function main() {
         ;;
     esac
   done
-
-  # They do not conflict so much as cancel: --clap-only means the Audio Unit is not
-  # touched at all, so there is nothing for --symlink-audio-unit to do. Refused rather
-  # than silently ignored, because the two together read as a request that was
-  # honoured and it would not have been.
-  if [[ "${clap_only}" == true && "${symlink_au}" == true ]]; then
-    warn "--clap-only and --symlink-audio-unit cancel: the first installs no Audio Unit"
-    return "${E_USAGE}"
-  fi
 
   local root
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -482,11 +407,7 @@ function main() {
   fi
 
   if [[ "${clap_only}" != true && -d "${au_source}" ]]; then
-    if [[ "${symlink_au}" == true ]]; then
-      link_bundle "audio unit" "${au_source}" "${AU_DEST}" "${AU_BINARY}"
-    else
-      install_bundle "audio unit" "${au_source}" "${AU_DEST}" "${AU_BINARY}"
-    fi
+    install_bundle "audio unit" "${au_source}" "${AU_DEST}" "${AU_BINARY}"
     installed_any=true
   else
     # Not an error, in any of its three shapes. The CLAP-only loop is the common

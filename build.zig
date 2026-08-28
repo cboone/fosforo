@@ -344,18 +344,6 @@ fn addInstallSteps(b: *std.Build, audio_unit: *std.Build.Step.Run) void {
     ).dependOn(&install_clap.step);
 
     const install_both = b.addSystemCommand(&.{"./scripts/install-plugins"});
-
-    // The Audio Unit's half of the worktree problem, and the only half that needs a
-    // switch. A CLAP host must honour `CLAP_PATH`, so the CLAP can be loaded out of a
-    // worktree with no install at all; `AudioComponentRegistrar` scans the two
-    // standard directories and nothing else, so the component has to land in the one
-    // shared place whatever else is true, and pointing that place at a named worktree
-    // is the best available answer. Off by default: a link changes what a rebuild
-    // means, which is worth asking for rather than inheriting.
-    if (b.option(bool, "symlink-audio-unit", "Link the installed component at this worktree's build instead of copying it") orelse false) {
-        install_both.addArg("--symlink-audio-unit");
-    }
-
     install_both.step.dependOn(b.getInstallStep());
     install_both.step.dependOn(&audio_unit.step);
     install_both.stdio = .inherit;
