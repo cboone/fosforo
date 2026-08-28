@@ -10,14 +10,15 @@
 #
 # `leaks` exits non-zero whenever it finds anything at all, and it always finds
 # something: AppKit's LaunchServices chatter leaks a few hundred NSXPCConnection
-# allocations per run, varying run to run, and none of them are this project's.
-# So the exit code is not the signal, and neither is a clean grep on its own. The
-# order of the assertions below is the point:
+# allocations per run, and none of them are this project's. So the exit code is
+# not the signal, and neither is a clean grep on its own. The order of the
+# assertions below is the point:
 #
 #   1. The harness itself passed. A leak report over a failed run means nothing.
 #   2. `leaks` produced a report and it parses. A grep that finds nothing in
 #      output that was never generated reads exactly like a pass.
 #   3. No leaked object belongs to this project.
+#   4. The total leaked bytes are inside MAXIMUM_LEAKED_BYTES.
 #
 # The patterns in PLUGIN_OWNED are prefixes, chosen from evidence rather than
 # from the framework headers. Dropping the release of the command queue in
@@ -25,6 +26,23 @@
 # not `MTLCommandQueue`: the concrete Metal classes are driver-private and their
 # names carry the GPU family. A list of the public class names would have
 # reported that planted leak as clean.
+#
+# **Assertion 4 is there because assertion 3 is an allowlist of Objective-C class
+# names, and this project's own allocations do not have one.** The plugin
+# allocates through `std.heap.c_allocator`, so its blocks are on the malloc heap
+# and `leaks` does find them, but a block carrying no class is not written as
+# `<ClassName 0xADDRESS>` and the extracted token is not something PLUGIN_OWNED
+# can match. Measured rather than reasoned about: dropping `self.history.deinit`
+# from `plugin.destroy` and running 40 cycles leaks **roughly 42.6 million bytes
+# against a clean 18,816**, and assertion 3 called it clean both times it was
+# planted. That is two thousand times the baseline reported as nothing at all.
+#
+# **The count is not the discriminator and must not be used as one.** Across two
+# runs of that same planted leak the report gave *232* leaks and then *328*,
+# against a clean count of 288 that does not move at all — so the count wanders
+# in both directions while forty megabytes go missing, and one of those two runs
+# would have read as an improvement. The byte total moved to 42.6 million both
+# times. Bytes are what moved; the count is noise with a leak underneath it.
 #
 # Usage:
 #   smoke-leak-check [--cycles N] <path/to/fosforo-smoke>
@@ -34,8 +52,16 @@
 # Exit codes:
 #   0  - The harness passed and leaked nothing this project owns
 #  64  - Invalid arguments
-#  65  - The harness failed, the report did not parse, or something leaked
+#  65  - Something leaked
 #  66  - The harness binary does not exist or is not executable
+#  69  - The harness failed or the report did not parse, so nothing was measured
+#
+# The last two are separate for a reason that arrived with CI. This runs under
+# `continue-on-error`, where nobody opens the log of a step that cannot block a
+# merge, so the exit code is the whole message. "This project leaked something"
+# and "the instrument did not run" are the two conclusions ADR 0013's assertion
+# order exists to keep apart, and returning one code for both put them back
+# together at exactly the moment it started to matter.
 
 set -euo pipefail
 
@@ -46,17 +72,52 @@ fi
 readonly E_USAGE=64
 readonly E_DATAERR=65
 readonly E_NOINPUT=66
+readonly E_UNAVAILABLE=69
 
 readonly PROGRAM_NAME="${0##*/}"
 
-# Cycles enough that one leaked object per cycle stands out against the few
-# hundred allocations AppKit leaks on its own. At 400 a per-cycle leak more than
-# doubles the total; at 10 it would sit inside the run-to-run variation.
+# How deep a by-hand run goes. **Not what CI runs**, which passes 40 through
+# `zig build smoke-leaks -Dleak-cycles=40`, because the harness waits on vsync
+# about thirteen times per cycle and a hosted runner refreshes at half this
+# machine's rate: 400 cycles costs 113 s here and around two minutes there.
+#
+# This constant used to be justified by an argument about totals — "at 400 a
+# per-cycle leak more than doubles the total; at 10 it would sit inside the
+# run-to-run variation" — and that argument is wrong twice. Neither assertion
+# here judges the count, and the baseline barely varies with the count at all:
+# across five runs at 40 and at 400 cycles the figure was 288 leaks for 18,816
+# bytes four times and 285 for 18,464 once, so a tenfold change in depth moves it
+# by under 2% and only run to run. AppKit's chatter is a fixed startup cost rather
+# than a per-cycle one. What depth actually buys is repetition of the rare paths
+# inside `oneCycle`: the every-fourth-cycle teardown through `plugin.destroy`,
+# and the four resizes including the wrapped-negative height REAPER sends. 40 reaches
+# those 10 and 40 times, which is why it is enough for CI, and 400 is kept here
+# because a by-hand run is not paying for a runner.
 readonly DEFAULT_CYCLES=400
 
 # Where the report starts. Also the positive control: no such line means `leaks`
 # produced nothing, and every check after it would pass vacuously.
 readonly REPORT_MARKER='leaks Report Version'
+
+# The ceiling on total leaked bytes, whatever the classes say.
+#
+# One mebibyte, against a baseline that sits between 18,464 and 18,816 bytes
+# across six runs at 40 and at 400 cycles on this machine.
+# **It is deliberately loose, and that looseness is the property that makes it
+# work on a machine nobody has a shell on.** It sits 56 times above the observed
+# baseline, so a hosted runner's own AppKit chatter has two orders of magnitude
+# to differ by before it matters, and 40 times below the smallest leak it is for:
+# the history ring is 1 MiB and one is dropped per cycle, so even a single cycle
+# would clear this. A threshold with that much room on both sides does not need
+# calibrating against the machine it runs on, which is exactly what a peak-RSS
+# slope would have needed and could not have (#63).
+#
+# **The runner is noisier than this machine, and the looseness is what absorbs
+# it.** Three CI runs reported 18,656, 18,816 and 14,080 bytes: a 25% spread
+# against the 2% seen across six runs here. Anything tight enough to be called
+# calibrated would have to be re-measured against that; this has 74x of room at
+# the low end and 56x at the high end, so it does not.
+readonly MAXIMUM_LEAKED_BYTES=1048576
 
 # Class-name prefixes this project is responsible for, as `leaks` spells them.
 readonly PLUGIN_OWNED='^(NSView|CALayer|CAMetalLayer|IOSurface|IOGPU|_?MTL|AGX)'
@@ -83,6 +144,24 @@ function report_body() {
   sed -n "/${REPORT_MARKER}/,\$p" "${capture}"
 }
 
+# The total leaked bytes the summary line reports.
+#
+# `sed` rather than `grep`, deliberately. Under `errexit` a `grep` that matches
+# nothing takes the script down where the number is read rather than where it is
+# judged, which reads as a crash instead of a diagnosis, and `grep ... || true`
+# would hand back the empty string — which bash reads as zero in an arithmetic
+# context, and zero passes. `sed -n ... p` exits zero either way and prints one
+# line per match, so the caller can reject two matches as easily as none.
+# Arguments:
+#   $1 - path to the captured output
+# Outputs:
+#   One line per matching line, which must be exactly one
+function leaked_bytes() {
+  local capture="${1}"
+
+  sed -n 's/.*for \([0-9]\{1,\}\) total leaked bytes.*/\1/p' "${capture}"
+}
+
 # The class of every leaked object, one per line, deduplicated.
 #
 # `leaks` writes each entry as `<ClassName 0xADDRESS>`, so anchoring on the angle
@@ -107,6 +186,7 @@ function main() {
   local cycles="${DEFAULT_CYCLES}"
   local capture
   local summary
+  local bytes
   local classes
   local offender
   local offenders
@@ -172,7 +252,7 @@ function main() {
   if ! grep -q '^smoke: appkit ok$' "${capture}"; then
     warn "the harness did not pass, so there is nothing to measure"
     tail -n 20 "${capture}" >&2
-    return "${E_DATAERR}"
+    return "${E_UNAVAILABLE}"
   fi
 
   # Second. Everything below is a search for absence, and a search for absence
@@ -181,18 +261,35 @@ function main() {
   if [[ -z "$(report_body "${capture}")" || -z "${summary}" ]]; then
     warn "leaks produced no parseable report (exit ${status}); the checks below would be vacuous"
     tail -n 20 "${capture}" >&2
-    return "${E_DATAERR}"
+    return "${E_UNAVAILABLE}"
   fi
 
   classes="$(leaked_classes "${capture}")"
   if [[ -z "${classes}" ]]; then
     warn "the report names no leaked classes at all, which the summary contradicts"
-    return "${E_DATAERR}"
+    return "${E_UNAVAILABLE}"
+  fi
+
+  # The anchored pattern rejects two matches as well as none: `sed` prints one
+  # line per match, `$(...)` strips only the trailing newline, and this test has
+  # no multiline flag, so a two-line result fails it the same way an empty one
+  # does. Three failure modes, one assertion, and no way to satisfy it vacuously.
+  bytes="$(leaked_bytes "${capture}")"
+  if ! [[ "${bytes}" =~ ^[0-9]+$ ]]; then
+    warn "no single 'total leaked bytes' figure in the report; the check below would be vacuous"
+    tail -n 20 "${capture}" >&2
+    return "${E_UNAVAILABLE}"
   fi
 
   warn "leaks: ${summary#*: }"
   warn "report parsed, $(echo "${classes}" | wc -l | tr -d ' ') distinct leaked classes"
 
+  # Third, and before the byte bound rather than after it, because this one can
+  # say *what* leaked. A dropped pipeline-state release takes the total to
+  # 8,555,776 bytes, which is over the bound as well, and "these objects belong
+  # to this project, here they are" is a strictly better first thing to read than
+  # "some number of bytes went missing". The bound is the catch-all for what this
+  # cannot name, so it goes second.
   offenders="$(echo "${classes}" | grep -E "${PLUGIN_OWNED}" || true)"
   if [[ -n "${offenders}" ]]; then
     warn "these leaked objects belong to this project:"
@@ -202,7 +299,25 @@ function main() {
     return "${E_DATAERR}"
   fi
 
-  warn "nothing this project owns was leaked"
+  # Fourth, and the one that reaches allocations with no Objective-C class. See
+  # the header: a dropped `history.deinit` leaks tens of megabytes and the check
+  # above calls it clean, because a malloc block is not written as `<ClassName>`.
+  #
+  # **The message says what this knows rather than what it suspects.** Reaching
+  # here means no class matched `PLUGIN_OWNED`, and a classless block is only the
+  # likelier of two readings: the other is a leaked class the allowlist does not
+  # name, which is the exact mistake the `AGXG17XFamilyCommandQueue` note in the
+  # header records somebody already making once. Both are named.
+  if [[ "${bytes}" -gt "${MAXIMUM_LEAKED_BYTES}" ]]; then
+    warn "${bytes} bytes leaked, above the ${MAXIMUM_LEAKED_BYTES}-byte bound"
+    warn "no leaked class matched PLUGIN_OWNED, which is consistent with two different things"
+    warn "  an allocation carrying no class at all, which is what a planted history-ring leak looks like"
+    warn "  a leaked class this allowlist does not name, the way MTLCommandQueue did not name AGXG17XFamilyCommandQueue"
+    warn "check the report's largest blocks before assuming the first; the classes above are what it saw"
+    return "${E_DATAERR}"
+  fi
+
+  warn "nothing this project owns was leaked, and ${bytes} bytes is inside the ${MAXIMUM_LEAKED_BYTES}-byte bound"
 }
 
 main "${@}"
