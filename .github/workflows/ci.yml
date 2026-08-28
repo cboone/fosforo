@@ -132,13 +132,18 @@ jobs:
   #
   # **The leak step runs 40 cycles here and 400 by hand, and that is measured
   # rather than a concession.** `scripts/smoke-leak-check` judges leaked classes
-  # and a byte total, and neither varies with depth: 40 and 400 cycles both report
-  # exactly 288 leaks for 18,816 bytes. What depth buys is repetition of the rare
-  # paths inside `oneCycle`, and 40 reaches `plugin.destroy`'s teardown ten times
-  # and each of the four resizes forty. What it costs is the whole difference,
-  # because the harness waits on vsync about thirteen times per cycle and this
-  # runner refreshes at half the development machine's rate: 400 cycles is 113 s
-  # there and around two minutes here, against 13 s and around 25 s for 40.
+  # and a byte total, and neither tracks depth: across five runs at 40 and at 400
+  # cycles the figure was 288 leaks for 18,816 bytes four times and 285 for 18,464
+  # once, so a tenfold change in depth moves it by under 2% and only run to run.
+  # What depth buys is repetition of the rare paths inside `oneCycle`, and 40
+  # reaches `plugin.destroy`'s teardown ten times and each of the four resizes
+  # forty.
+  #
+  # What depth costs is the whole difference. The harness waits on vsync about
+  # thirteen times per cycle, so it is bound by display refresh rather than by
+  # CPU, and a hosted runner refreshes at roughly half the development machine's
+  # rate. 400 cycles takes 113 s on that machine and would take around twice that
+  # here; 40 takes 13 s there and should land near 25 s here.
   #
   # 58s max over 10 runs, re-measured from the Actions API on 2026-08-28 before
   # the leak step landed (25, 28, 29, 35, 35, 38, 38, 40, 49, 58). The 38s over 3

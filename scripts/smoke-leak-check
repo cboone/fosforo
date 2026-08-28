@@ -84,11 +84,12 @@ readonly PROGRAM_NAME="${0##*/}"
 # This constant used to be justified by an argument about totals — "at 400 a
 # per-cycle leak more than doubles the total; at 10 it would sit inside the
 # run-to-run variation" — and that argument is wrong twice. Neither assertion
-# here judges the count, and the baseline does not vary with the count at all:
-# 40 cycles and 400 cycles both report exactly 288 leaks for 18,816 bytes, twice
-# each, because AppKit's chatter is a fixed startup cost rather than a per-cycle
-# one. What depth actually buys is repetition of the rare paths inside
-# `oneCycle`: the every-fourth-cycle teardown through `plugin.destroy`, and the
+# here judges the count, and the baseline barely varies with the count at all:
+# across five runs at 40 and at 400 cycles the figure was 288 leaks for 18,816
+# bytes four times and 285 for 18,464 once, so a tenfold change in depth moves it
+# by under 2% and only run to run. AppKit's chatter is a fixed startup cost rather
+# than a per-cycle one. What depth actually buys is repetition of the rare paths
+# inside `oneCycle`: the every-fourth-cycle teardown through `plugin.destroy`, and the
 # four resizes including the wrapped-negative height REAPER sends. 40 reaches
 # those 10 and 40 times, which is why it is enough for CI, and 400 is kept here
 # because a by-hand run is not paying for a runner.
