@@ -92,11 +92,14 @@ Confirm by eye that `rg 'make-test-tones'` returns no reference that reads as a 
 
 ## Commits
 
-Three, in this order, each self-contained:
+Four, in this order, each self-contained:
 
-1. `chore: drop scripts/make-test-tones now that audio-tools carries it (#67)` — the deletion, `.editorconfig`, and the structure-tree line.
-2. `docs: record where the test-signal generator went (#67)` — the new `AGENTS.md` bullet and the repointed `measure-trace` clause.
+1. `chore: drop scripts/make-test-tones now that audio-tools carries it (#67)` — the deletion and `.editorconfig`.
+2. `docs: record where the test-signal generator went (#67)` — every `AGENTS.md` edit: the structure-tree line, the repointed `measure-trace` clause, and the new bullet.
 3. `docs: point the plans that name make-test-tones at its new home (#67)` — the three pointer notes.
+4. `docs: record the plan for dropping make-test-tones (#67)` — this document, straight to `done/`.
+
+The structure-tree line was planned for the first commit and landed in the second. Splitting one file's hunks across two commits needs interactive staging, and all three `AGENTS.md` edits are documentation describing the same move, so keeping them together is the better unit to review.
 
 ## Out of scope
 
