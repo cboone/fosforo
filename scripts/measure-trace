@@ -23,16 +23,22 @@ A capture is refused when it holds colours this shader cannot produce, which is
 what catches a recompressed or resampled screenshot. `--explain` prints the
 distribution that check is read off, and is how its two constants were set and
 how they get re-derived.
+
+**A screenshot is written in the display's colour space, not the framebuffer's**,
+so this converts to sRGB before measuring anything. See `to_srgb`: on a P3 display
+the numbers in the file are not the numbers the shader wrote, and the discrepancy
+hides at the low end where it is easiest to check.
 """
 
 import argparse
+import io
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageCms, UnidentifiedImageError
 
 # This project's display contract, restated. Four numbers this file does not own
 # and cannot derive, copied from two files in two other languages, with a test on
@@ -59,8 +65,24 @@ BEAM8 = tuple(c * 255.0 for c in BEAM)
 BG_WINDOW = 2
 LEAD_WINDOW = 1
 
-# The colour-ray guard. See `off_ray` for what it tests and why the shade count
-# it replaced stopped working.
+# The colour-ray guard. See `ray_deviation` for what it tests and why the shade
+# count it replaced stopped working.
+#
+# Both numbers are measured rather than chosen, from a REAPER capture at
+# 2018x1778 and a quality-60 JPEG of that same file, read after `to_srgb`:
+#
+#                       lossless      JPEG q60
+#   off the ray at 1     0.9446%      98.7932%
+#   off the ray at 2     0.0074%      23.7258%
+#   off the ray at 3     0.0072%      19.5761%
+#   max deviation           8.64        170.73
+#
+# **A tolerance of 1 is what makes 2 a floor rather than a preference**: it puts
+# a good capture at 0.94%, above the threshold below, so it would refuse the very
+# picture this tool exists to measure. 2 is the tightest that does not, and 3 buys
+# nothing. The threshold then sits 67x above a good capture and 47x below a
+# recompressed one, which is room enough that neither has to be re-measured for a
+# different editor size.
 RAY_TOLERANCE = 2
 MAX_OFF_RAY = 0.005
 SATURATED = 250
@@ -103,6 +125,50 @@ def open_image(path):
             )
         print(f"converted {Path(path).suffix or 'the capture'} to png via sips")
         return Image.open(converted).copy()
+
+
+def to_srgb(img):
+    """Undo the display's colour space, which is what a screenshot is written in.
+
+    **This is the difference between the colour guard working and not, and it is
+    invisible until measured.** The plugin writes into a `BGRA8Unorm` drawable,
+    whose values the compositor treats as sRGB; the compositor then converts them
+    for whatever display is showing them, and `screencapture` writes those
+    *display* values with the display's profile attached. On a P3 display the
+    numbers in the file are therefore not the numbers the shader wrote.
+
+    What makes it a trap rather than an inconvenience is where the distortion
+    lives. It is proportional to saturation and vanishes at black, so the
+    background survives as exactly `RGB(5, 5, 8)` and the capture looks faithful
+    at precisely the point anyone would check it. Measured on a real REAPER
+    capture at 2018x1778, before and after this conversion:
+
+        green 200-240   red 119.0 -> 70.9   against a predicted 70.9
+        off the ray        2.7372% -> 0.0074%
+        max deviation        55.73 -> 8.64
+
+    The green channel barely moves, so every row this tool reports is unchanged:
+    that capture's peak row is 459 either way, and #38's published tables are not
+    affected. What the conversion fixes is chroma, which is all the guard reads.
+
+    A file with no profile is taken as sRGB already, which is the honest default
+    and is what a synthesized or hand-made image will be.
+
+    The name reported back is whatever the profile calls itself, which for a
+    calibrated display is often just "Display". That is not this function failing
+    to identify it; `sips` names the same capture's profile "Display P3" only
+    after rewriting it.
+    """
+    icc = img.info.get("icc_profile")
+    rgb = img.convert("RGB")
+    if icc is None:
+        return rgb, None
+
+    source = ImageCms.ImageCmsProfile(io.BytesIO(icc))
+    converted = ImageCms.profileToProfile(
+        rgb, source, ImageCms.createProfile("sRGB"), outputMode="RGB"
+    )
+    return converted, ImageCms.getProfileDescription(source).strip()
 
 
 def find_drawable(rgb):
@@ -269,6 +335,14 @@ def main():
     args = ap.parse_args()
 
     img = open_image(args.image)
+
+    # Before the crop and before any measurement, because everything below reads
+    # colours and none of them are the shader's until this has run.
+    img, profile = to_srgb(img)
+    if profile is None:
+        print("no colour profile in the capture; measuring it as sRGB")
+    else:
+        print(f"converted from {profile} to sRGB")
 
     if not args.no_crop:
         rgb = np.asarray(img.convert("RGB"), dtype=np.int16)
