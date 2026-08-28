@@ -1,12 +1,15 @@
 //! The Metal backend, and the only file in the project allowed to name a Metal
 //! type. Everything above it goes through `src/gpu/iface.zig` (ADR 0005).
 //!
-//! What it does today is clear a drawable to a dim colour and draw the sample
-//! window over it as a single aliased line strip, one device pixel wide. That is
-//! phase 2's deliverable and it is deliberately crude: no persistence, no decay,
-//! no velocity weighting, no reconstruction. Drawing something ugly first is what
-//! lets phase 3's decay, oriented beam geometry and tonemap be judged on how they
-//! look rather than on whether the signal path works at all.
+//! What it does today is decay a persistent accumulation texture, deposit the
+//! sample window into it as a single aliased line strip one device pixel wide,
+//! and resolve that accumulation over a dim background into the drawable. The
+//! persistence is phase 3's step 2 (#55); what is still crude is deliberate and
+//! is the rest of that phase. The decay factor is a per-frame constant until #56
+//! measures elapsed time, the beam stays a line strip until #57 makes it
+//! geometry, and the resolve is an add until #60 puts a tonemap and a palette
+//! there. Drawing something ugly first is what lets each of those be judged on
+//! how it looks rather than on whether the signal path works at all.
 
 const std = @import("std");
 const objc = @import("objc");
