@@ -182,7 +182,8 @@ An App Store Connect API key rather than an app-specific password, because it is
 - **The signals the host verification plays are rendered by a tool in another repository, and only two of its numbers belong to this project.** `scripts/make-test-tones` was a bash-and-ffmpeg script here until [#67](https://github.com/cboone/fosforo/issues/67) deleted it; the generator it became is `tools/test-signals/maketones.py` in [cboone/audio-tools](https://github.com/cboone/audio-tools), parameterised so every frequency, level, duration and gate is an argument. This is the invocation that reproduces this project's twenty files:
 
   ```bash
-  uv run maketones.py --outdir ~/Music/fosforo-test-tones \
+  # from the root of an audio-tools checkout, not this one
+  uv run tools/test-signals/maketones.py --outdir ~/Music/fosforo-test-tones \
     --levels 0.002 0.010 0.100 0.500 1.000 1.050 1.089 2.000 \
     --saws 0.900 1.100
   ```
