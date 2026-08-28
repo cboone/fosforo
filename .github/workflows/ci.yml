@@ -140,16 +140,26 @@ jobs:
   # runner refreshes at half the development machine's rate: 400 cycles is 113 s
   # there and around two minutes here, against 13 s and around 25 s for 40.
   #
-  # 38s max over 3 runs sampled since this job landed (34s, 38s, 38s), which is
-  # a real figure replacing the borrowed one this comment used to carry (#17).
+  # 58s max over 10 runs, re-measured from the Actions API on 2026-08-28 before
+  # the leak step landed (25, 28, 29, 35, 35, 38, 38, 40, 49, 58). The 38s over 3
+  # runs this comment used to carry was true when it was written and had drifted
+  # by half; re-measure rather than trusting it, which is what #63 did.
   #
-  # **The ceiling deliberately stays at 8 rather than dropping to 4x that.** Every
+  # **The ceiling deliberately stays at 8 rather than tracking 4x that.** Every
   # other ceiling here is 4x an observed run because its worst case is
-  # statistical; this job's is structural. The plausible failure is the AppKit
-  # half wedging on a window server, and the step below already allows it two
-  # minutes to do so, so 4x38s would cut the job off below a step timeout it
-  # grants on purpose. 8 is roughly 2.7x the worst case the step budgets add up
-  # to, which is the same margin measured the other way round.
+  # statistical; this job's is structural. The plausible failure is a step wedging
+  # on a window server it was never granted, and the two steps that can do it are
+  # given two and three minutes to be seen doing it, so a ceiling derived from the
+  # observed duration would cut the job off below step timeouts it grants on
+  # purpose. 8 is roughly 1.5x the worst case those budgets add up to.
+  #
+  # That margin was 2.7x before the leak step and is 1.5x after it, which is the
+  # number to watch: a third gated step in this job, which is what [#69] would be,
+  # takes it below 1 and the ceiling has to move. The 75% criterion is the other
+  # one — 360s against 8 minutes — and the leak step is expected to put the job
+  # near 80s rather than near 360. Re-measure before assuming either still holds.
+  #
+  # [#69]: https://github.com/cboone/fosforo/issues/69
   #
   # The experiment this job was added to run has an answer: the AppKit half
   # succeeded on all 3 sampled runs, so a hosted macOS runner does grant an
