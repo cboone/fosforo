@@ -110,9 +110,13 @@ readonly REPORT_MARKER='leaks Report Version'
 # the history ring is 1 MiB and one is dropped per cycle, so even a single cycle
 # would clear this. A threshold with that much room on both sides does not need
 # calibrating against the machine it runs on, which is exactly what a peak-RSS
-# slope would have needed and could not have (#63). Confirmed rather than hoped:
-# the first CI run reported 18,656 bytes, inside the same 2% band as this machine,
-# so a hosted runner's chatter did not differ measurably at all.
+# slope would have needed and could not have (#63).
+#
+# **The runner is noisier than this machine, and the looseness is what absorbs
+# it.** Three CI runs reported 18,656, 18,816 and 14,080 bytes: a 25% spread
+# against the 2% seen across six runs here. Anything tight enough to be called
+# calibrated would have to be re-measured against that; this has 74x of room at
+# the low end and 56x at the high end, so it does not.
 readonly MAXIMUM_LEAKED_BYTES=1048576
 
 # Class-name prefixes this project is responsible for, as `leaks` spells them.
