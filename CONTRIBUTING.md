@@ -89,16 +89,16 @@ zig build smoke-leaks  # 400 editor cycles under `leaks --atExit`
 zig build ring-race    # the history buffer under Thread Sanitizer; needs a Linux host
 ```
 
-**CI runs all three, and two of them cannot fail a build.** The `smoke` job runs
-each half as its own step, requiring `smoke-gpu` and letting `smoke-appkit` fail
-without failing the job, and `smoke-leaks` runs there beside them at
-`-Dleak-cycles=40`, also advisory; whether it stays that way is
-[#72](https://github.com/cboone/fosforo/issues/72). The `ring-race` job runs on
-Linux, where it is required.
+**CI runs all three now.** The `smoke` job runs each half as its own step,
+requiring `smoke-gpu` and letting `smoke-appkit` fail without failing the job,
+and `smoke-leaks` runs beside them at `-Dleak-cycles=40`, also under
+`continue-on-error`. The `ring-race` job runs on Linux, where it is required.
 
-So a local run is still the only one of the two smoke checks that can stop
-anything. Its criteria do not vary with the cycle count while its cost does,
-which is why CI takes 40 and the default here is 400.
+So two of those four steps observe without being able to stop anything, and
+[#72](https://github.com/cboone/fosforo/issues/72) is where the `smoke-appkit`
+half of that gets decided. Running them locally is what has teeth in the
+meantime. The leak check's criteria do not vary with the cycle count while its
+cost does, which is why CI takes 40 against a default of 400 here.
 
 `zig build ring-race` refuses on macOS and says where it does run: Zig 0.16 links
 a `-fsanitize-thread` binary on Apple Silicon that segfaults before `main`, so it
