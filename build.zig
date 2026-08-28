@@ -373,9 +373,10 @@ fn addSmokeSteps(core: Core) void {
     // a smoke step is what was asked for. Every smoke step below depends on this,
     // which is what makes that claim true rather than merely intended.
     //
-    // It is there to be run by hand, with a cycle count the steps do not offer:
-    // `zig-out/bin/fosforo-smoke appkit 5000`. Nothing in the build reads that
-    // path, including the leak script, which is handed the binary directly.
+    // It is there to be run by hand at a depth the steps do not reach:
+    // `zig-out/bin/fosforo-smoke appkit 5000`. The two run steps below pass no
+    // count at all and take the harness's own default of 10; `smoke-leaks` is the
+    // one that offers one, for the reason in its own comment.
     const install = b.addInstallArtifact(exe, .{});
 
     const smoke = b.step("smoke", "Run both halves of the GUI smoke harness");
@@ -388,6 +389,23 @@ fn addSmokeSteps(core: Core) void {
     // that produced nothing: see the assertion order in its header.
     const leaks = b.step("smoke-leaks", "Cycle the editor under leaks --atExit (needs a window server)");
     const check = b.addSystemCommand(&.{"./scripts/smoke-leak-check"});
+
+    // The one smoke step whose depth is worth setting from outside, because it is
+    // the one whose cost is proportional to it and the one CI runs. The harness
+    // waits on vsync roughly thirteen times per cycle, so a cycle costs about
+    // 158 ms at 120 Hz and about 267 ms at 60 Hz, and a hosted runner refreshes at
+    // the lower of those: 400 cycles is around two minutes there against fifty-odd
+    // seconds here. CI passes 40, which still reaches `plugin.destroy`'s teardown
+    // ten times and each of `oneCycle`'s four resizes forty.
+    //
+    // **Nothing is passed when the option is absent**, so `DEFAULT_CYCLES` in the
+    // script stays the only place the default is written. Restating 400 here would
+    // make it two places that have to agree, and the script is where the reasoning
+    // for the number lives.
+    if (b.option(u32, "leak-cycles", "Editor open/close cycles for smoke-leaks (default: the script's 400)")) |cycles| {
+        check.addArgs(&.{ "--cycles", b.fmt("{d}", .{cycles}) });
+    }
+
     check.addFileArg(exe.getEmittedBin());
     check.step.dependOn(&install.step);
     check.stdio = .inherit;
