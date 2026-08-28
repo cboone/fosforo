@@ -6,7 +6,7 @@ Issue: [#63](https://github.com/cboone/fosforo/issues/63). Branch: `ci/improve-c
 
 `zig build smoke-leaks` is the only check in the verification table that has never run anywhere but a keyboard. Nothing in CI runs `leaks` and nothing in CI measures memory. That was defensible while an editor held about 96 KiB of window buffers; [#55](https://github.com/cboone/fosforo/issues/55) took it to roughly 33 MB per open editor at the default geometry and about 59 MB after the resize `oneCycle` performs, which changes what a leak costs by two and a half orders of magnitude.
 
-#63 proposed two steps in the existing `smoke` job. Planning found three things that change what should land, and the issue's own update anticipated the shape of the first without following it through.
+The issue proposed two steps in the existing `smoke` job. Planning found three things that change what should land, and the issue's own update anticipated the shape of the first without following it through.
 
 **The peak-RSS slope check is refused.** The issue's argument for it rests on one measurement: dropping the window ring's release in `Renderer.deinit` moves peak RSS from 47.7 MB to 57.7 MB while `leaks` reports clean. That is true, and it is not the whole story, because `src/smoke.zig:311` already asserts `gpu.Renderer.liveWindowBuffers() == 0` after the cycle loop, inside a `smoke-appkit` step that already runs on every push. The same planted defect fires that assertion at 10 cycles, exactly, by name, for free. Subtract that row and what is left is argued below; it does not pay for two minutes of runner time on every push.
 
@@ -16,30 +16,30 @@ Issue: [#63](https://github.com/cboone/fosforo/issues/63). Branch: `ci/improve-c
 
 ## Decisions taken
 
-| Question | Choice | Why |
-|----------|--------|-----|
-| The peak-RSS slope check | **Not shipped.** The refusal and its reasoning are recorded instead | Its one demonstrated catch is already caught in CI by `liveWindowBuffers()`, and it is blind to the storage class #55 introduced |
-| `smoke-leaks` cycle count in CI | 40, through a new `-Dleak-cycles` build option, with 400 kept as the by-hand default | The criterion fires at any count; 400 costs roughly ten times as much on a runner that is not the machine it was measured on |
-| The class-prefix filter | Measure whether it sees a plain `c_allocator` leak, and bound total leaked bytes if it does not | ADR 0013's planted-leak rule has only ever been applied to Metal resources, and this is the gap the refused RSS check was the only other answer to |
-| Gating | `continue-on-error: true` | ADR 0013: it depends on the AppKit half, and promoting a GUI check to required is a separate decision |
-| Reporting | Figures emitted on **every** run, green ones included | The sample is the point. A number you have to open a passing job's log to read is a number nobody collects |
-| `MTL_DEBUG_LAYER` | Out of scope | [#69](https://github.com/cboone/fosforo/issues/69) owns it, including the `AGENTS.md` pointer correction. Do not touch `AGENTS.md:184` |
-| Promoting `smoke-appkit` to required | Out of scope, but **file the issue** both #63 and #69 promise exists and neither created | `liveAccumulationTextures` is the project's only instrument for its largest resource and currently cannot fail a build |
+| Question                             | Choice                                                                                          | Why                                                                                                                                                |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The peak-RSS slope check             | **Not shipped.** The refusal and its reasoning are recorded instead                             | Its one demonstrated catch is already caught in CI by `liveWindowBuffers()`, and it is blind to the storage class #55 introduced                   |
+| `smoke-leaks` cycle count in CI      | 40, through a new `-Dleak-cycles` build option, with 400 kept as the by-hand default            | The criterion fires at any count; 400 costs roughly ten times as much on a runner that is not the machine it was measured on                       |
+| The class-prefix filter              | Measure whether it sees a plain `c_allocator` leak, and bound total leaked bytes if it does not | ADR 0013's planted-leak rule has only ever been applied to Metal resources, and this is the gap the refused RSS check was the only other answer to |
+| Gating                               | `continue-on-error: true`                                                                       | ADR 0013: it depends on the AppKit half, and promoting a GUI check to required is a separate decision                                              |
+| Reporting                            | Figures emitted on **every** run, green ones included                                           | The sample is the point. A number you have to open a passing job's log to read is a number nobody collects                                         |
+| `MTL_DEBUG_LAYER`                    | Out of scope                                                                                    | [#69](https://github.com/cboone/fosforo/issues/69) owns it, including the `AGENTS.md` pointer correction. Do not touch `AGENTS.md:184`             |
+| Promoting `smoke-appkit` to required | Out of scope, but **file the issue** both #63 and #69 promise exists and neither created        | `liveAccumulationTextures` is the project's only instrument for its largest resource and currently cannot fail a build                             |
 
 ## Why the RSS slope check is refused
 
 Coverage of each plausible planted defect, by instrument. `L` is `leaks` through `scripts/smoke-leak-check`; `R` is the proposed RSS slope; `W` and `A` are `liveWindowBuffers` and `liveAccumulationTextures`, both asserted by `smoke-appkit` in CI today; `T` is `zig build test` under `testing.allocator`.
 
-| Planted defect | L | R | W | A | T |
-|----------------|---|---|---|---|---|
-| Window ring built and forgotten (`Renderer.deinit`) | no | yes | **yes** | no | no |
-| `releaseWindows` decrements without releasing | no | **yes** | no | no | no |
-| Accumulation pair never handed back | no | no | no | **yes** | no |
-| `releaseAccumulation` decrements without releasing | no | no | no | no | no |
-| Command queue or pipeline state release dropped | **yes** | no | no | no | no |
-| `history` ring not freed in `plugin.destroy` | **unknown** | yes | no | no | yes |
-| A future uncounted *shared*-storage buffer | no | **yes** | no | no | no |
-| A future uncounted *private*-storage texture | no | no | no | no | no |
+| Planted defect                                      | L           | R       | W       | A       | T   |
+| --------------------------------------------------- | ----------- | ------- | ------- | ------- | --- |
+| Window ring built and forgotten (`Renderer.deinit`) | no          | yes     | **yes** | no      | no  |
+| `releaseWindows` decrements without releasing       | no          | **yes** | no      | no      | no  |
+| Accumulation pair never handed back                 | no          | no      | no      | **yes** | no  |
+| `releaseAccumulation` decrements without releasing  | no          | no      | no      | no      | no  |
+| Command queue or pipeline state release dropped     | **yes**     | no      | no      | no      | no  |
+| `history` ring not freed in `plugin.destroy`        | **unknown** | yes     | no      | no      | yes |
+| A future uncounted *shared*-storage buffer          | no          | **yes** | no      | no      | no  |
+| A future uncounted *private*-storage texture        | no          | no      | no      | no      | no  |
 
 Three things follow, and the third is the one that decides it.
 
@@ -120,13 +120,13 @@ The comment at lines 131-140 records "38s max over 3 runs". It is now **58 s max
 
 Run these serially. They contend for the GPU and the window server, and `AGENTS.md:173` is explicit that a second workload perturbs them.
 
-| Planted defect | Command | Must fail with |
-|----------------|---------|----------------|
-| Nothing (control) | `zig build smoke-leaks -Dleak-cycles=40` | passes, naming the count and the totals |
-| Command queue release dropped in `Renderer.deinit` | same | a leaked `AGX…CommandQueue` in the offender list |
-| `self.history.deinit` dropped from `plugin.destroy` | same | the measurement above; the band if one lands |
-| Window ring release dropped in `Renderer.deinit` | `zig build smoke-appkit` | `WindowBuffersLeaked` — the positive control for the refusal |
-| Accumulation release dropped | `zig build smoke-appkit` | `AccumulationTexturesLeaked` — likewise |
+| Planted defect                                      | Command                                  | Must fail with                                               |
+| --------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------ |
+| Nothing (control)                                   | `zig build smoke-leaks -Dleak-cycles=40` | passes, naming the count and the totals                      |
+| Command queue release dropped in `Renderer.deinit`  | same                                     | a leaked `AGX…CommandQueue` in the offender list             |
+| `self.history.deinit` dropped from `plugin.destroy` | same                                     | the measurement above; the band if one lands                 |
+| Window ring release dropped in `Renderer.deinit`    | `zig build smoke-appkit`                 | `WindowBuffersLeaked` — the positive control for the refusal |
+| Accumulation release dropped                        | `zig build smoke-appkit`                 | `AccumulationTexturesLeaked` — likewise                      |
 
 The last two are not incidental. They are what makes the refusal a measurement rather than an assertion: if either fails to fire, the argument for dropping the RSS check collapses and this plan is wrong.
 
@@ -154,3 +154,17 @@ The step is `continue-on-error`, so the first runs are the measurement rather th
 - **A band on total leaked bytes is a threshold on a machine nobody has a shell on.** It has five orders of magnitude of margin against the leak it is for, which is what makes it safe where the RSS ceiling was not; keep it that loose rather than tightening it to look precise.
 - **Three gated steps in one job is how a project acquires permanent amber.** The notices carrying figures on green runs are the mitigation, and they are load-bearing rather than decorative.
 - **The refusal must not read as "leaks covers this".** Every place the RSS check is declined has to name what stays uncovered: a `release` that stops being sent while the counter still balances, in either resource.
+
+## What landed differently
+
+**The heap-leak measurement came back the bad way, twice as loudly as expected.** The plan hedged it as "unknown" and listed both outcomes. Dropping `self.history.deinit` from `plugin.destroy` and running 40 cycles leaks **42.6 million bytes against a clean 18,816**, and the check reported "nothing this project owns was leaked". So the byte bound landed, and the finding is sharper than a missing coverage note: the check about to become this project's leak gate could not see two thousand times its own baseline.
+
+**The leak count turned out to be actively misleading, which nothing anticipated.** Across two runs of that same planted leak the report gave 232 leaks and then 328, against a clean 288 that does not move at all. One of those two runs would have read as an *improvement* while forty megabytes went missing. The script now says so, because a count is the obvious thing to reach for next.
+
+**The class check runs before the byte bound, not after.** The first draft had the bound first, which would have masked the sharper diagnosis: a leaked pipeline state is 8,555,776 bytes, over the bound, and "these objects belong to this project, here they are" is strictly better to read than a byte total. Caught by asking what a *Metal* leak would print, not by the planted heap leak.
+
+**Both cost figures in the issue were stale, and the plan's replacement for one of them was too.** The `smoke` job's worst case is 58 s over 10 runs rather than 38 s over 3. And `zig build smoke-leaks` at 400 cycles takes **113 s** on this machine today, not 51.8 s: #55's four resizes roughly doubled it, so the issue's central cost argument was measuring a harness that no longer exists.
+
+**40 and 400 cycles report identical figures**, which is stronger than the 20-versus-60 result the issue cites and retires the script's stated rationale for its default outright. AppKit's chatter is a fixed startup cost.
+
+**The `smoke` job's ceiling did not move and its margin did.** 8 minutes stands, but the basis was 2.7x the summed step budgets and is now 1.5x. That number is now written beside the ceiling, because it is what [#69](https://github.com/cboone/fosforo/issues/69) will break rather than something to re-derive then.

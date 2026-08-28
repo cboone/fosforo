@@ -147,3 +147,39 @@ That is a class this document did not previously account for: not a resource lea
 ### And the limit that matters most, restated
 
 None of the above sees whether the picture is bright enough to look at. #55 shipped a resolve gain that rendered a sine as a black display, and it passed 160 unit tests, both smoke halves, `smoke-leaks`, `clap-validator` and the validation layer. It was found by eye in under a minute. The harness answers whether frames are presented and whether resources balance; it has never answered what the pixels became, and #51 remains the issue that would change that.
+
+## Amended by issue #63: the leak check enters CI, and a fourth instrument is refused
+
+`zig build smoke-leaks` had never run anywhere but a keyboard. It now runs in the `smoke` job on every push, at 40 cycles rather than 400, under `continue-on-error` on the same reasoning as the AppKit half: it *is* the AppKit half with an instrument wrapped around it, so it inherits the dependency on a hosted runner granting an unbundled process a window-server connection. Promoting it, like promoting `smoke-appkit`, stays a separate decision about what may block a merge.
+
+**Two of the numbers this document has been quoting were stale, and both were stale in the direction that flatters the check.**
+
+Depth buys nothing either assertion reads. 40 cycles and 400 cycles both report *exactly* 288 leaks for 18,816 bytes, twice each, because AppKit's chatter is a fixed startup cost rather than a per-cycle one. The rationale `scripts/smoke-leak-check` carried for its 400 — that at 400 a per-cycle leak more than doubles the total, and at 10 it would sit inside the run-to-run variation — was an argument about totals that no assertion used, over a variation that is not there. What depth does buy is repetition of the rare paths inside `oneCycle`, and 40 reaches `plugin.destroy`'s teardown ten times and each of the four resizes forty.
+
+Depth costs everything, and more than it did. The 51.8 s figure for 400 cycles predates the four resizes recorded above; the same run now takes **113 s**, and the harness is bound by display refresh rather than by CPU, so a hosted runner at half this machine's rate pays roughly twice that again. 40 cycles takes 13 s.
+
+### The rule this document set was too narrow, and the gap was live
+
+The rule since #38 has been that *a Metal resource which is not a buffer* must be checked against `leaks` with a planted leak. That is now **any allocation**, because the narrower version excluded the case that turned out to be broken.
+
+`scripts/smoke-leak-check` judged by an allowlist of Objective-C class prefixes, and this project's own allocations do not have a class. Dropping `self.history.deinit` from `plugin.destroy` and running 40 cycles leaks roughly **42.6 million bytes against a clean 18,816**, and the check called it clean: `leaks` finds the block, and writes it as something the `<ClassName 0xADDRESS>` extractor does not match. Two thousand times the baseline, reported as nothing at all, in the check that was about to become this project's leak gate.
+
+A bound on total leaked bytes closes it. The two assertions are complementary rather than one subsuming the other, which is why both run and why the class check runs first: a leaked command queue is 137,152 bytes, *under* the bound, and is caught only by its class; a leaked history ring has no class and is caught only by the bound.
+
+**The leak count is not a discriminator.** Across two runs of that planted leak the report gave 232 leaks and then 328, against a clean 288 that does not move at all. The count wanders in both directions while forty megabytes go missing, and one of those two runs would have read as an improvement.
+
+### The peak-RSS slope, considered and refused
+
+The same issue also proposed running the harness at two cycle counts and bounding the growth in peak resident set size. It is not being added, and the reasoning is recorded here rather than in a comment on a check that does not exist.
+
+Its case rested on one measurement this document already carries: a leaked window buffer ring moves peak RSS from 47.7 MB to 57.7 MB while `leaks` reports clean. That is true and it is not sufficient, for three reasons.
+
+**The defect it demonstrably catches is already caught, more cheaply and exactly.** `src/smoke.zig` asserts `liveWindowBuffers() == 0` after the cycle loop, inside a step that already runs on every push, and the same planted defect fails it at 10 cycles with a named error and an exact count rather than at 440 cycles against two calibrated constants.
+
+**What is left of its coverage is the failure this project has already declined to chase.** Subtracting the counters leaves a `releaseWindows` that decrements without releasing — the hole recorded above, which is equally uncovered for the accumulation textures, so the guard would be half-applied by construction.
+
+**Its sensitivity is proportional to its cost, and it is blind to the resource that now dominates.** Baseline growth is 18.8 MB across 40 to 400 cycles with 1.5 MB of run-to-run spread per endpoint, so a five-sigma ceiling sits near 30 MB and the smallest detectable per-cycle leak is about 0.031 MB against a leaked ring's 0.048 MB of resident pages: a margin of 1.5x. Halving the span doubles that floor above the defect, so it cannot be made cheaper without ceasing to work. And a leaked accumulation texture moves peak RSS by 0.2 MB while leaking nearly two gigabytes, so it does not see `MTLStorageModePrivate` storage at all.
+
+The short form, and the thing to re-read before proposing it again: **it is a calibrated instrument for a defect an uncalibrated one already catches, and it is blind to the defect nothing else catches.** The byte bound above is the opposite trade and is why it was affordable — 56 times above the observed baseline and 40 times below the smallest leak it is for, so it needs no calibration against the machine it runs on.
+
+The row nothing covers is left uncovered deliberately. Saying so is what stops it being rediscovered as a gap worth a fourth instrument.
