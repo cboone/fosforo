@@ -117,16 +117,28 @@ jobs:
   # (ADR 0009) and a runner with the compiler present would not prove it works
   # without one.
   #
-  # One job rather than two, so the checkout, the Zig install and the build are
-  # paid once for both halves. The halves are gated differently:
+  # One job rather than three, so the checkout, the Zig install and the build are
+  # paid once for all of them. They are gated differently:
   #
   #   gpu     needs a Metal device and no window. Required.
   #   appkit  needs a window server as well, which a headless runner may not
   #           grant. `continue-on-error`, and the step after it reports what
   #           happened, because settling that question is what this run is for.
+  #   leaks   the same window server, plus `leaks`. `continue-on-error` for the
+  #           same reason, since it is the appkit half under an instrument.
   #
   # This is the one check in the project that can go red for reasons unrelated to
   # the code, which is the cost of being the only one that runs anything.
+  #
+  # **The leak step runs 40 cycles here and 400 by hand, and that is measured
+  # rather than a concession.** `scripts/smoke-leak-check` judges leaked classes
+  # and a byte total, and neither varies with depth: 40 and 400 cycles both report
+  # exactly 288 leaks for 18,816 bytes. What depth buys is repetition of the rare
+  # paths inside `oneCycle`, and 40 reaches `plugin.destroy`'s teardown ten times
+  # and each of the four resizes forty. What it costs is the whole difference,
+  # because the harness waits on vsync about thirteen times per cycle and this
+  # runner refreshes at half the development machine's rate: 400 cycles is 113 s
+  # there and around two minutes here, against 13 s and around 25 s for 40.
   #
   # 38s max over 3 runs sampled since this job landed (34s, 38s, 38s), which is
   # a real figure replacing the borrowed one this comment used to carry (#17).
@@ -169,14 +181,46 @@ jobs:
         timeout-minutes: 2
         run: zig build smoke-appkit
 
+      # A label on the same precedent, and sized the same way: far above the 13 s
+      # this takes locally at the same cycle count, so a wedge on a window server
+      # reads as itself rather than as the whole job timing out.
+      #
+      # `tee` because the figures are wanted whether this passes or fails, and the
+      # script writes all of them to stderr. `pipefail` because a pipeline's status
+      # is its last command's otherwise, and `tee` always succeeds, which would
+      # make this step green whatever the check concluded.
+      - name: Cycle the editor under leaks
+        id: leaks
+        continue-on-error: true
+        timeout-minutes: 3
+        run: |
+          set -o pipefail
+          zig build smoke-leaks -Dleak-cycles=40 2>&1 | tee leaks.log
+
       # The experiment, made legible. Whether a hosted runner hands an unbundled
       # process a window-server connection is not something to reason about, and
       # a notice in the run summary is how the answer gets read without opening
       # the log of a job that passed.
-      - name: Report whether the runner granted a window server
+      #
+      # **The leak figures go out on green runs too, and that is the point rather
+      # than a courtesy.** The byte bound in `scripts/smoke-leak-check` is set
+      # against a baseline measured on the development machine, and this runner's
+      # AppKit chatter is not that machine's. The only way to learn what it is
+      # here is to read it off runs that passed, and a number nobody can see
+      # without opening a green job's log is a number nobody collects. That is
+      # why this is not `if: failure()` like the two summary steps further down,
+      # whose subject genuinely is a failing path.
+      - name: Report what the smoke halves concluded
         if: always()
         run: |
-          echo "::notice::AppKit smoke half: ${{ steps.appkit.outcome }}"
+          echo "::notice::AppKit smoke half: ${{ steps.appkit.outcome }}; leaks: ${{ steps.leaks.outcome }}"
+          {
+            echo "### Leak check (${{ steps.leaks.outcome }})"
+            echo
+            echo '```'
+            grep '^smoke-leak-check:' leaks.log || echo "no report; see the step log"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
 
   # The release/acquire pairing in `src/dsp/ring.zig` is the whole of ADR 0010's
   # protocol between the audio thread and the render thread, and every test of
