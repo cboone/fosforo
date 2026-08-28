@@ -152,15 +152,36 @@ Exclusive on `~/Library/Audio/Plug-Ins` and a host, per the phase 3 working orde
 1. `zig build install-plugins`, and read **both** hash pairs it prints. A result from an install this branch did not make describes some other build.
 1. REAPER from a terminal, `~/Music/fosforo-test-tones/sine-100hz-0.5.wav` on a loop, editor open, meter reading a rate near the refresh rate.
 1. `screencapture -o -x -t png -W shot.png`, clicking the plugin window.
-1. `scripts/measure-trace shot.png` **must succeed**. This is the case that fails today, and it is the whole acceptance test for the change: a lossless capture of a fading trace measured without a flag.
-1. `sips -s format jpeg -s formatOptions 40 shot.png --out shot.jpg`, then `scripts/measure-trace shot.jpg` **must refuse**, naming the off-ray fraction. This is the guard's positive control, and without it the refusal path is untested.
+1. `scripts/measure-trace shot.png` **must succeed**. This is the case that failed before this branch, and it is the whole acceptance test for the change: a lossless capture of a fading trace measured without a flag.
+1. `scripts/measure-trace --explain shot.png` for the deviation table. **This is the measurement everything below is read off**, and the number that matters most is the max: on synthetic captures it is 0.71 levels, which is pure quantisation rounding and the shape expected if the capture path is identity.
+1. `sips -s format jpeg -s formatOptions 60 shot.png --out shot.jpg`, then `scripts/measure-trace shot.jpg` **must refuse**, naming the off-ray fraction. This is the guard's positive control, and without it the refusal path is untested. Quality 60 rather than 40: at 40 the background stops surviving and the crop refuses first, so the guard is never reached.
 1. `scripts/measure-trace --measure-anyway shot.jpg` and compare its peak row against the PNG's. The JPEG must read higher. That is what the guard is protecting, stated as a number rather than as a worry.
-1. Record both off-ray fractions, the PNG's and the JPEG's, and set `MAX_OFF_RAY` between them with the two figures in a comment at the constant. Same for `RAY_TOLERANCE`, from the largest red or blue deviation observed in the PNG.
+1. Set `RAY_TOLERANCE` from the PNG's max deviation and `MAX_OFF_RAY` between the two captures' fractions, with the figures in a comment at each constant.
 1. Confirm the crop still reports `drawable found at x=… y=…` and that `find_drawable` deriving from `BACKGROUND` changed nothing about where it lands.
 
-### 6. `fix: set the guard's thresholds from the measured captures (#64)`
+**What a high off-ray fraction on the PNG would mean**, since that is the one result that changes the design rather than a constant:
+
+| PNG's fraction    | Reading                                                          | Action                                                                        |
+| ----------------- | ---------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| At or near 0%     | The capture path is identity across the range                    | Keep `MAX_OFF_RAY`, set `RAY_TOLERANCE` from the max deviation                |
+| A few percent     | A mild transfer curve, or dithering in the compositor            | Raise both from the table; the margin to 32% is still large                   |
+| Above roughly 10% | Colour management is real and the ray is not measurable this way | Fall back to a raised distinct-level threshold, and demote the ray to a print |
+
+### Last: `fix: set the guard's thresholds from the measured captures (#64)`
 
 The three constants with their measured values and the figures behind them, plus a "what landed differently" section appended to this plan if anything above turned out other than described.
+
+## What landed differently
+
+Recorded as the work went, rather than at the end.
+
+- **A sixth commit arrived before the host run: `--explain`.** The plan said to set `RAY_TOLERANCE` from the largest deviation observed in a real PNG, and the tool had no way to report that: it printed one aggregate fraction computed at a tolerance already fixed. Adding the instrument as a throwaway probe beside the script would have been #38's mistake repeated, which is the mistake this whole issue exists to correct, so it went into the tool.
+- **The `ruff` job's vacuous pass was real, and the mandatory control is what caught it.** `extend-include = ["measure-trace"]` matches nothing, because ruff globs with a literal path separator and a pattern without a `/` matches only at the repository root. With an unused import planted, that spelling reported "All checks passed".
+- **ruff's default rule set is wider than its usual description** and found a real defect on its first run: `subprocess.run` with no explicit `check=`.
+- **ruff formats Python fenced inside Markdown**, which would have put all 53 `.md` files in its remit and created a check that `ci.yml`'s `paths-ignore` prevents from ever seeing the changes that break it. Excluded.
+- **`typos` needed `extend-identifiers`, not `extend-words`.** The tool splits an identifier into words before judging it, so the obvious entry suppresses nothing while reporting success. Same failure shape as the ruff glob, twice in one branch.
+- **The crop refuses before the guard on a hard recompress.** A quality-40 JPEG destroys the exact background, so `find_drawable` fails first. Its message now names recompression as the second explanation, and the JPEG in the procedure above moved to quality 60 so the guard is actually reached.
+- **The guard's margin is far wider than the provisional constants assumed.** Measured on synthetic captures reproducing the shader's arithmetic: 193 green levels in a lossless capture of a fading trace, against the threshold of 32 that used to refuse it, at 0.00% off the ray with a max deviation of 0.71 levels; against 32% to 43% for JPEG at every quality from 95 down to 60.
 
 ## Out of scope
 
