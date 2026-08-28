@@ -192,9 +192,16 @@ def find_drawable(rgb):
     r, g, b = rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2]
     # Tight, because a window's drop shadow over a dark desktop is also near
     # black with a blue cast and fooled a looser test: it stretched the detected
-    # region 119 rows past the real drawable. The shader writes exactly
-    # RGB(5, 5, 8), so require that, and require the blue lead to be the 3 the
-    # 0.03-against-0.02 produces rather than merely positive.
+    # region 119 rows past the real drawable. So this looks for the background's
+    # own value, and for the blue lead of 3 that 0.03-against-0.02 produces
+    # rather than for a merely positive one.
+    #
+    # **Tolerant rather than exact, and that is not an oversight.** The shader
+    # writes exactly RGB(5, 5, 8) into the framebuffer; this reads a screenshot,
+    # which `to_srgb` explains is a different thing, identity at the background
+    # only to within rounding. BG_WINDOW and LEAD_WINDOW are what absorb that and
+    # their declarations say so. Do not tighten them to zero on the strength of
+    # the word "exactly" anywhere else in this file.
     #
     # The centres come from BACKGROUND rather than being written out, so the one
     # place this file states the background is the one the constants test checks.
