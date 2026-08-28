@@ -25,14 +25,15 @@
 # and it reads this file as text, the way the shader tests read the shader.
 #
 # Usage:
-#   read-provenance [--check] [--quiet] <path> [<path>...]
+#   read-provenance [--check] [--short] <path> [<path>...]
 #
 #   --check   Exit non-zero unless every path carries a well-formed marker. Without
 #             it, a bundle with no marker is reported and tolerated, because bundles
 #             built before this existed are a state worth describing rather than
 #             failing on.
-#   --quiet   Print the marker alone, with no path prefix. For callers embedding the
-#             result in a line of their own.
+#   --short   Print `<branch> <commit>` alone, with no path and no prefix, for a
+#             caller embedding the answer in a line of its own. `install-plugins`
+#             uses this, which is why the parsing lives here rather than there.
 #
 #   A path may be a bundle directory or the Mach-O inside one.
 #
@@ -88,10 +89,10 @@ function warn() {
 
 function usage() {
   cat >&2 << 'USAGE'
-usage: read-provenance [--check] [--quiet] <path> [<path>...]
+usage: read-provenance [--check] [--short] <path> [<path>...]
 
   --check   Exit non-zero unless every path carries a well-formed marker.
-  --quiet   Print the marker alone, with no path prefix.
+  --short   Print `<branch> <commit>` alone, with no path and no prefix.
 
   A path may be a bundle directory or the Mach-O inside one.
 USAGE
@@ -188,11 +189,37 @@ function marker_in() {
 # Arguments:
 #   $1 - a bundle directory or a file
 #   $2 - true to print the marker alone, without the path
+# Reduce a well-formed marker to the two fields a caller wants in a line of its own.
+#
+# The shape has already been asserted by the time this runs, which is what lets these
+# expansions be this blunt. Parsing lives here rather than in `install-plugins`
+# because that would be a second place the marker's grammar is written down.
+# Arguments:
+#   $1 - a well-formed marker line
+# Outputs:
+#   `<branch> <commit>`, with ` (dirty)` appended when the tree was not clean
+function short_form() {
+  local marker="${1}"
+  local branch commit dirty
+
+  branch="${marker#*branch=}"
+  branch="${branch%% *}"
+  commit="${marker#*commit=}"
+  commit="${commit%% *}"
+  dirty="${marker##*dirty=}"
+
+  if [[ "${dirty}" == yes ]]; then
+    echo "${branch} ${commit} (dirty)"
+  else
+    echo "${branch} ${commit}"
+  fi
+}
+
 # Returns:
 #   0 when a well-formed marker was found, or one of the three REPORT_ codes
 function report() {
   local path="${1}"
-  local quiet="${2}"
+  local short="${2}"
 
   local binary
   if ! binary="$(binary_in "${path}")"; then
@@ -203,7 +230,7 @@ function report() {
   marker="$(marker_in "${binary}")"
 
   if [[ -z "${marker}" ]]; then
-    if [[ "${quiet}" == true ]]; then
+    if [[ "${short}" == true ]]; then
       echo "${NO_PROVENANCE}"
     else
       echo "${path}: ${NO_PROVENANCE}"
@@ -211,24 +238,27 @@ function report() {
     return "${REPORT_NO_MARKER}"
   fi
 
-  # Printed before the shape is judged, deliberately: a marker this script cannot
-  # parse is still the most useful thing it has to say about the file, and hiding it
-  # behind a validation failure would leave the reader with nothing to go on.
-  if [[ "${quiet}" == true ]]; then
-    echo "${marker}"
-  else
-    echo "${path}: ${marker}"
-  fi
-
+  # The shape is judged before anything is printed, because --short parses the marker
+  # and a marker that is not the expected shape cannot be parsed into anything worth
+  # printing. The raw line is emitted in that case regardless of the mode: it is still
+  # the most useful thing this script has to say about the file, and a caller left
+  # with nothing at all would have no way to see what went wrong.
   if ! echo "${marker}" | /usr/bin/grep -q -E "${MARKER_SHAPE}"; then
+    echo "${path}: ${marker}"
     warn "${path}: marker is present but not the expected shape"
     return "${REPORT_MALFORMED}"
+  fi
+
+  if [[ "${short}" == true ]]; then
+    short_form "${marker}"
+  else
+    echo "${path}: ${marker}"
   fi
 }
 
 function main() {
   local check=false
-  local quiet=false
+  local short=false
   local -a paths=()
 
   while [[ "${#}" -gt 0 ]]; do
@@ -236,8 +266,8 @@ function main() {
       --check)
         check=true
         ;;
-      --quiet)
-        quiet=true
+      --short)
+        short=true
         ;;
       -h | --help)
         usage
@@ -268,7 +298,7 @@ function main() {
 
   for path in "${paths[@]}"; do
     result=0
-    report "${path}" "${quiet}" || result="${?}"
+    report "${path}" "${short}" || result="${?}"
 
     case "${result}" in
       0) ;;

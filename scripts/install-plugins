@@ -32,12 +32,26 @@
 # It is a report and not an error: the CLAP-only loop is deliberately the common
 # one, and refusing to finish it would be a worse trade than saying what is there.
 #
+# Every bundle now carries the branch and commit it was built from, stamped in by
+# build.zig and read back by scripts/read-provenance, so the reports below say whose
+# build is installed rather than only whether it is this one. That matters most where
+# a hash cannot: an installed component this worktree never built has nothing to be
+# compared against, and used to be described only by its modification date.
+#
 # Usage:
-#   install-plugins [--clap-only]
+#   install-plugins [--clap-only | --symlink-audio-unit]
 #
 #   --clap-only   Skip the Audio Unit even if it has been built. What is already
 #                 installed is still reported, because the question the report
 #                 answers does not go away when the copy is skipped.
+#
+#   --symlink-audio-unit
+#                 Link the shared Components location at this worktree's build
+#                 instead of copying into it, so `ls -l` answers which worktree owns
+#                 it and a rebuild needs no reinstall. The Audio Unit only: a CLAP
+#                 host must honour CLAP_PATH and can be pointed straight at a
+#                 worktree, while AudioComponentRegistrar scans only the two standard
+#                 directories and has no equivalent.
 #
 # Exit codes:
 #   0  - Everything installed was verified against the build it came from
@@ -52,6 +66,9 @@ readonly E_DATAERR=65
 readonly E_NOINPUT=66
 
 readonly PROGRAM_NAME="${0##*/}"
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
 
 readonly CLAP_DEST="${HOME}/Library/Audio/Plug-Ins/CLAP"
 readonly AU_DEST="${HOME}/Library/Audio/Plug-Ins/Components"
@@ -70,9 +87,11 @@ function warn() {
 
 function usage() {
   cat >&2 << 'USAGE'
-usage: install-plugins [--clap-only]
+usage: install-plugins [--clap-only | --symlink-audio-unit]
 
-  --clap-only   Skip the Audio Unit even if it has been built.
+  --clap-only            Skip the Audio Unit even if it has been built.
+  --symlink-audio-unit   Link the Components location at this worktree's build
+                         rather than copying into it.
 USAGE
 }
 
@@ -101,11 +120,62 @@ function short_hash() {
   echo "${sum:0:12}"
 }
 
+# Which worktree and which commit a bundle was built from.
+#
+# The hash above answers "is this the build I just made?" and can only answer it when
+# this worktree has a build to compare against. This answers "whose build is this?"
+# with nothing else in hand, which is the question the stale-component case actually
+# poses and the one that has cost real time (#22, #43).
+#
+# Never fails. A bundle built before the stamp existed, or one from another project
+# entirely, reports `(no provenance)` and the caller carries on: this whole file is a
+# diagnostic path, and a diagnostic that aborts is worse than none.
+# Arguments:
+#   $1 - a bundle directory or the binary inside it
+# Outputs:
+#   `<branch> <commit>` on stdout, or a stand-in
+function provenance() {
+  "${SCRIPT_DIR}/read-provenance" --short "${1}" 2> /dev/null || true
+}
+
+# Say whether an installed bundle is a symlink, and whether it still resolves.
+#
+# Only `--symlink-audio-unit` creates one, but it is read on every path: once the
+# shared location can hold a link, every report about what is installed has to be able
+# to describe one, including the reports written before the mode existed.
+# Arguments:
+#   $1 - the installed bundle path
+# Outputs:
+#   A description on stdout, or nothing when the path is an ordinary directory
+function link_note() {
+  local installed="${1}"
+
+  if [[ ! -L "${installed}" ]]; then
+    return 0
+  fi
+
+  local target
+  target="$(readlink "${installed}")"
+
+  # `-e` follows the link, so this is the dangling test. A worktree that has been
+  # removed, or a `rm -rf build` inside one, leaves exactly this.
+  if [[ -e "${installed}" ]]; then
+    echo "symlink to ${target}"
+  else
+    echo "DANGLING symlink to ${target}"
+  fi
+}
+
 # Copy one bundle and then prove the copy is the build it came from.
 #
 # `rm -rf` before `cp -R` rather than copying over the top: a bundle left from a
 # different branch may carry files this one does not, and merging the two
 # produces something that matches neither.
+#
+# That `rm -rf` is also the moment this repository's central hazard happens, and it
+# used to happen in silence. Whatever another worktree installed is destroyed here,
+# and the run that destroys it is the one best placed to say so, because afterwards
+# there is nothing left to ask. So the outgoing bundle is read before it is deleted.
 function install_bundle() {
   local label="${1}"
   local source="${2}"
@@ -126,7 +196,20 @@ function install_bundle() {
     return "${E_NOINPUT}"
   fi
 
+  # Read before the delete, which is the only time it can be read.
+  local outgoing=""
+  local outgoing_link=""
+  if [[ -e "${installed}" ]]; then
+    outgoing="$(provenance "${installed}")"
+    outgoing_link="$(link_note "${installed}")"
+  fi
+
   mkdir -p "${dest_dir}"
+
+  # `rm -rf` on a symlink removes the link and not what it points at, which is what
+  # makes this safe to run over an install left by --symlink-audio-unit. Note the
+  # absent trailing slash: adding one would make this follow the link and delete the
+  # worktree's own build directory.
   rm -rf "${installed}"
   cp -R "${source}" "${dest_dir}/"
 
@@ -140,14 +223,100 @@ function install_bundle() {
     return "${E_DATAERR}"
   fi
 
+  local incoming
+  incoming="$(provenance "${installed}")"
+
   warn "${label}: ${installed_hash}  ${installed}"
+  warn "${label}:   built from ${incoming}"
+
+  # Only when it says something the line above does not. Re-installing the same branch
+  # over itself is the common case and does not need a second line about it; replacing
+  # another worktree's build is the case this whole script exists for.
+  if [[ -n "${outgoing_link}" ]]; then
+    warn "${label}:   replaced a ${outgoing_link}"
+  fi
+
+  if [[ -n "${outgoing}" && "${outgoing}" != "${incoming}" ]]; then
+    warn "${label}:   replaced ${outgoing}"
+  fi
+}
+
+# Point the shared location at this worktree's build instead of copying into it.
+#
+# The Audio Unit is the only format that needs this. A CLAP host must honour
+# `CLAP_PATH`, so the CLAP can be loaded straight out of a worktree and the shared
+# directory avoided entirely; `AudioComponentRegistrar` scans only the two standard
+# Components directories and there is no `AU_PATH`, so the Audio Unit has to land in
+# the one place whatever else is true.
+#
+# **This does not remove staleness, it changes its shape**, and that is the whole of
+# what it buys. A copy can be another branch's build with nothing here to compare it
+# to; a link is always this worktree's `build/assets`, so what remains is only the
+# ordinary question of whether CMake has been re-run, which the provenance line and
+# the modification date both answer. `ls -l` answers the ownership question with no
+# tooling at all.
+#
+# The hash comparison the copy path ends with would be vacuous here, since the
+# installed file *is* the built file, so it is replaced by a report of where the link
+# points rather than printed as a match that could not have failed.
+function link_bundle() {
+  local label="${1}"
+  local source="${2}"
+  local dest_dir="${3}"
+  local binary="${4}"
+
+  local installed
+  installed="${dest_dir}/$(basename "${source}")"
+
+  # Same guard and the same reasoning as the copy path: the destructive step comes
+  # first, so a source with no Mach-O in it must not take the working install with it.
+  if [[ ! -f "${source}/${binary}" ]]; then
+    warn "${label}: ${source} has no ${binary}; nothing was linked"
+    warn "${label}:   the build is incomplete, and whatever is installed is untouched"
+    return "${E_NOINPUT}"
+  fi
+
+  local outgoing=""
+  local outgoing_link=""
+  if [[ -e "${installed}" ]]; then
+    outgoing="$(provenance "${installed}")"
+    outgoing_link="$(link_note "${installed}")"
+  fi
+
+  mkdir -p "${dest_dir}"
+  rm -rf "${installed}"
+  ln -s "${source}" "${installed}"
+
+  # Asserted rather than assumed. `ln` is quiet about a great deal, and a link that
+  # resolves to nothing looks identical to a working one in every listing that does
+  # not follow it.
+  if [[ ! -f "${installed}/${binary}" ]]; then
+    warn "${label}: linked ${installed} but it does not resolve to a binary"
+    return "${E_DATAERR}"
+  fi
+
+  warn "${label}: linked  ${installed}"
+  warn "${label}:   -> ${source}"
+  warn "${label}:   built from $(provenance "${installed}")"
+  warn "${label}:   a rebuild here now changes what the host loads, with no reinstall"
+
+  if [[ -n "${outgoing_link}" ]]; then
+    warn "${label}:   replaced a ${outgoing_link}"
+  elif [[ -n "${outgoing}" ]]; then
+    warn "${label}:   replaced a copy built from ${outgoing}"
+  fi
 }
 
 # Describe a bundle that is installed and was not installed by this run.
 #
 # The hash alone is not enough here, because there is nothing to compare it to. The
-# date is what makes it legible: a component from a fortnight ago, next to a CLAP
-# from a minute ago, is the whole tell, and it is the one that was missed.
+# date used to be the only thing that made it legible: a component from a fortnight
+# ago, next to a CLAP from a minute ago, is the whole tell, and it is the one that was
+# missed (#43).
+#
+# **Provenance is what turns that tell into a statement.** A date invites an
+# inference; a branch name ends the question. This is the exact case the stamp was
+# added for, because it is the one where no hash comparison is possible at all.
 #
 # Arguments:
 #   $1 - label for the message
@@ -164,6 +333,13 @@ function describe_installed() {
   modified="$(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "${installed}/${binary}")"
 
   warn "${label}:   installed ${hash}, modified ${modified}"
+  warn "${label}:   built from $(provenance "${installed}")"
+
+  local note
+  note="$(link_note "${installed}")"
+  if [[ -n "${note}" ]]; then
+    warn "${label}:   ${note}"
+  fi
 }
 
 # Report on an Audio Unit that this run is not going to install over.
@@ -181,6 +357,19 @@ function report_audio_unit() {
   local skipped="${2}"
 
   local installed="${AU_DEST}/${AU_BUNDLE}"
+
+  # Before the `-d` test below, which follows symlinks and would therefore call a
+  # dangling one "none installed". That is the wrong report and the misleading half of
+  # it is the reassuring half: a dangling link *is* installed, is what a host finds,
+  # and resolves to nothing. It is what a removed worktree or a `rm -rf build` inside
+  # one leaves behind, so it is the ordinary failure of --symlink-audio-unit rather
+  # than an exotic one.
+  if [[ -L "${installed}" && ! -e "${installed}" ]]; then
+    warn "audio unit: ${installed} is a $(link_note "${installed}")"
+    warn "audio unit:   Logic will find nothing there, and say nothing about it"
+    warn "audio unit:   rebuild in the worktree it names, or reinstall from here"
+    return 0
+  fi
 
   if [[ ! -d "${installed}" ]]; then
     if [[ "${skipped}" == true ]]; then
@@ -220,8 +409,19 @@ function report_audio_unit() {
     else
       warn "audio unit: skipped by --clap-only; the installed one is NOT this build"
       warn "audio unit:   installed ${installed_hash}, built ${built_hash}"
+      warn "audio unit:   installed built from $(provenance "${installed}")"
       warn "audio unit:   drop --clap-only to replace it"
     fi
+
+    # Reported in both branches, because a link makes the comparison above tautological
+    # rather than informative: the installed file is the built file, so the hashes
+    # cannot disagree and the reader should know that is why they agree.
+    local note
+    note="$(link_note "${installed}")"
+    if [[ -n "${note}" ]]; then
+      warn "audio unit:   ${note}"
+    fi
+
     return 0
   fi
 
@@ -233,11 +433,16 @@ function report_audio_unit() {
 
 function main() {
   local clap_only=false
+  local symlink_au=false
 
   while [[ "${#}" -gt 0 ]]; do
     case "${1}" in
       --clap-only)
         clap_only=true
+        shift
+        ;;
+      --symlink-audio-unit)
+        symlink_au=true
         shift
         ;;
       -h | --help)
@@ -251,6 +456,15 @@ function main() {
         ;;
     esac
   done
+
+  # They do not conflict so much as cancel: --clap-only means the Audio Unit is not
+  # touched at all, so there is nothing for --symlink-audio-unit to do. Refused rather
+  # than silently ignored, because the two together read as a request that was
+  # honoured and it would not have been.
+  if [[ "${clap_only}" == true && "${symlink_au}" == true ]]; then
+    warn "--clap-only and --symlink-audio-unit cancel: the first installs no Audio Unit"
+    return "${E_USAGE}"
+  fi
 
   local root
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -268,7 +482,11 @@ function main() {
   fi
 
   if [[ "${clap_only}" != true && -d "${au_source}" ]]; then
-    install_bundle "audio unit" "${au_source}" "${AU_DEST}" "${AU_BINARY}"
+    if [[ "${symlink_au}" == true ]]; then
+      link_bundle "audio unit" "${au_source}" "${AU_DEST}" "${AU_BINARY}"
+    else
+      install_bundle "audio unit" "${au_source}" "${AU_DEST}" "${AU_BINARY}"
+    fi
     installed_any=true
   else
     # Not an error, in any of its three shapes. The CLAP-only loop is the common
