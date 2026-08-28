@@ -18,6 +18,11 @@ from the background rather than given.
 On a Retina display this writes backing pixels, which is the unit the plan's
 tables are in. Terminal needs Screen Recording permission or the capture comes
 back empty.
+
+A capture is refused when it holds colours this shader cannot produce, which is
+what catches a recompressed or resampled screenshot. `--explain` prints the
+distribution that check is read off, and is how its two constants were set and
+how they get re-derived.
 """
 
 import argparse
@@ -136,8 +141,8 @@ def find_drawable(rgb):
     return int(cols.min()), int(rows.min()), int(cols.max()) + 1, int(rows.max()) + 1
 
 
-def off_ray(rgb):
-    """Fraction of unsaturated pixels holding a colour this shader cannot produce.
+def ray_deviation(rgb):
+    """How far each unsaturated pixel sits from the colour this shader can produce.
 
     Everything the renderer puts on the drawable is `background + c * beam` for
     some `c >= 0`. Every deposit is the same colour and the decay multiplies the
@@ -160,8 +165,10 @@ def off_ray(rgb):
     strictly wider set of bad captures than the count did, including a screenshot
     taken on a scaled display, which the count could not see at all.
 
-    Returns the fraction and the number of pixels it was measured over, because a
-    fraction of nothing has to be reported as such rather than as zero.
+    Returns one deviation per unsaturated pixel, in 8-bit levels, and how many
+    that was: the larger of the red and blue distances, since a pixel is off the
+    ray when either channel is, and the count separately because a fraction of
+    nothing has to be reported as such rather than as zero.
     """
     r, g, b = (rgb[:, :, i].astype(np.float32) for i in range(3))
 
@@ -172,13 +179,55 @@ def off_ray(rgb):
     usable = g < SATURATED
     examined = int(usable.sum())
     if examined == 0:
-        return 1.0, 0
+        return np.empty(0, dtype=np.float32), 0
 
     energy = (g - BG8[1]) / BEAM8[1]
-    off = (np.abs(r - (BG8[0] + BEAM8[0] * energy)) > RAY_TOLERANCE) | (
-        np.abs(b - (BG8[2] + BEAM8[2] * energy)) > RAY_TOLERANCE
-    )
-    return float(off[usable].mean()), examined
+    from_red = np.abs(r - (BG8[0] + BEAM8[0] * energy))
+    from_blue = np.abs(b - (BG8[2] + BEAM8[2] * energy))
+    return np.maximum(from_red, from_blue)[usable], examined
+
+
+def off_ray(deviation, examined):
+    """Fraction of unsaturated pixels holding a colour this shader cannot produce."""
+    if examined == 0:
+        return 1.0
+    return float((deviation > RAY_TOLERANCE).mean())
+
+
+def explain_ray(deviation, examined):
+    """Report what sets RAY_TOLERANCE and MAX_OFF_RAY, so neither has to be a guess.
+
+    The two constants are the only judgement calls in the guard, and picking them
+    from one aggregate number would be picking them blind. This prints the
+    distribution instead, and the fraction each candidate tolerance would refuse,
+    so a threshold can be read off a table and re-derived later by anyone holding
+    the same capture.
+
+    It exists in the tool rather than as a probe beside it deliberately. #38's
+    verification produced exactly one throwaway offscreen probe, it lived on one
+    machine, and it is gone; losing this tool the same way is what #64 is about.
+    """
+    if examined == 0:
+        print("every pixel is saturated, so there is no ray to measure against")
+        return
+
+    print()
+    print(f"ray deviation across {examined} unsaturated pixels, in 8-bit levels")
+    for label, value in (
+        ("median", float(np.percentile(deviation, 50))),
+        ("99th", float(np.percentile(deviation, 99))),
+        ("99.9th", float(np.percentile(deviation, 99.9))),
+        ("max", float(deviation.max())),
+    ):
+        print(f"  {label:<8} {value:7.2f}")
+
+    print()
+    print("  tolerance   would refuse")
+    for tolerance in (1, 2, 3, 4):
+        fraction = float((deviation > tolerance).mean())
+        here = "  <- RAY_TOLERANCE" if tolerance == RAY_TOLERANCE else ""
+        print(f"  {tolerance:>9}   {fraction:12.4%}{here}")
+    print(f"  refusing above {MAX_OFF_RAY:.4%}")
 
 
 def lit_rows(img, threshold):
@@ -212,6 +261,11 @@ def main():
         action="store_true",
         help="measure a capture that failed the colour check",
     )
+    ap.add_argument(
+        "--explain",
+        action="store_true",
+        help="report the deviation distribution the colour check's constants come from",
+    )
     args = ap.parse_args()
 
     img = open_image(args.image)
@@ -242,18 +296,27 @@ def main():
     # guard reported a railed trace for a signal at full scale.
     drawable = np.asarray(img.convert("RGB"), dtype=np.int16)
     shades = len(np.unique(drawable[:, :, 1]))
-    fraction, examined = off_ray(drawable)
+    deviation, examined = ray_deviation(drawable)
+    fraction = off_ray(deviation, examined)
 
     if fraction > MAX_OFF_RAY and not args.measure_anyway:
-        beam = ", ".join(f"{c:g}" for c in BEAM)
-        print(f"{fraction:.1%} of the drawable's unsaturated pixels are colours this")
-        print("shader cannot produce.")
+        # `:.2f` rather than `:g`, which would print the beam as (0.3, 1, 0.45)
+        # and make it harder to recognise as the shader's own literal.
+        beam = ", ".join(f"{c:.2f}" for c in BEAM)
+        print(f"{fraction:.1%} of the drawable's unsaturated pixels are colours this shader")
+        print("cannot produce.")
         print(f"It writes background + a * ({beam}), so red and blue follow green exactly.")
         print("A resampled or recompressed capture breaks that and moves every number below.")
         print("Recapture with:  screencapture -o -x -t png -W shot.png")
         print("  -o drops the window shadow, which otherwise confuses the crop")
         print("  -t png forces lossless, whatever the screenshot default is")
         print("Pass --measure-anyway to measure it regardless, knowing the peak will read high.")
+        # Printed on the refusing path too, and this is the path where it is
+        # most wanted: a capture that was refused is exactly the one whose
+        # deviation distribution decides whether the constants or the capture is
+        # at fault.
+        if args.explain:
+            explain_ray(deviation, examined)
         return 1
 
     top, bottom, any_lit = lit_rows(img, args.threshold)
@@ -313,6 +376,9 @@ def main():
                 runs += 1
             inside = up
         print(f"periods          {runs}")
+
+    if args.explain:
+        explain_ray(deviation, examined)
 
     return 0
 
