@@ -202,11 +202,21 @@ function install_bundle() {
   fi
 
   # Read before the delete, which is the only time it can be read.
+  #
+  # `-e` follows symlinks and so is false for a dangling one, which is exactly the
+  # case where saying what was replaced matters most: a dangling link is a component
+  # Logic was finding nothing behind, and repairing it silently would leave the
+  # symptom unexplained. `-L` is what catches it, and provenance is read only when the
+  # path resolves, because there is nothing to read through a broken link and the note
+  # already says everything knowable about that one.
   local outgoing=""
   local outgoing_link=""
-  if [[ -e "${installed}" ]]; then
-    outgoing="$(provenance "${installed}")"
+  if [[ -e "${installed}" || -L "${installed}" ]]; then
     outgoing_link="$(link_note "${installed}")"
+
+    if [[ -e "${installed}" ]]; then
+      outgoing="$(provenance "${installed}")"
+    fi
   fi
 
   mkdir -p "${dest_dir}"

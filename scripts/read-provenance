@@ -113,9 +113,11 @@ USAGE
 function binary_in() {
   local path="${1}"
 
-  # `-f` and `-d` both follow symlinks, which is what makes this work unchanged
-  # against an Audio Unit installed by `install-plugins --symlink-audio-unit`: the
-  # marker is read out of the worktree the link points at.
+  # `-f` and `-d` both follow symlinks, so a path that is one is read through to the
+  # bundle it points at. Nothing here installs a symlinked component any more, since
+  # macOS does not register one (ADR 0018), but a link made by hand still has to be
+  # readable: naming the build it resolves to is how `install-plugins` explains a
+  # component Logic is silently ignoring.
   if [[ -f "${path}" ]]; then
     echo "${path}"
     return 0
