@@ -261,9 +261,16 @@ def ray_deviation(rgb):
 
 
 def off_ray(deviation, examined):
-    """Fraction of unsaturated pixels holding a colour this shader cannot produce."""
+    """Fraction of unsaturated pixels holding a colour this shader cannot produce.
+
+    `None` when there are no unsaturated pixels at all, which is emphatically not
+    the same as 100%: it is the absence of an answer rather than the worst one.
+    Returning a fraction there made the guard announce "100.0% of 0 unsaturated
+    pixels are colours this shader cannot produce" and blame a codec for an image
+    that simply had nothing in it to measure.
+    """
     if examined == 0:
-        return 1.0
+        return None
     return float((deviation > RAY_TOLERANCE).mean())
 
 
@@ -379,6 +386,25 @@ def main():
     shades = len(np.unique(drawable[:, :, 1]))
     deviation, examined = ray_deviation(drawable)
     fraction = off_ray(deviation, examined)
+
+    # No unsaturated pixel means no usable estimate of the beam's scalar anywhere,
+    # so the ray has nothing to say and the guard below would say it anyway. Its
+    # own refusal is unconditional rather than overridable, unlike the colour one:
+    # `--measure-anyway` trades accuracy for a number, and here there is no number
+    # to trade for. Every row below would read zero.
+    #
+    # Reachable only with `--no-crop`, since `find_drawable` wants a thousand
+    # background pixels and an all-saturated image has none, so the message names
+    # that rather than a codec.
+    if fraction is None:
+        print("every pixel in the measured region is saturated, so there is no")
+        print("unsaturated pixel to check the beam's colour against.")
+        print("This is not a recompressed capture; it is the wrong region. Drop")
+        print("--no-crop and let the background find the drawable, or recapture:")
+        print("  screencapture -o -x -t png -W shot.png")
+        if args.explain:
+            explain_ray(deviation, examined)
+        return 1
 
     if fraction > MAX_OFF_RAY and not args.measure_anyway:
         # `:.2f` rather than `:g`, which would print the beam as (0.3, 1, 0.45)
