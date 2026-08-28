@@ -2,6 +2,8 @@
 
 Issue: [#64](https://github.com/cboone/fosforo/issues/64). Branch: `chore/scripts`.
 
+> **Pointer added by [#67](https://github.com/cboone/fosforo/issues/67):** `scripts/make-test-tones`, named below, no longer exists here. The generator moved to `tools/test-signals/maketones.py` in [cboone/audio-tools](https://github.com/cboone/audio-tools), and `AGENTS.md` carries the invocation that reproduces this project's signal set. `measure-trace` stayed, for the reasons this document gives; the half that left is the half that was general.
+
 ## Context
 
 `measure-trace` is the tool every number in [#38](https://github.com/cboone/fosforo/issues/38)'s verification came out of: the level sweep's peak rows, the plateau widths, the period counts, the implied sample values. Those numbers are quoted in `AGENTS.md`, in ADR 0017's reasoning, and in the phase 2 exit criteria, and they are quoted as measurements rather than as claims.

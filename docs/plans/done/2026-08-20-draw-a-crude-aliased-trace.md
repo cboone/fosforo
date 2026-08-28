@@ -2,6 +2,8 @@
 
 Issue [#38](https://github.com/cboone/fosforo/issues/38). Phase 2, step 4 of `docs/plans/todo/2026-07-25-repo-foundation-and-phased-build-plan.md`. Depends on [#37](https://github.com/cboone/fosforo/issues/37), which landed the read and the upload.
 
+> **Pointer added by [#67](https://github.com/cboone/fosforo/issues/67):** `scripts/make-test-tones`, named below, no longer exists here. The generator moved to `tools/test-signals/maketones.py` in [cboone/audio-tools](https://github.com/cboone/audio-tools), and `AGENTS.md` carries the invocation that reproduces this project's signal set. Nothing measured in this document changes: the port is bit-identical, file for file.
+
 ## Context
 
 The render thread already reads a 20 ms window every tick and copies it into a GPU buffer that is bound to a shader declaring no such argument. `src/gpu/metal/renderer.zig:466-471` says so in as many words: "Bound although the shader currently declares no such argument, which Metal permits and which is deliberate rather than an oversight... #38 adds the vertex function that reads it." This issue is that vertex function.
