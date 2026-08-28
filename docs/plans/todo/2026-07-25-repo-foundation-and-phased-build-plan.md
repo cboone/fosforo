@@ -209,17 +209,33 @@ Met, with one criterion retired rather than satisfied:
 
 This document holds the reasoning, architecture, and sequencing. GitHub issues hold actionable units, one milestone per phase.
 
-Issues are filed **just in time**, for whichever phase is next, rather than up front for all six. Phases 3 onward deliberately have no issues yet: ADR 0012 defers those decisions until the phosphor scope ships and gets reassessed, and filing them now would manufacture a backlog of choices that have not been made. File a phase's issues when it becomes the next phase, and link them back here.
+Issues are filed **just in time**, for whichever phase is next, rather than up front for all six. Phases 4 onward deliberately have no issues yet: ADR 0012 defers those decisions until the phosphor scope ships and gets reassessed, and filing them now would manufacture a backlog of choices that have not been made. File a phase's issues when it becomes the next phase, and link them back here.
 
-Phase 2's issues were filed on that rule, when phase 1 closed. Phase 3's are not filed and should not be until phase 2 closes.
+Phase 2's issues were filed on that rule when phase 1 closed, and phase 3's when phase 2 closed. Phase 4's are not filed and should not be until phase 3 closes.
 
-**Two open issues sit on no milestone, and that is deliberate.**
+**Seven open issues sit on no milestone, and that is deliberate.** None of them
+is a step of any phase, so putting one on a milestone would misreport that
+phase's remaining work.
+
+**Two are carried in the risks table below instead**, which is where a reader who
+does not open the tracker will find them:
 [#34](https://github.com/cboone/fosforo/issues/34) is verification debt from
-phase 1 and [#30](https://github.com/cboone/fosforo/issues/30) is certificate
-maintenance for a release that is several phases out. Neither is a step of any
-phase, so putting either on a milestone would misreport that phase's remaining
-work. Both are carried in the risks table below instead, which is where a reader
-who does not open the tracker will find them.
+phase 1, and [#30](https://github.com/cboone/fosforo/issues/30) is certificate
+maintenance for a release that is several phases out.
+
+**The other five arrived while phase 3 was under way, and are deferred questions
+rather than risks to this plan**, which is why they are not in that table.
+[#51](https://github.com/cboone/fosforo/issues/51) and
+[#65](https://github.com/cboone/fosforo/issues/65) are verification the phase
+wanted and could not close in place: the first because nothing here answers what
+the pixels became, the second because the evidence points at Logic rather than at
+this project. [#53](https://github.com/cboone/fosforo/issues/53) is a feature #55
+made worth having, since a bypassed plugin keeps drawing the last window it read
+with nothing to say the picture is stale. And
+[#69](https://github.com/cboone/fosforo/issues/69) and
+[#72](https://github.com/cboone/fosforo/issues/72) are two questions about the
+`smoke` job that #63 split out rather than answered. The working order below
+places those last two; the rest slot in wherever their subject does.
 
 ## Phase 2: signal path (complete)
 
@@ -334,7 +350,7 @@ Merge order is a separate question from run order, and only two things constrain
 | **Merge conflict**           | #61 against #55, both rewriting `Pipelines` and `buildPipelines` | Nothing, strictly. Whichever lands second rebases over a rewrite of one struct, so ordering them is a convenience |
 | **Machine and install path** | The verification half of #55, #63, #22, #34 and #64              | Do not *run* two issues at the same moment. No effect on what may be branched, reviewed or merged                 |
 
-The resulting order is **#55**, then **#64**, then **#63** — all three done — then **#22**, then **#61**, then **#56**, **#57** and **#60** in whichever order suits, then **#58** and **#59** behind #57. [#69](https://github.com/cboone/fosforo/issues/69) was split out of #63 and slots in wherever suits, since it touches the same `smoke` job and nothing else; it is the one issue whose cost has to be re-measured rather than assumed, because #63 took that job's step-budget margin from 2.7x to 1.5x. [#34](https://github.com/cboone/fosforo/issues/34) slots in wherever a second display becomes available, since that rather than anything here is what gates it. [#61](https://github.com/cboone/fosforo/issues/61) is deliberately pulled forward from its filed position at step 9: it is independent of every other step, and its value is proportional to how much shader iteration comes after it, which once #55 has landed is five issues' worth.
+The resulting order is **#55**, then **#64**, then **#63** — all three done — then **#22**, then **#61**, then **#56**, **#57** and **#60** in whichever order suits, then **#58** and **#59** behind #57. [#69](https://github.com/cboone/fosforo/issues/69) was split out of #63 and slots in wherever suits, since it touches the same `smoke` job and nothing else; it is the one issue whose cost has to be re-measured rather than assumed, because #63 took that job's step-budget margin from 2.7x to 1.5x. [#72](https://github.com/cboone/fosforo/issues/72) came out of the same split and sits in the same place, and it is a decision rather than a cost: it is what would let `liveAccumulationTextures` fail a build, which today it cannot, since the step carrying it runs under `continue-on-error`. [#34](https://github.com/cboone/fosforo/issues/34) slots in wherever a second display becomes available, since that rather than anything here is what gates it. [#61](https://github.com/cboone/fosforo/issues/61) is deliberately pulled forward from its filed position at step 9: it is independent of every other step, and its value is proportional to how much shader iteration comes after it, which once #55 has landed is five issues' worth.
 
 The subtle entry was [#63](https://github.com/cboone/fosforo/issues/63)'s: its RSS threshold depended on #55's baseline **number** rather than on its code, so it wanted #55 merged before the figure was fixed, while its `smoke-leaks` half depended on nothing. It is now **done**, and the threshold was never set, for the reason two bullets above.
 
