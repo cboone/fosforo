@@ -2,6 +2,8 @@
 
 Issue [#55](https://github.com/cboone/fosforo/issues/55). Phase 3, steps 2 and 8 of `docs/plans/todo/2026-07-25-repo-foundation-and-phased-build-plan.md`. Depends on [#38](https://github.com/cboone/fosforo/issues/38), which landed the trace this deposits into and merged as [#54](https://github.com/cboone/fosforo/pull/54).
 
+> **Pointer added by [#67](https://github.com/cboone/fosforo/issues/67):** `scripts/make-test-tones`, named below, no longer exists here. The generator moved to `tools/test-signals/maketones.py` in [cboone/audio-tools](https://github.com/cboone/audio-tools), and `AGENTS.md` carries the invocation that reproduces this project's signal set. Nothing measured in this document changes: the port is bit-identical, file for file. The two transients this plan asked for, `click-2hz` and `burst-100hz-gated`, are defaults there.
+
 ## Context
 
 Phase 2 closed with a trace that is redrawn from nothing every frame. `Renderer.frame` clears the drawable, draws a one-pixel line strip over it, presents, and discards everything. Nothing survives a frame, so nothing about the signal's history reaches the screen.
