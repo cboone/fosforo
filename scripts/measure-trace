@@ -85,6 +85,13 @@ LEAD_WINDOW = 1
 # different editor size.
 RAY_TOLERANCE = 2
 MAX_OFF_RAY = 0.005
+
+# Measured on the same capture, and it earns its place: dropping the exclusion
+# entirely takes a good picture from 0.0074% off the ray to 0.1161% and its max
+# deviation from 8.64 to 110.89, because a clipped green sits under red and blue
+# that are still climbing. Where exactly the cut falls does not matter, which is
+# the useful part: 240, 250 and 254 give identical results, since the population
+# it removes is at 255 exactly. 3774 pixels of that capture were excluded.
 SATURATED = 250
 
 
