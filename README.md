@@ -44,7 +44,7 @@ cd fosforo
 zig build --release=fast
 ```
 
-Install the CLAP for any CLAP-capable host (REAPER, Bitwig). This builds it, copies it into `~/Library/Audio/Plug-Ins/CLAP`, and prints the hash of what landed, so the build a host loads can be told apart from the build you just made:
+Install the CLAP for any CLAP-capable host (REAPER, Bitwig). This builds it, copies it into `~/Library/Audio/Plug-Ins/CLAP`, and prints the hash and the branch it came from, so the build a host loads can be told apart from the build you just made:
 
 ```bash
 zig build --release=fast install-clap
