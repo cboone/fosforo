@@ -172,3 +172,13 @@ Ordered so the cheap checks fail first, and so the two exclusive resources (the 
 - Arguments to `cmake/set-au-display-name`, which the issue flags as the tradeoff a dev channel would invert; leaving the display name alone is what keeps that script a CI one-liner
 - A dirty-tree refusal in `scripts/build-release-bundles`. It reports provenance for the record, and does not gate on it: the release path is not exercised by CI and can rot (ADR 0014), so new refusals there are untested surface
 - Symlinking the CLAP, which `CLAP_PATH` answers better by not sharing a path at all
+
+## What actually happened
+
+Recorded on completion, because three things differed from the plan above and the reasoning for all three now lives in [ADR 0018](../../adr/0018-stamp-provenance-without-namespacing-identity.md).
+
+**Item 7's gate closed against it, so the symlinked Audio Unit was removed rather than shipped.** macOS does not register a symlinked component at all: Logic's own scan log reads 60 Audio Units with `Fósforo` present as a copy, 59 with it absent as a symlink, and 60 again when the copy is restored. `link_note` survives as a diagnostic, which the refusal makes *more* valuable rather than less, because a link made by hand produces a plugin silently missing from Logic with nothing wrong inside the bundle.
+
+**The first attempt at that measurement was a false negative, and its own control caught it.** An earlier A/B read 59 for the symlink *and* 59 for the copy, because `AudioComponentRegistrar` had not settled after several rapid reinstalls. Waiting before relaunching Logic is what makes the reading stable. Without the control, "symlinks do not work" would have been recorded as a measurement while resting on an instrument answering the same way to everything.
+
+**Item 8 confirmed `CLAP_PATH` and found the reader takes the longest match, not the first.** REAPER 7.79 honours the variable, and every instantiation printed its own provenance line naming the worktree. Separately, Zig emits `marker_prefix` as a literal in its own right beside the marker composed from it, so a Debug binary holds two matches and a ReleaseFast one holds a single match; taking the first reported a marker consisting of nothing but its own prefix, which `--check` then called malformed.
