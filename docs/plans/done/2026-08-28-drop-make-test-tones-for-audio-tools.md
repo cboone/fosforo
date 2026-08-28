@@ -65,11 +65,9 @@ Shape:
 
 The documents and their reference sites:
 
-| Document | Sites |
-| --- | --- |
-| `docs/plans/done/2026-08-20-draw-a-crude-aliased-trace.md` | 306, 403 |
-| `docs/plans/done/2026-08-26-accumulate-the-beam-into-a-persistent-texture.md` | 253, 317 |
-| `docs/plans/done/2026-08-27-commit-measure-trace-and-replace-its-lossless-guard.md` | 9, 128 |
+- `docs/plans/done/2026-08-20-draw-a-crude-aliased-trace.md`, lines 306 and 403
+- `docs/plans/done/2026-08-26-accumulate-the-beam-into-a-persistent-texture.md`, lines 253 and 317
+- `docs/plans/done/2026-08-27-commit-measure-trace-and-replace-its-lossless-guard.md`, lines 9 and 128
 
 Line 317 in the second document is the site the issue records as 312; it moved. Lines 107 and 153 of the third document mention `~/Music/fosforo-test-tones/` as a directory rather than the script, and are left alone.
 
