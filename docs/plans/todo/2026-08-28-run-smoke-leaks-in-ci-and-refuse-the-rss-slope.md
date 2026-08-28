@@ -145,7 +145,7 @@ The step is `continue-on-error`, so the first runs are the measurement rather th
 
 - **The peak-RSS slope check**, refused above. The issue's title promises it, so post a comment on #63 recording the decision and its reasoning rather than letting the title stand unexplained.
 - **`MTL_DEBUG_LAYER`**, which is [#69](https://github.com/cboone/fosforo/issues/69), including the `AGENTS.md:184` pointer.
-- **Promoting `smoke-appkit` to required.** Both #63 and #69 say this belongs to another issue and neither filed one; file it. The finding worth carrying into it: `liveAccumulationTextures` is the only instrument for the project's largest resource, it runs in CI, and it cannot fail a build, so a 46 MB-per-cycle leak today produces a green workflow.
+- **Promoting `smoke-appkit` to required**, now [#72](https://github.com/cboone/fosforo/issues/72). Three issues assigned this to a fourth that nobody had filed. The finding it carries: `liveAccumulationTextures` is the only instrument for the project's largest resource, it runs in CI, and it cannot fail a build, so a 46 MB-per-cycle leak today produces a green workflow.
 - **Running `leaks` on the clap-wrapper bundle.** No equivalent harness drives the AUv2 path.
 
 ## Risks to watch at the keyboard
