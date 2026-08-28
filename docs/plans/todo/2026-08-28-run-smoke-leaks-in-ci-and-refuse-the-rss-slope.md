@@ -32,16 +32,16 @@ Coverage of each plausible planted defect, by instrument, **as of planning**. On
 
  `L` is `leaks` through `scripts/smoke-leak-check`; `R` is the proposed RSS slope; `W` and `A` are `liveWindowBuffers` and `liveAccumulationTextures`, both asserted by `smoke-appkit` in CI today; `T` is `zig build test` under `testing.allocator`.
 
-| Planted defect                                      | L           | R       | W       | A       | T   |
-| --------------------------------------------------- | ----------- | ------- | ------- | ------- | --- |
-| Window ring built and forgotten (`Renderer.deinit`) | no          | yes     | **yes** | no      | no  |
-| `releaseWindows` decrements without releasing       | no          | **yes** | no      | no      | no  |
-| Accumulation pair never handed back                 | no          | no      | no      | **yes** | no  |
-| `releaseAccumulation` decrements without releasing  | no          | no      | no      | no      | no  |
-| Command queue or pipeline state release dropped     | **yes**     | no      | no      | no      | no  |
-| `history` ring not freed in `plugin.destroy`        | **no**, now yes | yes | no  | no      | yes |
-| A future uncounted *shared*-storage buffer          | no          | **yes** | no      | no      | no  |
-| A future uncounted *private*-storage texture        | no          | no      | no      | no      | no  |
+| Planted defect                                      | L               | R       | W       | A       | T   |
+| --------------------------------------------------- | --------------- | ------- | ------- | ------- | --- |
+| Window ring built and forgotten (`Renderer.deinit`) | no              | yes     | **yes** | no      | no  |
+| `releaseWindows` decrements without releasing       | no              | **yes** | no      | no      | no  |
+| Accumulation pair never handed back                 | no              | no      | no      | **yes** | no  |
+| `releaseAccumulation` decrements without releasing  | no              | no      | no      | no      | no  |
+| Command queue or pipeline state release dropped     | **yes**         | no      | no      | no      | no  |
+| `history` ring not freed in `plugin.destroy`        | **no**, now yes | yes     | no      | no      | yes |
+| A future uncounted *shared*-storage buffer          | no              | **yes** | no      | no      | no  |
+| A future uncounted *private*-storage texture        | no              | no      | no      | no      | no  |
 
 Three things follow, and the third is the one that decides it.
 
