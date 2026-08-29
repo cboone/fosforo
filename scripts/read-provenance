@@ -83,6 +83,13 @@ readonly MARKER_SHAPE="^${MARKER_PREFIX}version=[^ ]+ branch=[^ ]+ commit=[^ ]+ 
 
 readonly NO_PROVENANCE="(no provenance)"
 
+# A marker that is there and cannot be parsed, which is not the same as one that is
+# absent and must not be reported as it: a bundle predating the stamp is ordinary,
+# while this is a defect on this side. Both are stand-ins rather than a `<branch>
+# <commit>` pair, so `--short`'s output stays one line either way and a caller
+# embedding it in a sentence gets something true in both cases.
+readonly BAD_PROVENANCE="(unreadable provenance)"
+
 function warn() {
   echo "${PROGRAM_NAME}: ${*}" >&2
 }
@@ -241,12 +248,23 @@ function report() {
   fi
 
   # The shape is judged before anything is printed, because --short parses the marker
-  # and a marker that is not the expected shape cannot be parsed into anything worth
-  # printing. The raw line is emitted in that case regardless of the mode: it is still
-  # the most useful thing this script has to say about the file, and a caller left
-  # with nothing at all would have no way to see what went wrong.
+  # and one that is not the expected shape cannot be parsed into anything worth
+  # printing.
+  #
+  # **The raw line goes to stdout only in the default mode.** `--short` promises a
+  # machine-readable line, and a caller embedding it in a sentence gets a path and a
+  # whole marker spliced into the middle of that sentence otherwise. It is still worth
+  # showing, because it is the most useful thing this script knows about the file, so
+  # under --short it goes to stderr with the diagnostic instead of contaminating the
+  # channel the caller is reading.
   if ! echo "${marker}" | /usr/bin/grep -q -E "${MARKER_SHAPE}"; then
-    echo "${path}: ${marker}"
+    if [[ "${short}" == true ]]; then
+      echo "${BAD_PROVENANCE}"
+      warn "${path}: ${marker}"
+    else
+      echo "${path}: ${marker}"
+    fi
+
     warn "${path}: marker is present but not the expected shape"
     return "${REPORT_MALFORMED}"
   fi

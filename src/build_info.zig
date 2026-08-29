@@ -82,7 +82,20 @@ pub const descriptor_version: [:0]const u8 = terminate(if (!known)
 else
     version ++ "+" ++ sanitize(branch) ++ "." ++ sanitize(commit) ++ (if (dirty) ".dirty" else ""));
 
-/// Replace anything semver build metadata does not admit.
+/// Reduce a string to exactly **one** semver build-metadata identifier.
+///
+/// Not "anything build metadata does not admit", which is the reading that makes the
+/// excluded `.` look like a mistake. Semver's grammar has two levels: build metadata
+/// is a series of *dot-separated identifiers*, and an identifier "MUST comprise only
+/// ASCII alphanumerics and hyphens" and "MUST NOT be empty". So `.` is legal in the
+/// assembled field and illegal inside any one identifier, and this function operates
+/// at the inner level.
+///
+/// That is what makes the `.` in `descriptor_version` a dependable field separator.
+/// A branch called `release/v1.2` must contribute one identifier, not two, or the
+/// version reads `0.0.0+release-v1.2.abc1234` and nothing can say where the branch
+/// ends and the commit begins. Preserving `.` would also put an empty identifier one
+/// pathological input away, and an empty identifier is invalid semver outright.
 fn sanitize(comptime s: []const u8) []const u8 {
     comptime {
         var out: []const u8 = "";
@@ -118,14 +131,29 @@ test "the descriptor version still starts with the declared one" {
     try testing.expectEqual(@as(u8, '+'), descriptor_version[version.len]);
 }
 
-test "the descriptor version is valid semver build metadata" {
-    // Everything after the `+` must be `[0-9A-Za-z-]` or `.`, which is the whole
-    // reason `sanitize` exists. A branch with a `/` in it is the ordinary case here,
-    // not an edge one: every branch in this repository is named `type/subject`.
-    for (descriptor_version[version.len + 1 ..]) |ch| switch (ch) {
-        '0'...'9', 'A'...'Z', 'a'...'z', '-', '.' => {},
-        else => return error.InvalidBuildMetadata,
-    };
+test "the descriptor version's build metadata is well-formed field by field" {
+    // Checked per identifier rather than over the whole span, because the whole span
+    // is the weaker statement and reads as licence for a `.` anywhere in it. Semver
+    // splits build metadata on `.` and requires each identifier to be non-empty and
+    // `[0-9A-Za-z-]` only, so that is what is asserted, one field at a time.
+    const metadata = descriptor_version[version.len + 1 ..];
+
+    var fields = std.mem.splitScalar(u8, metadata, '.');
+    var count: usize = 0;
+    while (fields.next()) |field| : (count += 1) {
+        if (field.len == 0) return error.EmptyIdentifier;
+        for (field) |ch| switch (ch) {
+            '0'...'9', 'A'...'Z', 'a'...'z', '-' => {},
+            else => return error.InvalidIdentifier,
+        };
+    }
+
+    // **The count is the part `sanitize` earns.** Branch and commit, plus `dirty`
+    // when the tree is not clean, and `unknown` alone when git could not answer.
+    // Without the sanitising, a branch like `release/v1.2` would contribute a second
+    // field of its own and nothing downstream could say where the branch ended.
+    const expected: usize = if (!known) 1 else if (dirty) 3 else 2;
+    try testing.expectEqual(expected, count);
 }
 
 test "the marker carries every field and starts with its prefix" {
@@ -155,6 +183,14 @@ test "sanitize replaces exactly what semver forbids" {
     try testing.expectEqualStrings("chore-add-build-provenance", comptime sanitize("chore/add-build-provenance"));
     try testing.expectEqualStrings("84bd70d", comptime sanitize("84bd70d"));
     try testing.expectEqualStrings("a-b-c", comptime sanitize("a b_c"));
+
+    // **`.` is replaced, and that is the point rather than an oversight.** It
+    // separates identifiers in build metadata and is not legal inside one, so a
+    // branch carrying a dot has to collapse to a single field or the `.` in
+    // `descriptor_version` stops delimiting anything. Pinned because the opposite
+    // reads as the obvious improvement.
+    try testing.expectEqualStrings("release-v1-2", comptime sanitize("release/v1.2"));
+    try testing.expectEqualStrings("-", comptime sanitize("."));
 
     // Already-legal characters are left alone, including the hyphen, which is the
     // one punctuation mark semver admits and therefore the one a replacement must
