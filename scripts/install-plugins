@@ -32,12 +32,23 @@
 # It is a report and not an error: the CLAP-only loop is deliberately the common
 # one, and refusing to finish it would be a worse trade than saying what is there.
 #
+# Every bundle now carries the branch and commit it was built from, stamped in by
+# build.zig and read back by scripts/read-provenance, so the reports below say whose
+# build is installed rather than only whether it is this one. That matters most where
+# a hash cannot: an installed component this worktree never built has nothing to be
+# compared against, and used to be described only by its modification date.
+#
 # Usage:
 #   install-plugins [--clap-only]
 #
 #   --clap-only   Skip the Audio Unit even if it has been built. What is already
 #                 installed is still reported, because the question the report
 #                 answers does not go away when the copy is skipped.
+#
+# There is deliberately no way to install the Audio Unit as a symlink, which #22
+# proposed and which was built and then refused: macOS does not register a symlinked
+# component. See `link_note` below and ADR 0018. The CLAP needs no such thing, because
+# a host must honour CLAP_PATH and can be pointed straight at a worktree.
 #
 # Exit codes:
 #   0  - Everything installed was verified against the build it came from
@@ -52,6 +63,9 @@ readonly E_DATAERR=65
 readonly E_NOINPUT=66
 
 readonly PROGRAM_NAME="${0##*/}"
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
 
 readonly CLAP_DEST="${HOME}/Library/Audio/Plug-Ins/CLAP"
 readonly AU_DEST="${HOME}/Library/Audio/Plug-Ins/Components"
@@ -101,11 +115,72 @@ function short_hash() {
   echo "${sum:0:12}"
 }
 
+# Which worktree and which commit a bundle was built from.
+#
+# The hash above answers "is this the build I just made?" and can only answer it when
+# this worktree has a build to compare against. This answers "whose build is this?"
+# with nothing else in hand, which is the question the stale-component case actually
+# poses and the one that has cost real time (#22, #43).
+#
+# Never fails. A bundle built before the stamp existed, or one from another project
+# entirely, reports `(no provenance)` and the caller carries on: this whole file is a
+# diagnostic path, and a diagnostic that aborts is worse than none.
+# Arguments:
+#   $1 - a bundle directory or the binary inside it
+# Outputs:
+#   `<branch> <commit>` on stdout, or a stand-in
+function provenance() {
+  "${SCRIPT_DIR}/read-provenance" --short "${1}" 2> /dev/null || true
+}
+
+# Say whether an installed bundle is a symlink, and whether it still resolves.
+#
+# **Nothing here creates one, and that is the finding rather than an omission.**
+# Issue #22 proposed pointing the shared Components directory at the active worktree,
+# so that `ls -l` would answer which build is installed and switching would cost one
+# command. It was built, measured against Logic, and refused: macOS does not register
+# a symlinked component at all. Logic's own scan log is the instrument, and the A/B/A
+# is unambiguous — 60 Audio Units with `Fósforo` present as a copy, 59 with it absent
+# as a symlink, 60 again when the copy is restored. See ADR 0018.
+#
+# So this stays as a *diagnostic*, and the refusal is what makes it worth having.
+# A symlink someone made by hand produces a plugin that is silently missing from
+# Logic, with no error anywhere and nothing in the bundle wrong, which is precisely
+# the class of failure this whole script exists to end.
+# Arguments:
+#   $1 - the installed bundle path
+# Outputs:
+#   A description on stdout, or nothing when the path is an ordinary directory
+function link_note() {
+  local installed="${1}"
+
+  if [[ ! -L "${installed}" ]]; then
+    return 0
+  fi
+
+  local target
+  target="$(readlink "${installed}")"
+
+  # `-e` follows the link, so this is the dangling test. Both cases are reported the
+  # same way about registration, because neither is registered: a resolving symlink
+  # fails for the reason above, and a dangling one has nothing to register.
+  if [[ -e "${installed}" ]]; then
+    echo "symlink to ${target}"
+  else
+    echo "DANGLING symlink to ${target}"
+  fi
+}
+
 # Copy one bundle and then prove the copy is the build it came from.
 #
 # `rm -rf` before `cp -R` rather than copying over the top: a bundle left from a
 # different branch may carry files this one does not, and merging the two
 # produces something that matches neither.
+#
+# That `rm -rf` is also the moment this repository's central hazard happens, and it
+# used to happen in silence. Whatever another worktree installed is destroyed here,
+# and the run that destroys it is the one best placed to say so, because afterwards
+# there is nothing left to ask. So the outgoing bundle is read before it is deleted.
 function install_bundle() {
   local label="${1}"
   local source="${2}"
@@ -126,7 +201,30 @@ function install_bundle() {
     return "${E_NOINPUT}"
   fi
 
+  # Read before the delete, which is the only time it can be read.
+  #
+  # `-e` follows symlinks and so is false for a dangling one, which is exactly the
+  # case where saying what was replaced matters most: a dangling link is a component
+  # Logic was finding nothing behind, and repairing it silently would leave the
+  # symptom unexplained. `-L` is what catches it, and provenance is read only when the
+  # path resolves, because there is nothing to read through a broken link and the note
+  # already says everything knowable about that one.
+  local outgoing=""
+  local outgoing_link=""
+  if [[ -e "${installed}" || -L "${installed}" ]]; then
+    outgoing_link="$(link_note "${installed}")"
+
+    if [[ -e "${installed}" ]]; then
+      outgoing="$(provenance "${installed}")"
+    fi
+  fi
+
   mkdir -p "${dest_dir}"
+
+  # `rm -rf` on a symlink removes the link and not what it points at, which is what
+  # makes this the fix for a hand-made link that Logic was silently ignoring. Note the
+  # absent trailing slash: adding one would make this follow the link and delete the
+  # worktree's own build directory.
   rm -rf "${installed}"
   cp -R "${source}" "${dest_dir}/"
 
@@ -140,14 +238,34 @@ function install_bundle() {
     return "${E_DATAERR}"
   fi
 
+  local incoming
+  incoming="$(provenance "${installed}")"
+
   warn "${label}: ${installed_hash}  ${installed}"
+  warn "${label}:   built from ${incoming}"
+
+  # Only when it says something the line above does not. Re-installing the same branch
+  # over itself is the common case and does not need a second line about it; replacing
+  # another worktree's build is the case this whole script exists for.
+  if [[ -n "${outgoing_link}" ]]; then
+    warn "${label}:   replaced a ${outgoing_link}"
+  fi
+
+  if [[ -n "${outgoing}" && "${outgoing}" != "${incoming}" ]]; then
+    warn "${label}:   replaced ${outgoing}"
+  fi
 }
 
 # Describe a bundle that is installed and was not installed by this run.
 #
 # The hash alone is not enough here, because there is nothing to compare it to. The
-# date is what makes it legible: a component from a fortnight ago, next to a CLAP
-# from a minute ago, is the whole tell, and it is the one that was missed.
+# date used to be the only thing that made it legible: a component from a fortnight
+# ago, next to a CLAP from a minute ago, is the whole tell, and it is the one that was
+# missed (#43).
+#
+# **Provenance is what turns that tell into a statement.** A date invites an
+# inference; a branch name ends the question. This is the exact case the stamp was
+# added for, because it is the one where no hash comparison is possible at all.
 #
 # Arguments:
 #   $1 - label for the message
@@ -164,6 +282,13 @@ function describe_installed() {
   modified="$(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "${installed}/${binary}")"
 
   warn "${label}:   installed ${hash}, modified ${modified}"
+  warn "${label}:   built from $(provenance "${installed}")"
+
+  local note
+  note="$(link_note "${installed}")"
+  if [[ -n "${note}" ]]; then
+    warn "${label}:   ${note}"
+  fi
 }
 
 # Report on an Audio Unit that this run is not going to install over.
@@ -181,6 +306,19 @@ function report_audio_unit() {
   local skipped="${2}"
 
   local installed="${AU_DEST}/${AU_BUNDLE}"
+
+  # Before the `-d` test below, which follows symlinks and would call a resolving one
+  # an ordinary directory and a dangling one "none installed". Both reports would be
+  # wrong, and the misleading half of the second is the reassuring half: a link *is*
+  # installed and is what a host meets. Neither is registered by macOS, so the two are
+  # one case here and the distinction is left to `link_note`.
+  if [[ -L "${installed}" ]]; then
+    warn "audio unit: ${installed} is a $(link_note "${installed}")"
+    warn "audio unit:   macOS does not register a symlinked component, so Logic sees none"
+    warn "audio unit:   measured, not assumed: see link_note above and ADR 0018"
+    warn "audio unit:   run \`zig build install-plugins\` to replace it with a copy"
+    return 0
+  fi
 
   if [[ ! -d "${installed}" ]]; then
     if [[ "${skipped}" == true ]]; then
@@ -220,8 +358,19 @@ function report_audio_unit() {
     else
       warn "audio unit: skipped by --clap-only; the installed one is NOT this build"
       warn "audio unit:   installed ${installed_hash}, built ${built_hash}"
+      warn "audio unit:   installed built from $(provenance "${installed}")"
       warn "audio unit:   drop --clap-only to replace it"
     fi
+
+    # Reported in both branches, because a link makes the comparison above tautological
+    # rather than informative: the installed file is the built file, so the hashes
+    # cannot disagree and the reader should know that is why they agree.
+    local note
+    note="$(link_note "${installed}")"
+    if [[ -n "${note}" ]]; then
+      warn "audio unit:   ${note}"
+    fi
+
     return 0
   fi
 
