@@ -252,3 +252,58 @@ Ten defects were planted and all ten were caught, each by a named assertion. The
 **Offscreen frames stop at three without a wait**, because that is the semaphore's depth and there is no display link pacing the loop. A `spinLoopHint` retry measured out at roughly the length of the frame it was waiting for and failed on the fourth frame of every case, which reads exactly like a completion handler that never fires and was not one. The harness yields instead.
 
 **Binding the wrong accumulation texture does not compile.** Planting it makes `source` an unused local, which Zig rejects. A better outcome than a caught defect, and worth recording as the reason that row had to be silenced before it could be exercised at all.
+
+## Amended by issue #61: the harness asserts a swap, a refusal, and a recovery
+
+Shader hot-reload ([ADR 0009](./0009-runtime-shader-compilation.md)) is the first feature here whose entire observable effect is the picture, which is the one thing this document has repeatedly recorded that nothing automated can see. The seam therefore grew a ninth operation, `shaderStats`, of the same kind as the two live-resource counters: a question about the backend rather than an instruction to it.
+
+### The split across the two halves is this document's own, not a convenience
+
+**The fallback arms are in the `gpu` half**, which CI requires. They need a device and no window, and what they assert is the invariant that can otherwise ruin a day: *a debug build opens its editor whatever is on disk.* A missing file, a malformed one, and one that compiles without defining what the pipelines ask for are three different failures, and all three must leave the plugin able to start.
+
+**Only the live swap is in the `appkit` half**, because only it needs a running render loop. That half is required as of #72, so the split no longer trades coverage against gating the way it did when this was written; what it still buys is that the invariant which must never break is asserted by the half needing no window server at all.
+
+### One phase per process, and the reason is measured
+
+`hotReloadPhase` runs once, before the cycle loop, rather than inside `oneCycle`. Two independent reasons and both had to be measured.
+
+A cycle in `oneCycle` lasts about as long as one 250 ms poll interval, so a watcher started on its first frame is joined before it ever looks twice: the arms simply cannot run inside one. And running it per cycle would cost `smoke-leaks -Dleak-cycles=400` twenty minutes and 1,200 out-of-process compiles for no coverage the single phase does not already give. Sitting before the loop also puts it inside the existing `liveWindowBuffers() == 0` and `liveAccumulationTextures() == 0` assertions for free.
+
+### The arm that is not a repeat of the one before it
+
+| Arm                                          | What only this one catches                                            |
+| -------------------------------------------- | --------------------------------------------------------------------- |
+| An edited shader                             | The watcher never starting at all                                     |
+| **A second edit of exactly the same length** | A change detector comparing size alone, and a watcher that fires once |
+| A shader that does not compile               | A failed compile swapped in, and a reload that stops the loop         |
+| One compiling without the right functions    | That the bytes *on disk* reached the compiler                         |
+| A good shader after a broken one             | Recovery without a restart                                            |
+
+Two of those deserve naming. The same-length second edit is a positive control rather than a repetition, and it is what the two most plausible detector bugs both fail. And the renamed-function arm is the one a counter cannot replace: `reloads` proves a compile happened and cannot distinguish a compile of the new bytes from a recompile of the embedded copy, while only the edited file can produce `buildPipeline`'s "compiled but does not define" diagnostic.
+
+Every arm was verified by planting the defect it names. A size-only detector and a watcher that never starts both fail as `ShaderNeverReloaded`, at the second and first edit respectively; a failed compile counted as a reload fails as `BrokenShaderWasSwappedIn`; `choosePath` preferring the build option over the environment fails the GPU half as `MissingShaderNotRefused`; and removing the fallback to the embedded copy fails it as `ShaderFallbackFailed`.
+
+### Free coverage, for the first time
+
+A swap that leaked its outgoing pipeline states is caught by `smoke-leaks` with **no new instrument**, because this document's own #38 amendment measured that an `MTLRenderPipelineState` *is* visible to `leaks` where a buffer and a texture are not. This is the first time the rule set after #38 has been discharged by a measurement already taken rather than by a new one, and it is why no counter for pipeline states was added.
+
+### Two defects the harness cannot see, and what was done about each
+
+Consistent with the section under #55, and worth stating rather than glossing. Both were found by asking what a passing run would still permit, and they were answered differently.
+
+- **A compile moved onto the render thread passes.** An extra 40 ms in a tick is invisible to a frame counter with a two-second timeout, so the harness reports a clean run. **This one is now closed outside the harness**, which is the point worth carrying: a debug-only `threadlocal` marks any thread that has entered the render path, and `buildPipelinesFromSource` asserts it is unset. That is `assertNotMainThread` from the other side, and it is the shape to reach for when the harness turns out to be the wrong instrument — the same conclusion the #55 section reached about the validation layer. Verified by planting a compile in `frame`, which panics naming the assertion.
+- **A reload with a moved `[[buffer(N)]]` passes, and still does.** Nothing validates a hot-reloaded shader's bindings; the comptime tests pin the embedded copy, correctly. This one was **not** closed, and is [#77](https://github.com/cboone/fosforo/issues/77), because the obvious fix is a runtime text scan that needs a warn-versus-refuse decision and is blind to the sharper failure anyway: `TraceUniforms` layout drift, where MSL computes its own offsets and no amount of reading the text would see it. #51 has since landed and does not close it either, which is worth stating precisely because the names are close: `smoke-trace` measures what the **embedded** shader draws, so it would catch a moved binding in the shipped source and cannot see one in a file swapped in at runtime, since nothing reloads during a trace run. ADR 0009's amendment carries the full statement of what is uncovered.
+
+The asymmetry is the lesson rather than an inconsistency. One of the two had a cheap structural guard available that makes the defect impossible; the other has only instruments, and the instrument that would work is a readback this document has already refused twice on its own terms.
+
+### The leak baseline wandered and then came back, which is the point
+
+Measured before this branch merged `main`, three runs at 40 cycles reported **36 to 54 leaks for 3,648 to 5,472 bytes**, against the 288 for 18,816 quoted since #63 — and the tempting conclusion was that the reload phase's extra couple of seconds let AppKit's LaunchServices chatter settle before exit.
+
+**Re-measured after the merge, it is 288 for 18,816, three times in a row.** The earlier excursion does not reproduce, so the explanation was a story fitted to two data points and is withdrawn rather than kept with a hedge.
+
+What survives is the rule this document already states, arriving from a third direction: **the leak count is not a discriminator, and neither is the byte total near it.** It has now been seen to move without a cause anyone can name, in both directions, which is exactly why the gate is a bound 56x above the observed figure rather than anything calibrated. `scripts/smoke-leak-check` records the same widening from CI's own side, where nine runs span 9,728 to 18,816 bytes.
+
+**The obligation this creates for a merge is worth naming.** A number measured on a branch is a number measured against that branch's harness, and #51 and #72 both changed this one underneath. Re-measuring after the merge is not diligence, it is the only way the figure means anything.
+
+`smoke-appkit` measures 4.4 s and `smoke-leaks -Dleak-cycles=40` 15.6 s against a documented 13 s. Both sit far inside ceilings set at roughly 4x the slowest observed run, so no `timeout-minutes` changed.

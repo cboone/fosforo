@@ -281,11 +281,54 @@ pub const Readback = struct {
     picture: []u8,
 };
 
+/// What the backend has done about the shader on disk, for a caller that cannot
+/// see the picture.
+///
+/// One struct rather than four `fn () usize`, because the four numbers are only
+/// ever read together and every assertion about them has the same shape: this one
+/// moved and those did not. Four separate seam operations would also be four
+/// separate `assertSignature` lines pinning nothing the struct does not.
+///
+/// It names nothing Metal owns, which is what lets it sit above this line at all.
+/// `reloads` and `rejected` are the pair that matters: a counter alone cannot
+/// distinguish a swap that used the new bytes from one that recompiled the old
+/// ones, so `src/smoke.zig` pairs them with a fixture whose *content* only the
+/// new bytes could produce a diagnostic for.
+///
+/// Every field is zero in a release build, permanently, because there is no
+/// watcher there to move one. A caller that wants to tell that apart from a
+/// watcher that never fired reads `path_resolved`.
+pub const ShaderStats = struct {
+    /// Whether this process resolved a shader path to compile from at all.
+    ///
+    /// **It says a path was chosen, and deliberately not two things it looks
+    /// like it might.** It does not say the file exists: a path that resolves
+    /// and then cannot be read leaves this true and moves `fallbacks`, which is
+    /// how a caller tells those apart. And it does not say a watcher thread is
+    /// running, because `probe` resolves a path without starting one.
+    ///
+    /// False in every release build, where no path is emitted, and false in a
+    /// debug build that was given no path or a relative one.
+    path_resolved: bool = false,
+
+    /// Sources read off disk and compiled successfully, including the first.
+    reloads: u64 = 0,
+
+    /// Sources read off disk that did not compile, or compiled without defining
+    /// what the pipelines ask for. The picture keeps whatever last worked.
+    rejected: u64 = 0,
+
+    /// Times the embedded copy was used because the disk one could not be:
+    /// unreadable *or* unusable, so this moves alongside `rejected` as well as on
+    /// its own. The editor opens either way, which is the point of counting it.
+    fallbacks: u64 = 0,
+};
+
 /// The one backend. Aliased rather than dispatched through a vtable, because
 /// paying for indirection with a single implementation would buy nothing that
 /// the comptime check below does not buy for free.
 ///
-/// **Ten operations.** Five of them the editor drives: `init`, `deinit`,
+/// **Eleven operations.** Five of them the editor drives: `init`, `deinit`,
 /// `resize`, `upload`, and `frame`. The rest are described below in the order
 /// they arrived, which is what the ordinals are for.
 ///
@@ -295,7 +338,9 @@ pub const Readback = struct {
 /// because each new operation was appended without anyone re-reading the first
 /// line. The comptime block below is the list that cannot drift; this is prose
 /// that has to be kept beside it by hand, and the failure mode is not that it
-/// looks stale but that it stays internally consistent while being wrong.
+/// looks stale but that it stays internally consistent while being wrong. A merge
+/// is the third way it breaks: two branches each appending an operation both leave
+/// the opening line untouched, and neither diff shows it.
 ///
 /// `liveWindowBuffers` and `liveAccumulationTextures` are the seventh and
 /// eighth, and are the same kind of thing as `probe`: questions about the
@@ -343,6 +388,13 @@ pub const Readback = struct {
 /// scale factor because a view has one; `initOffscreen` takes whole backing
 /// pixels, because there is no view to read a scale from and inventing one would
 /// put a rounding between a caller and the geometry it is measuring.
+///
+/// `shaderStats` is the eleventh, and the third of the questions rather than the
+/// instructions. It answers whether a debug build has picked up an edited shader,
+/// which is otherwise observable only in the picture, and the picture is what ADR
+/// 0013 records that nothing here can see. Like the two counters above it, a
+/// second backend would have to answer it: reloading is a property of compiling
+/// shaders at runtime (ADR 0009), not of Metal.
 pub const Renderer = @import("metal/renderer.zig").Renderer;
 
 // ADR 0005 asks a reviewer to treat a Metal type named above this seam as a
@@ -386,6 +438,11 @@ comptime {
     // anything with: naming what is being counted would name a Metal type.
     assertSignature("liveWindowBuffers", @TypeOf(Renderer.liveWindowBuffers), fn () usize);
     assertSignature("liveAccumulationTextures", @TypeOf(Renderer.liveAccumulationTextures), fn () usize);
+    // The eleventh, `[thread-safe]`, and the same kind of thing as the two above: a
+    // question about the backend rather than an instruction to it. It exists
+    // because hot reload is otherwise unobservable from outside the picture, and
+    // ADR 0013's whole position is that the picture is what nothing here can see.
+    assertSignature("shaderStats", @TypeOf(Renderer.shaderStats), fn () ShaderStats);
 }
 
 fn assertSignature(comptime name: []const u8, comptime Found: type, comptime Want: type) void {

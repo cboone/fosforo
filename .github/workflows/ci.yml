@@ -20,6 +20,14 @@ on:
       - "**/CLAUDE.md"
       - "**/AGENTS.md"
 
+  # The escape hatch the other three workflows already have, added after a
+  # conflicted pull request went four hours with no checks at all. A PR that
+  # conflicts with its base has no `refs/pull/N/merge` for GitHub to build, so
+  # nothing `pull_request` triggers can dispatch, and with no manual trigger there
+  # was no way to run *this* workflow by hand while that lasted -- only `typos`,
+  # `gitleaks` and `trufflehog`, none of which build anything.
+  workflow_dispatch:
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -757,6 +765,43 @@ jobs:
           ./scripts/read-provenance --check \
             build/assets/Fosforo.component \
             build/assets/Fosforo.clap
+
+      # The inverse of the assertion above, and it belongs in this job for the same
+      # reason: this is the only one that builds `--release=fast`, which is the mode
+      # the claim is about. #61 hands debug builds the absolute path of the shader
+      # they were built from so they can reload it, and `build.zig` emits that option
+      # as the empty string outside a Debug build precisely so no shipped binary
+      # carries a path into somebody else's worktree.
+      #
+      # **Gating in build.zig is what makes this a proof rather than a claim about
+      # the optimizer**, and this step is what makes the proof observable.
+      # `src/build_info.zig` refuses exactly that standard in the other direction for
+      # its marker, which is why the step above exists.
+      #
+      # The positive control runs first, on `scripts/assert-adhoc-signature`'s
+      # precedent: a negative grep proves nothing until the file is known readable,
+      # and the marker asserted one step up is the cheapest thing known to be in it.
+      #
+      # `/usr/bin/grep -a` rather than `strings`, which is `scripts/read-provenance`'s
+      # reasoning and not a style choice: /usr/bin/strings is an xcrun shim that fails
+      # without the Command Line Tools, while /usr/bin/grep is a base-OS binary.
+      - name: Assert the release artifacts carry no source path
+        run: |
+          for bundle in build/assets/Fosforo.component build/assets/Fosforo.clap; do
+            binary="$bundle/Contents/MacOS/Fosforo"
+            if ! /usr/bin/grep -aq 'fosforo-build: ' "$binary"; then
+              echo "::error::$binary is unreadable or unstamped; the checks below would be vacuous"
+              exit 1
+            fi
+            if /usr/bin/grep -aqF "$PWD/shaders/scope.metal" "$binary"; then
+              echo "::error::$binary carries this checkout's shader path"
+              exit 1
+            fi
+            if /usr/bin/grep -aq 'FOSFORO_SHADER_PATH' "$binary"; then
+              echo "::error::$binary carries the shader-reload path, which is debug-only"
+              exit 1
+            fi
+          done
 
       - uses: ./.github/actions/clap-validator
         with:

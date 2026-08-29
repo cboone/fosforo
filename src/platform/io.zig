@@ -1,10 +1,17 @@
 //! The project's one `std.Io` instance.
 //!
-//! Zig 0.16 moved `Mutex`, every clock, and `sleep` behind an `Io`. Two of those
-//! this project needs and takes from here; the third it does not, for reasons
-//! recorded in ADR 0015 and restated at the two sites that hand-roll what `Io`
-//! would otherwise supply (`Gate` in `clap/gui.zig`, the libdispatch semaphore in
-//! `gpu/metal/renderer.zig`).
+//! Zig 0.16 moved `Mutex`, every clock, and `sleep` behind an `Io`, and file
+//! operations with them. Three of those this project needs and takes from here;
+//! `Mutex` it does not, for reasons recorded in ADR 0015 and restated at the two
+//! sites that hand-roll what `Io` would otherwise supply (`Gate` in
+//! `clap/gui.zig`, the libdispatch semaphore in `gpu/metal/renderer.zig`).
+//!
+//! The third arrived with #61 and is two things rather than one: `Dir.statFile`
+//! and `Dir.readFile`, for the shader a debug build reloads, and
+//! `futexWaitTimeout`/`futexWake`, which is how the thread doing that waits out a
+//! poll interval it can still be woken from. `std.Thread` in 0.16 has neither a
+//! `Futex` nor a `ResetEvent` to reach for instead, so that wait is this ADR
+//! being followed rather than an exemption from it.
 //!
 //! This file exists to hold the construction, not to hide the callers. Reading
 //! the clock still lives next to the render loop it paces, and sleeping still

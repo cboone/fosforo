@@ -57,8 +57,21 @@ const measure = @import("gpu/measure.zig");
 const platform = @import("platform/objc.zig");
 const plugin = @import("clap/plugin.zig");
 const root = @import("main.zig");
+const shader = @import("gpu/metal/shader.zig");
 
 const c = clap.c;
+
+/// The one thing these arms need that Zig 0.16's std does not declare.
+///
+/// `std.c` has `getenv` and no `setenv` at all, and `std.process.Environ` can
+/// read the block this process started with without being able to write it. It
+/// lives here rather than in `platform/` because the plugin only ever *reads* the
+/// environment; nothing shipped writes one.
+///
+/// POSIX.1-2001, and present in macOS's `stdlib.h` with no availability guard, so
+/// unlike the externs in `platform/` this one costs the 11.0 deployment target
+/// nothing (ADR 0015).
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
 /// Open and close cycles the AppKit half runs when the caller does not say.
 ///
@@ -213,6 +226,340 @@ fn gpuHalf() !void {
     // `probe` fills the buffer in on success too. Naming the device is the
     // difference between "something ran" and a result someone can check.
     say("  device: {s}", .{diags.message()});
+
+    try reloadFallbackArms();
+}
+
+// ---------------------------------------------------------------------------
+// The shader-reload fixtures, shared by both halves
+// ---------------------------------------------------------------------------
+
+/// A shader file this process owns, in `$TMPDIR`, deleted on the way out.
+///
+/// **Never in the worktree.** These arms have to edit the file the plugin
+/// compiles, and `shaders/scope.metal` is tracked: a harness that wrote to it
+/// would leave the tree dirty, race a concurrent `zig build`, and on a crash
+/// leave a broken shader committed by whoever ran `git add -A` next.
+///
+/// Named for the process, so two harnesses cannot collide and a crashed run
+/// leaves a file the OS reaps rather than one anybody has to find. `$TMPDIR`
+/// rather than a hardcoded `/tmp`, on `scripts/smoke-leak-check`'s precedent,
+/// falling back to the `/tmp` POSIX guarantees and macOS supplies.
+///
+/// **An empty or relative `$TMPDIR` is refused rather than used**, which is what
+/// makes the paragraph above a guarantee instead of an expectation. Empty would
+/// root the fixture at `/`, and relative would resolve it against the working
+/// directory, which for `zig build smoke-appkit` is the worktree: the one place
+/// this must never write. That is `shader.choosePath`'s rule arriving at a second
+/// caller for the same reason, and neither case is hypothetical enough to leave
+/// to a comment, since a harness that dirtied the tree would look like a bug in
+/// whatever ran next.
+const Fixture = struct {
+    path_buf: [512]u8 = undefined,
+    path: [:0]const u8 = "",
+
+    fn create(self: *Fixture, tag: []const u8) !void {
+        self.path = std.fmt.bufPrintZ(&self.path_buf, "{s}/fosforo-smoke-{d}-{s}.metal", .{
+            tempDir(),
+            // The process, matching what the paragraph above promises. A thread
+            // id is unique within a process and says nothing across two, which is
+            // the collision this name is for.
+            std.c.getpid(),
+            tag,
+        }) catch return error.FixturePathTooLong;
+
+        try self.write(shader.embedded);
+    }
+
+    /// Where a fixture may live: `$TMPDIR` when it is absolute, `/tmp` otherwise.
+    fn tempDir() []const u8 {
+        const raw = std.c.getenv("TMPDIR") orelse return "/tmp";
+
+        const dir = std.mem.trimEnd(u8, std.mem.span(raw), "/");
+        if (dir.len == 0 or !std.fs.path.isAbsolute(dir)) return "/tmp";
+
+        return dir;
+    }
+
+    /// Written, then stat'd. **An arm whose fixture never landed has to fail as
+    /// itself**, not as a reload that did not happen, which is the same rule
+    /// `scripts/smoke-leak-check` follows when it refuses to read anything into
+    /// an absence until it knows the instrument ran.
+    fn write(self: *Fixture, contents: []const u8) !void {
+        try std.Io.Dir.cwd().writeFile(io.get(), .{ .sub_path = self.path, .data = contents });
+
+        const stamp = shader.stamp(self.path) catch return error.FixtureNotWritten;
+        if (stamp.size != contents.len) return error.FixtureNotWritten;
+    }
+
+    /// Point the plugin at this file. Read back through `std.c.getenv` on the
+    /// plugin's side, which reads the live block rather than the snapshot this
+    /// process started with.
+    fn use(self: *const Fixture) !void {
+        if (setenv(shader.path_env, self.path.ptr, 1) != 0) return error.CannotSetShaderPath;
+    }
+
+    fn destroy(self: *Fixture) void {
+        std.Io.Dir.cwd().deleteFile(io.get(), self.path) catch {};
+        _ = setenv(shader.path_env, "", 1);
+    }
+};
+
+/// A copy of the embedded shader with one edit applied, as a fixture body.
+///
+/// Appending a comment is enough to change the file and not the picture, which is
+/// what the arms below want: they are about the swap happening, not about what it
+/// draws. `renameResolve` is the exception and is the one that proves the *disk*
+/// bytes reached the compiler.
+fn editedShader(buf: []u8, note: []const u8) ![]const u8 {
+    return std.fmt.bufPrint(buf, "{s}\n// {s}\n", .{ shader.embedded, note }) catch
+        error.FixtureTooLarge;
+}
+
+/// The embedded shader with `resolve_fragment` renamed out from under the
+/// pipeline that asks for it.
+///
+/// **This is the arm a counter cannot replace.** A reload counter proves a
+/// compile happened; it cannot tell a compile of the new bytes from a recompile
+/// of the embedded copy. Only the edited file can produce `buildPipeline`'s
+/// "compiled but does not define" diagnostic, so this is what closes that gap.
+fn renameResolve(buf: []u8) ![]const u8 {
+    var len: usize = 0;
+    var rest: []const u8 = shader.embedded;
+
+    while (std.mem.indexOf(u8, rest, "resolve_fragment")) |at| {
+        const replacement = "resolve_fragment_renamed";
+        if (len + at + replacement.len > buf.len) return error.FixtureTooLarge;
+
+        @memcpy(buf[len..][0..at], rest[0..at]);
+        len += at;
+        @memcpy(buf[len..][0..replacement.len], replacement);
+        len += replacement.len;
+        rest = rest[at + "resolve_fragment".len ..];
+    }
+
+    if (len + rest.len > buf.len) return error.FixtureTooLarge;
+    @memcpy(buf[len..][0..rest.len], rest);
+    return buf[0 .. len + rest.len];
+}
+
+/// The invariant that can otherwise ruin a day: **a debug build opens its editor
+/// whatever is on disk.**
+///
+/// In the GPU half rather than the AppKit one, deliberately, and that split is
+/// ADR 0013's own: this needs a device and no window, so it runs in the half CI
+/// *requires* rather than the half that runs under `continue-on-error`. The live
+/// swap needs a running loop and stays next door.
+///
+/// Every arm asserts `probe` **succeeds**. A shader file that is missing, or
+/// malformed, or compiles without defining what the pipelines ask for, must all
+/// leave the plugin able to start; the fallback to the embedded copy is what
+/// makes that true and `fallbacks` is what proves it was the fallback rather than
+/// a coincidence.
+fn reloadFallbackArms() !void {
+    if (comptime !shader.live) {
+        // **Never silently.** `zig build smoke --release=fast` is legal and there
+        // is no reload path in it, so an arm that quietly passed would be exactly
+        // the instrument-that-did-not-run ADR 0013 keeps insisting on telling
+        // apart from an absence.
+        say("  skipping the shader-reload arms: this build has no reload path", .{});
+        return;
+    }
+
+    var fixture: Fixture = .{};
+    try fixture.create("gpu");
+    defer fixture.destroy();
+
+    var buf: [shader.max_bytes]u8 = undefined;
+
+    // A byte-identical copy somewhere else. Proves the plugin reads the file it
+    // was pointed at, before anything is concluded from a failure to.
+    try fixture.use();
+    const start = gpu.Renderer.shaderStats();
+    try probeSucceeds("an identical copy on disk");
+    if (!gpu.Renderer.shaderStats().path_resolved) return error.ShaderPathNotResolved;
+    if (gpu.Renderer.shaderStats().reloads == start.reloads) return error.ShaderNotReadFromDisk;
+    if (gpu.Renderer.shaderStats().fallbacks != start.fallbacks) return error.UnexpectedShaderFallback;
+
+    // A path that does not exist. The editor still opens.
+    const missing = gpu.Renderer.shaderStats();
+    if (setenv(shader.path_env, "/nonexistent/fosforo-smoke.metal", 1) != 0) {
+        return error.CannotSetShaderPath;
+    }
+    try probeSucceeds("a shader path that does not exist");
+    if (gpu.Renderer.shaderStats().fallbacks != missing.fallbacks + 1) return error.MissingShaderNotRefused;
+
+    // Something that is not MSL at all.
+    try fixture.use();
+    try fixture.write("this is not metal\n");
+    const malformed = gpu.Renderer.shaderStats();
+    try probeSucceeds("a shader that does not compile");
+    if (gpu.Renderer.shaderStats().rejected != malformed.rejected + 1) return error.MalformedShaderNotRefused;
+
+    // Compiles cleanly and defines the wrong things, which is the arm that proves
+    // the bytes on disk reached the compiler rather than the embedded copy.
+    try fixture.write(try renameResolve(&buf));
+    const renamed = gpu.Renderer.shaderStats();
+    try probeSucceeds("a shader missing the functions the pipelines ask for");
+    if (gpu.Renderer.shaderStats().rejected != renamed.rejected + 1) return error.RenamedShaderNotRefused;
+
+    // And back to something good, so a later arm in the same process starts from
+    // a state this one understands.
+    try fixture.write(try editedShader(&buf, "smoke: recovered"));
+    try probeSucceeds("a good shader again");
+
+    say("  the editor starts against a missing, malformed and mismatched shader", .{});
+}
+
+fn probeSucceeds(what: []const u8) !void {
+    var diags: gpu.Diagnostics = .{};
+    gpu.Renderer.probe(&diags) catch {
+        say("  probe refused to start against {s}: {s}", .{ what, diags.message() });
+        return error.ShaderFallbackFailed;
+    };
+}
+
+/// How long an arm below will wait for the watcher to notice an edit.
+///
+/// Generously above the 250 ms poll plus the ~40 ms a cache-missing compile
+/// costs, on `frame_timeout_us`' reasoning: the margin is for a loaded CI runner,
+/// not for a watcher that is working. Anything approaching this ceiling is the
+/// defect rather than the timeout.
+const reload_timeout_us: u64 = 6 * std.time.us_per_s;
+
+/// One editor, held open while the shader underneath it is edited.
+///
+/// **The arms need a long-lived editor and `oneCycle` cannot give them one.** A
+/// cycle there lasts about as long as a single poll interval, so a watcher
+/// started on its first frame is joined before it ever looks twice; measured, and
+/// it is why this is a phase of its own rather than four more lines in `oneCycle`.
+///
+/// What it asserts, in order: an edit is picked up, a *second* edit of the same
+/// length is picked up too, a broken shader is refused without stopping the loop,
+/// a shader that compiles but defines the wrong things is refused the same way,
+/// and the next good edit recovers with no restart.
+fn hotReloadPhase(factory: *const c.clap_plugin_factory_t, parent: *anyopaque) !void {
+    if (comptime !shader.live) {
+        say("  skipping the live shader swap: this build has no reload path", .{});
+        return;
+    }
+
+    const pool = objc.AutoreleasePool.init();
+    defer pool.deinit();
+
+    var fixture: Fixture = .{};
+    try fixture.create("appkit");
+    defer fixture.destroy();
+    try fixture.use();
+
+    var buf: [shader.max_bytes]u8 = undefined;
+
+    const p = factory.create_plugin.?(factory, &smoke_host, plugin.id);
+    if (p == null) return error.CreatePluginFailed;
+    if (!p.*.init.?(p)) {
+        p.*.destroy.?(p);
+        return error.PluginInitFailed;
+    }
+    defer p.*.destroy.?(p);
+
+    if (!p.*.activate.?(p, smoke_sample_rate, 1, smoke_block_frames)) return error.ActivateFailed;
+    var active = true;
+    defer if (active) p.*.deactivate.?(p);
+
+    const raw = p.*.get_extension.?(p, &c.CLAP_EXT_GUI) orelse return error.NoGuiExtension;
+    const editor: *const c.clap_plugin_gui_t = @ptrCast(@alignCast(raw));
+
+    if (!editor.create.?(p, &c.CLAP_WINDOW_API_COCOA, false)) return error.GuiCreateFailed;
+
+    var window = std.mem.zeroes(c.clap_window_t);
+    window.api = &c.CLAP_WINDOW_API_COCOA;
+    clap.setCocoaView(&window, parent);
+    if (!editor.set_parent.?(p, &window)) return error.SetParentFailed;
+    if (!editor.show.?(p)) return error.ShowFailed;
+
+    const instance = plugin.editorOf(p);
+
+    // The watcher starts on the first frame, so nothing below can be edited into
+    // existence until one has been drawn.
+    try waitForFrames(instance, 1);
+
+    // An ordinary edit.
+    try fixture.write(try editedShader(&buf, "smoke reload one"));
+    try waitForReload(.{ .reloads = gpu.Renderer.shaderStats().reloads + 1 }, "an edited shader");
+
+    // **A second edit of exactly the same length**, which is the positive control
+    // for the change detector rather than a repeat of the arm above. A detector
+    // comparing size alone passes the first and fails here, and one that fired
+    // once and stopped fails here too.
+    const before_second = gpu.Renderer.shaderStats();
+    try fixture.write(try editedShader(&buf, "smoke reload two"));
+    try waitForReload(.{ .reloads = before_second.reloads + 1 }, "a second edit of the same length");
+
+    // Broken. The loop has to survive it, keep drawing, and keep the shader it
+    // already had, which is the whole reason the swap is fail-soft.
+    const before_broken = gpu.Renderer.shaderStats();
+    const frames_before_broken = instance.framesPresented();
+    try fixture.write("this is not metal\n");
+    try waitForReload(.{ .rejected = before_broken.rejected + 1 }, "a shader that does not compile");
+
+    if (gpu.Renderer.shaderStats().reloads != before_broken.reloads) return error.BrokenShaderWasSwappedIn;
+    if (instance.framesPresented() <= frames_before_broken) return error.ShaderReloadStoppedTheLoop;
+
+    // Compiles and defines the wrong things, refused the same way. This is the
+    // arm that proves the bytes on disk reached the compiler.
+    const before_renamed = gpu.Renderer.shaderStats();
+    try fixture.write(try renameResolve(&buf));
+    try waitForReload(.{ .rejected = before_renamed.rejected + 1 }, "a shader missing what the pipelines ask for");
+
+    if (gpu.Renderer.shaderStats().reloads != before_renamed.reloads) return error.BrokenShaderWasSwappedIn;
+
+    // And recovery, with no restart, which is the property that makes any of this
+    // usable: a typo must cost a save rather than a relaunch.
+    const before_recovery = gpu.Renderer.shaderStats();
+    try fixture.write(try editedShader(&buf, "smoke reload after a broken one"));
+    try waitForReload(.{ .reloads = before_recovery.reloads + 1 }, "a good shader after a broken one");
+
+    try waitForFrames(instance, instance.framesPresented() + 2);
+    if (instance.windowsUploaded() == 0) return error.NoWindowUploaded;
+
+    if (!editor.hide.?(p)) return error.HideFailed;
+    editor.destroy.?(p);
+
+    p.*.deactivate.?(p);
+    active = false;
+
+    say("  the shader swapped live, refused two bad ones, and recovered", .{});
+}
+
+/// Block until the backend reports the counter an arm is waiting on.
+///
+/// Polls, on `waitForFrames`' reasoning: the counters are written by a thread
+/// this one does not coordinate with, and a second synchronisation primitive is
+/// one more thing that can be the reason a run hangs.
+fn waitForReload(want: struct { reloads: ?u64 = null, rejected: ?u64 = null }, what: []const u8) !void {
+    var waited_us: u64 = 0;
+    while (true) {
+        const now = gpu.Renderer.shaderStats();
+        if (want.reloads) |target| if (now.reloads >= target) return;
+        if (want.rejected) |target| if (now.rejected >= target) return;
+
+        if (waited_us >= reload_timeout_us) {
+            say("  waited {d}ms for the watcher to pick up {s}", .{
+                reload_timeout_us / std.time.us_per_ms,
+                what,
+            });
+            say("  reloads={d} rejected={d} fallbacks={d} path_resolved={}", .{
+                now.reloads,
+                now.rejected,
+                now.fallbacks,
+                now.path_resolved,
+            });
+            return error.ShaderNeverReloaded;
+        }
+
+        try sleepFor(.fromMicroseconds(frame_poll_us));
+        waited_us += frame_poll_us;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -874,6 +1221,13 @@ fn appkitHalf(cycles: u32) !void {
     const raw = root.entry.get_factory.?(&c.CLAP_PLUGIN_FACTORY_ID) orelse return error.NoFactory;
     const factory: *const c.clap_plugin_factory_t = @ptrCast(@alignCast(raw));
     say("  factory resolved through clap_entry", .{});
+
+    // Before the cycle loop and exactly once, not inside it. Every arm below
+    // waits out at least one 250 ms poll and pays a ~40 ms compile, so folding
+    // this into `oneCycle` would cost `smoke-leaks -Dleak-cycles=400` twenty
+    // minutes and 1,200 out-of-process compiles for no extra coverage. Running it
+    // here also puts it inside the zero-live-resource assertions below.
+    try hotReloadPhase(factory, parent);
 
     var i: u32 = 0;
     while (i < cycles) : (i += 1) {
