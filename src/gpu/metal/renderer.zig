@@ -271,10 +271,19 @@ const TraceUniforms = extern struct {
 ///
 /// The reason it is not two calls to the old `buildPipeline` is the library
 /// rather than the states. `newLibraryWithSource:` hands the source to
-/// `MTLCompilerService.xpc` out of process, which is the most expensive thing
-/// `init` does and sits on `set_parent`, where a host is waiting. Compiling the
-/// same embedded string twice to pull four functions out of it would double that
-/// for nothing.
+/// `MTLCompilerService.xpc` out of process, and compiling the same embedded
+/// string twice to pull four functions out of it would double that for nothing.
+///
+/// **How much that is depends entirely on Metal's cache, which was measured
+/// rather than assumed.** A source the machine has compiled before comes back in
+/// 0.04 ms, because the cache is keyed on the source and survives across
+/// processes; a source it has not takes 34 to 43 ms, and 57 to 68 ms if it is
+/// also the first compile in this process. The three pipeline states are 0.2 to
+/// 0.8 ms either way, so the library is the whole of the cost. This docstring
+/// used to call the compile "the most expensive thing `init` does", which is
+/// true on a cold cache and wrong in the steady state, where the accumulation
+/// textures dominate and `set_parent` waits 0.14 ms on this. The figure that
+/// still matters is the miss, because that is what every hot reload pays.
 const Pipelines = struct {
     decay: objc.Object,
     trace: objc.Object,
