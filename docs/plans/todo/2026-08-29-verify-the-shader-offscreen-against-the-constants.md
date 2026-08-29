@@ -196,7 +196,33 @@ MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert zig-out/bin/fosforo-smoke tr
 typos && ruff format --check . && ruff check .
 ```
 
-`smoke-appkit` and `smoke-leaks` matter more than usual here: `frame`, `resize` and `deinit` all changed, and those two are the only checks that run the layer-backed path. Finish in a host, because `frame` was edited: `zig build install-clap`, confirm the hashes match, and play a sine in REAPER.
+`smoke-appkit` and `smoke-leaks` matter more than usual here: `frame`, `resize` and `deinit` all changed, and those two are the only checks in the harness that run the layer-backed path.
+
+### In a host, which is what the offscreen half does not replace
+
+`frame` was edited, so a real drawable had to be measured rather than reasoned about. #22 landed while this branch was in flight and made that cheap: `clap-host` takes an explicit path, so no install, no folder juggling and no contention.
+
+```bash
+~/Development/clap-host/builds/ninja-system/host/Debug/clap-host -p "$PWD/zig-out/Fosforo.clap"
+```
+
+Its log settles provenance without a hash comparison, which is #22's whole point: `fosforo-build: version=0.0.0 branch=test/verify-shaders commit=5ca27c6`. It then rendered at **60.0 Hz into a 960x540 drawable at 2.00x, 3912 windows uploaded and 0 torn**, so the layer-backed path is intact through the `Surface` union.
+
+**Then measured, not looked at.** A full-screen capture was **refused** by `scripts/measure-trace`, at 61.9% of pixels off the colour ray: this display is scaled, so a screen-sized capture resamples the drawable. That is the guard #64 built doing exactly its job, and it is a positive control for everything below. Capturing the window by its `CGWindowID` instead gives a lossless 1920x1080 drawable at **0.02% off the ray**, three orders of magnitude better, which is the margin that guard was calibrated to.
+
+| Reading            | Measured                          | Expected                                       |
+| ------------------ | --------------------------------- | ---------------------------------------------- |
+| Drawable           | 1920 x 1080                       | 960x540 at 2x, as the render meter reported    |
+| Columns lit        | 1920 of 1920                      | silence draws full width                       |
+| Row                | 539, top and bottom               | one row, one pixel above an even centre        |
+| Implied sample     | +0.0021                           | the one-pixel floor, about -53.7 dBFS          |
+| Off the colour ray | 0.02%                             | under the 0.5% the guard permits               |
+
+**Row 539 is the number that matters**, because it is the one AGENTS.md already records from REAPER at this geometry, from before any of this work: silence lands one pixel above centre because an even height puts the centre on an exact pixel boundary. The shipping path after the `Surface` union reproduces it exactly, measured by an instrument that shares no code with the new harness.
+
+The two instruments also agree across geometries. Offscreen at 960x540 the harness reads row 269 implying +0.00206; in a host at 1920x1080 `measure-trace` reads row 539 implying +0.0021. Both are one pixel above centre, from different code, different pixel formats and different colour spaces.
+
+**What was not done, and is not blocked.** Playing a sine through REAPER would additionally exercise the ring, the audio thread tap and the window read, none of which this branch touches, and it needs the installed bundle moved aside first because `CLAP_PATH` is additive. `clap-host` feeds no signal, so everything above is measured against silence.
 
 Two negative controls, since an absence has to be told apart from an instrument that did not run. Confirm `smoke-trace` **passes** on the unmodified shader before planting anything, and confirm each planted defect is caught by the assertion named above rather than by a different one.
 
