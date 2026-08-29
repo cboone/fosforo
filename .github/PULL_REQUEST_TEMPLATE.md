@@ -26,6 +26,7 @@ Fixes #
 - [ ] Formatting passes (`zig fmt --check build.zig src/`)
 - [ ] The spell check passes (`typos`)
 - [ ] If I touched a shell script, `shfmt -d` and `shellcheck` are both silent (see CONTRIBUTING for the `git ls-files` pipeline)
+- [ ] If I touched `scripts/measure-trace`, `ruff format --check .` and `ruff check .` are both clean
 - [ ] I have updated CHANGELOG.md if this is a user-facing change
 - [ ] I have updated the documentation if needed
 - [ ] If this changes a settled architecture decision, I have added a superseding ADR in `docs/adr/`

@@ -4,7 +4,9 @@ applyTo: "scripts/**,cmake/**,**/*.sh,**/*.bash"
 
 # Shell script review instructions
 
-Scripts in `scripts/` and `cmake/` have no file extension. They are Bash, identified by shebang, and `.editorconfig` records their style as exactly `shfmt -i 2 -ci -sr`.
+Scripts in `scripts/` and `cmake/` have no file extension. All but one are Bash, identified by shebang, and `.editorconfig` records their style as exactly `shfmt -i 2 -ci -sr`.
+
+**The exception is `scripts/measure-trace`, and this file's `scripts/**` glob captures it regardless.** It is Python, run through `#!/usr/bin/env -S uv run --quiet --with pillow --with numpy python`, and it is the only non-Bash file under either directory. `ruff` lints it, `ruff.toml` rather than `.editorconfig` carries its style, and it is invisible to every selector below, because `shfmt -f` finds shell files by shebang and does not recognize that one. **Nothing in the list below applies to it.**
 
 - **`errexit` is suppressed inside functions called from a condition.** Assertion helpers such as `assert_adhoc` and `assert_distributable` are invoked only as `if ! helper ...; then`, and Bash disables `set -e` for the whole dynamic extent of a call whose status is being tested. A failing command substitution inside one of those functions does **not** exit the script. Do not report it as an early-exit bug. Flag it only for a function that is also called bare, and say which call site.
 - **Assertion helpers return distinct non-zero codes on purpose.** `1` means the thing being asserted is wrong, `2` means the input carries no signature at all. `main` maps them to the `sysexits`-style codes in each script's header comment. Do not suggest collapsing them into a single truthy return.

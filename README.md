@@ -18,8 +18,8 @@ Six phases. [The build plan](./docs/plans/todo/2026-07-25-repo-foundation-and-ph
 |-------|-----------------------------------------------------------------------------|-------------|
 | 0     | Repository foundation, build skeleton, ADRs                                 | Complete    |
 | 1     | Walking skeleton: loads in a host and renders a cleared drawable            | Complete    |
-| 2     | Signal path: history buffer, audio tap, trailing-window read, a crude trace | In progress |
-| 3     | The phosphor renderer: accumulation, decay, beam geometry, tonemap          | Planned     |
+| 2     | Signal path: history buffer, audio tap, trailing-window read, a crude trace | Complete    |
+| 3     | The phosphor renderer: accumulation, decay, beam geometry, tonemap          | In progress |
 | 4     | Triggering, including host-transport-locked and pitch-locked sweeps         | Planned     |
 | 5     | Measurement and interaction: cursors, musically literate readouts           | Planned     |
 | 6     | Ship v0.1.0                                                                 | Planned     |
@@ -62,7 +62,9 @@ zig build --release=fast install-plugins
 
 Insert it on a track as you would any analyzer: it passes audio through unchanged, so it can sit anywhere in a chain without altering the signal. Open its editor and it renders, resizably, at your display's refresh rate.
 
-There is nothing to read in it yet, for the reason in the status above. Until [#38](https://github.com/cboone/fosforo/issues/38) lands, a working editor and a broken one look alike — the background is `RGB(5, 5, 8)`, which is a phosphor screen's unlit state and also, by eye, black. A debug build emits a once-a-second `rendering at N Hz` line, which is the check that distinguishes them. It reaches the host through `clap.log`, and REAPER implements that extension and then discards what it receives, so the copy you can actually read is the one debug builds mirror to `stderr`: launch REAPER from a terminal. A release build compiles out both that mirror and the meter behind it, so nothing reports there.
+There is a trace to look at now, and looking at it is still not the check. A trace stuck flat at zero looks correct against silence, and a window that froze several seconds ago looks identical to a live one against steady material, so "I can see a waveform" separates neither case from a working editor. Two things do: stop the transport and confirm the trace goes flat within a frame or two, and count periods against the 20 ms the window holds rather than judging the shape. On an empty display the background is `RGB(5, 5, 8)`, a phosphor screen's unlit state and, by eye, black.
+
+A debug build also emits a once-a-second `rendering at N Hz` line, which is the only positive statement that frames are being presented. It reaches the host through `clap.log`, and REAPER implements that extension and then discards what it receives, so the copy you can actually read is the one debug builds mirror to `stderr`: launch REAPER from a terminal. A release build compiles out both that mirror and the meter behind it, so nothing reports there.
 
 ## License
 
