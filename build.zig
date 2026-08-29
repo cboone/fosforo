@@ -383,7 +383,7 @@ fn addSmokeSteps(core: Core) void {
     // what lets CI require both; `appkit` needs a window server and runs there
     // under `continue-on-error` (ADR 0013). They are registered in that order so
     // running `smoke` locally reports the cheap failures first.
-    const smoke = b.step("smoke", "Run every half of the GUI smoke harness");
+    const smoke = b.step("smoke", "Run every half of the smoke harness");
     smoke.dependOn(addSmokeHalf(b, exe, install, "gpu"));
     smoke.dependOn(addSmokeHalf(b, exe, install, "trace"));
     smoke.dependOn(addSmokeHalf(b, exe, install, "appkit"));
