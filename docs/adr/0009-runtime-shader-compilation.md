@@ -48,6 +48,8 @@ Metal keys its cache on the source and it survives across processes, so `set_par
 
 **The number that matters is the miss**, because a reload has changed the source by definition. 40 ms is five vsyncs at 120 Hz, and `Editor.tick` holds its `Gate` across its whole body, so compiling inside a tick would busy-spin the host's main thread for up to 40 ms whenever an editor closed during one. That is what puts the compile on a thread of its own rather than in the render loop, and it is a measurement rather than a preference.
 
+**That placement is enforced rather than merely intended.** A debug-only `threadlocal` marks any thread that has entered the render path, and `buildPipelinesFromSource` asserts it is unset, which is `platform.assertNotMainThread` from the side nothing previously guarded. It exists because the harness cannot see the defect: 40 ms in a tick is invisible to a frame counter with a two-second timeout, so a compile that drifted back into the render loop would report a clean run. [#59](https://github.com/cboone/fosforo/issues/59) defers the same question about its own upsampling and inherits the guard.
+
 ### Two gates, and neither substitutes for the other
 
 `build.zig` emits the absolute path only when `optimize == .Debug`; `src/gpu/metal/shader.zig` reads it only when `builtin.mode == .Debug and !builtin.is_test`.

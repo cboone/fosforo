@@ -218,12 +218,14 @@ Every arm was verified by planting the defect it names. A size-only detector and
 
 A swap that leaked its outgoing pipeline states is caught by `smoke-leaks` with **no new instrument**, because this document's own #38 amendment measured that an `MTLRenderPipelineState` *is* visible to `leaks` where a buffer and a texture are not. This is the first time the rule set after #38 has been discharged by a measurement already taken rather than by a new one, and it is why no counter for pipeline states was added.
 
-### Two defects the harness cannot see, again
+### Two defects the harness cannot see, and what was done about each
 
-Consistent with the section under #55, and worth stating rather than glossing:
+Consistent with the section under #55, and worth stating rather than glossing. Both were found by asking what a passing run would still permit, and they were answered differently.
 
-- **A compile moved onto the render thread passes.** An extra 40 ms in a tick is invisible to a frame counter with a two-second timeout. What rules it out is a measurement and a `Gate` argument, not an assertion.
-- **A reload with a moved `[[buffer(N)]]` passes.** Nothing validates a hot-reloaded shader's bindings; the comptime tests pin the embedded copy. ADR 0009's amendment carries this in full.
+- **A compile moved onto the render thread passes.** An extra 40 ms in a tick is invisible to a frame counter with a two-second timeout, so the harness reports a clean run. **This one is now closed outside the harness**, which is the point worth carrying: a debug-only `threadlocal` marks any thread that has entered the render path, and `buildPipelinesFromSource` asserts it is unset. That is `assertNotMainThread` from the other side, and it is the shape to reach for when the harness turns out to be the wrong instrument — the same conclusion the #55 section reached about the validation layer. Verified by planting a compile in `frame`, which panics naming the assertion.
+- **A reload with a moved `[[buffer(N)]]` passes, and still does.** Nothing validates a hot-reloaded shader's bindings; the comptime tests pin the embedded copy, correctly. This one was **not** closed, because the obvious fix is a runtime text scan that needs a warn-versus-refuse decision and is blind to the sharper failure anyway: `TraceUniforms` layout drift, where MSL computes its own offsets and no amount of reading the text would see it. That belongs to [#51](https://github.com/cboone/fosforo/issues/51). ADR 0009's amendment carries the full statement of what is uncovered.
+
+The asymmetry is the lesson rather than an inconsistency. One of the two had a cheap structural guard available that makes the defect impossible; the other has only instruments, and the instrument that would work is a readback this document has already refused twice on its own terms.
 
 ### The leak baseline moved, and it moved down
 

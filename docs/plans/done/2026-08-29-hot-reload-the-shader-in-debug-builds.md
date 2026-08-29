@@ -362,4 +362,14 @@ Landed as planned. Everything above held except where the measurements below mov
 
 The whole drawable changed and changed back, with no restart, in a real host, and the log carries one `recompiled` line per edit. **Both edits were byte-identical in length**, since the two literals are the same width, so this is also an independent confirmation in a host of what the same-length smoke arm asserts: the change detector does not rely on size.
 
+### One of the two uncovered rows was closed after the fact
+
+The planted-defect table above ends with two rows marked **Passes**, and reviewing them rather than filing them was worth doing, because they turned out to want different answers.
+
+**The compile drifting back onto the render thread is now impossible rather than merely undetected.** A debug-only `threadlocal` marks any thread that has entered the render path and `buildPipelinesFromSource` asserts it is unset, which is `platform.assertNotMainThread` from the side nothing guarded. A threadlocal rather than an atomic because several open editors mean several display-link threads. Planted and verified: a compile inlined into `frame` panics naming the assertion. The general shape is worth carrying — when the harness is the wrong instrument, a structural guard that makes the defect impossible beats a better instrument, which is the same conclusion ADR 0013 reached about the validation layer under #55.
+
+**The binding-index row was deliberately left open** and filed instead. A runtime text scan would need a warn-versus-refuse decision, and it is blind to the sharper failure anyway: `TraceUniforms` layout drift, where MSL computes its own offsets and reading the text cannot see it. That is [#51](https://github.com/cboone/fosforo/issues/51)'s territory, and the exposure becomes real at [#57](https://github.com/cboone/fosforo/issues/57), which is the first issue to restructure the shader's signatures.
+
+### The host result is worth noting beyond itself
+
 This is worth noting beyond its own result. ADR 0013 records that nothing automated here has ever answered what the pixels became, and #55 proved the cost of that the expensive way. A window-id capture plus a pixel count against a deliberately unmissable edit is not a general answer to that, and it is not a golden-image comparison, which [#51](https://github.com/cboone/fosforo/issues/51) still owns. It is a usable one for *this* kind of change, where the question is whether a swap reached the screen at all rather than whether the picture is right.
