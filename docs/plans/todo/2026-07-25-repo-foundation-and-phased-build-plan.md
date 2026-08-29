@@ -233,9 +233,12 @@ this project. [#53](https://github.com/cboone/fosforo/issues/53) is a feature #5
 made worth having, since a bypassed plugin keeps drawing the last window it read
 with nothing to say the picture is stale. And
 [#69](https://github.com/cboone/fosforo/issues/69) and
-[#72](https://github.com/cboone/fosforo/issues/72) are two questions about the
-`smoke` job that #63 split out rather than answered. The working order below
-places those last two; the rest slot in wherever their subject does.
+[#72](https://github.com/cboone/fosforo/issues/72) were two questions about the
+`smoke` job that #63 split out rather than answered. **#72 is answered**: the
+AppKit half is required, on 65 runs in which it never failed, and the leak half
+stays advisory because it is the one step there whose verdict depends on the
+runner's own AppKit chatter rather than on this project. The working order below
+places #69; the rest slot in wherever their subject does.
 
 ## Phase 2: signal path (complete)
 
@@ -350,7 +353,7 @@ Merge order is a separate question from run order, and only two things constrain
 | **Merge conflict**           | #61 against #55, both rewriting `Pipelines` and `buildPipelines` | Nothing, strictly. Whichever lands second rebases over a rewrite of one struct, so ordering them is a convenience |
 | **Machine and install path** | The verification half of #55, #63, #22, #34 and #64              | Do not *run* two issues at the same moment. No effect on what may be branched, reviewed or merged                 |
 
-The resulting order is **#55**, then **#64**, then **#63** — all three done — then **#22**, then **#61**, then **#56**, **#57** and **#60** in whichever order suits, then **#58** and **#59** behind #57. [#69](https://github.com/cboone/fosforo/issues/69) was split out of #63 and slots in wherever suits, since it touches the same `smoke` job and nothing else; it is the one issue whose cost has to be re-measured rather than assumed, because #63 took that job's step-budget margin from 2.7x to 1.5x. [#72](https://github.com/cboone/fosforo/issues/72) came out of the same split and sits in the same place, and it is a decision rather than a cost: it is what would let `liveAccumulationTextures` fail a build, which today it cannot, since the step carrying it runs under `continue-on-error`. [#34](https://github.com/cboone/fosforo/issues/34) slots in wherever a second display becomes available, since that rather than anything here is what gates it. [#61](https://github.com/cboone/fosforo/issues/61) is deliberately pulled forward from its filed position at step 9: it is independent of every other step, and its value is proportional to how much shader iteration comes after it, which once #55 has landed is five issues' worth.
+The resulting order is **#55**, then **#64**, then **#63** — all three done — then **#22**, then **#61**, then **#56**, **#57** and **#60** in whichever order suits, then **#58** and **#59** behind #57. [#69](https://github.com/cboone/fosforo/issues/69) was split out of #63 and slots in wherever suits, since it touches the same `smoke` job and nothing else; it is the one issue whose cost has to be re-measured rather than assumed, because #63 took that job's step-budget margin from 2.7x to 1.5x. [#72](https://github.com/cboone/fosforo/issues/72) came out of the same split and is **done**. It was a decision rather than a cost, and it went the way the rule #19's plan wrote down before the result was known, so `liveAccumulationTextures` can now fail a build; `smoke-leaks` keeps `continue-on-error`, because it is the one step in that job that judges the runner rather than this project. [#34](https://github.com/cboone/fosforo/issues/34) slots in wherever a second display becomes available, since that rather than anything here is what gates it. [#61](https://github.com/cboone/fosforo/issues/61) is deliberately pulled forward from its filed position at step 9: it is independent of every other step, and its value is proportional to how much shader iteration comes after it, which once #55 has landed is five issues' worth.
 
 The subtle entry was [#63](https://github.com/cboone/fosforo/issues/63)'s: its RSS threshold depended on #55's baseline **number** rather than on its code, so it wanted #55 merged before the figure was fixed, while its `smoke-leaks` half depended on nothing. It is now **done**, and the threshold was never set, for the reason two bullets above.
 
@@ -412,8 +415,8 @@ Recorded so these read as deliberate omissions rather than oversights:
 | Shaders     | `zig build validate-shaders` pipes each shader through `metal -fsyntax-only`. Deliberately not in `zig build test` (ADR 0009)                                    |
 | Plugin      | `clap-validator validate` passes for **both** `.clap` bundles, enforced in CI                                                                                    |
 | Audio Unit  | **No automated check exists.** `auval` cannot enumerate this component at all, so loading it in Logic is the only test                                           |
-| GUI         | `zig build smoke-gpu` is required in CI; `smoke-appkit` runs under `continue-on-error` because a hosted runner may grant no window server (ADR 0013)             |
-| Leaks       | `zig build smoke-leaks` in CI at 40 cycles and 400 by hand, judging leaked classes and a byte bound, plus the two counters, which count what `leaks` cannot see  |
+| GUI         | `zig build smoke-gpu` and `smoke-appkit` are both required in CI, the second since #72 on 65 runs in which it never failed (ADR 0013)                            |
+| Leaks       | `zig build smoke-leaks` in CI at 40 cycles and 400 by hand, judging leaked classes and a byte bound, plus the counters. Advisory: its classes judge the runner   |
 | Concurrency | `zig build ring-race` runs the ring on two threads under Thread Sanitizer, on Linux; a source canary in `src/dsp/ring.zig` fails `zig build test` too (ADR 0016) |
 | Signatures  | `scripts/assert-adhoc-signature` on all three bundles in CI; `scripts/assert-distributable-signature` by hand, since no runner holds a certificate               |
 | Shell       | `shfmt -d` and `shellcheck` over every file `shfmt -f` selects, against the profile in `.editorconfig`                                                           |
