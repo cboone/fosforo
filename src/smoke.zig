@@ -11,12 +11,23 @@
 //! across editor cycles, or a teardown that releases the view before the layer
 //! attached to it. This is the harness that closes it. See ADR 0013.
 //!
-//! Two halves, split because their environmental requirements differ:
+//! Three halves, split because their environmental requirements differ:
 //!
 //!     gpu     a Metal device, no window    runtime shader compilation,
 //!                                          pipeline assembly, wrong selectors
+//!     trace   a Metal device, no window    what the shader actually drew:
+//!                                          the mapping, the rail, the resolve
 //!     appkit  a window server and a device view embedding, teardown order,
 //!                                          retain and release across cycles
+//!
+//! The first two are required in CI, because a hosted runner grants a device;
+//! the third runs there under `continue-on-error`, because it may grant no
+//! window server (ADR 0013).
+//!
+//! "Half" is now a misnomer three times over and is kept anyway, because
+//! `zig build smoke-gpu` and `smoke-appkit` are the names in every document and
+//! every CI job here, and renaming a build step to fix a noun would cost more
+//! than the noun is worth.
 //!
 //! **An executable rather than a test artifact**, deliberately. A test binary
 //! gets `std.testing`'s assertions but must stay silent: `std.debug.print` from
@@ -42,6 +53,7 @@ const clap = @import("clap/c.zig");
 const gpu = @import("gpu/iface.zig");
 const gui = @import("clap/gui.zig");
 const io = @import("platform/io.zig");
+const measure = @import("gpu/measure.zig");
 const platform = @import("platform/objc.zig");
 const plugin = @import("clap/plugin.zig");
 const root = @import("main.zig");
@@ -128,13 +140,16 @@ pub fn main(init: std.process.Init.Minimal) u8 {
 
     const half = args.next() orelse return usage();
 
-    // Before either half runs, so a CI log or a scrollback says which build produced
+    // Before any half runs, so a CI log or a scrollback says which build produced
     // the result below it. This harness is the one check here that can go red for
     // reasons unrelated to the code (ADR 0013), which makes "which build was that?"
-    // a question worth answering without being asked.
+    // a question worth answering without being asked. It sits above the dispatch
+    // rather than inside each half, which is why the third one inherited it.
     say("smoke: {s}", .{build_info.marker});
 
     if (std.mem.eql(u8, half, "gpu")) return report("gpu", gpuHalf());
+
+    if (std.mem.eql(u8, half, "trace")) return report("trace", traceHalf());
 
     if (std.mem.eql(u8, half, "appkit")) {
         const cycles = if (args.next()) |text| std.fmt.parseInt(u32, text, 10) catch {
@@ -156,9 +171,11 @@ pub fn main(init: std.process.Init.Minimal) u8 {
 fn usage() u8 {
     say(
         \\usage: fosforo-smoke gpu
+        \\       fosforo-smoke trace
         \\       fosforo-smoke appkit [cycles]
         \\
         \\  gpu     acquire a device, compile the embedded shader, build the pipeline
+        \\  trace   render into a texture and measure what the shader drew
         \\  appkit  open a window and cycle the editor through it
     , .{});
     return 2;
@@ -191,8 +208,10 @@ fn say(comptime fmt: []const u8, args: anytype) void {
 // The GPU half
 // ---------------------------------------------------------------------------
 
-/// Needs a device and nothing else, which is what makes it the half that can be
-/// required in CI. Runtime shader compilation is precisely what
+/// Needs a device and nothing else, which is what made it the half that could be
+/// required in CI first; #72 required the other one too, once 65 runs had
+/// settled that a hosted runner grants a window server. Runtime shader
+/// compilation is precisely what
 /// `zig build validate-shaders` cannot prove, since a file can type-check under
 /// `metal -fsyntax-only` and still fail `newLibraryWithSource:`.
 fn gpuHalf() !void {
@@ -525,6 +544,573 @@ fn waitForReload(want: struct { reloads: ?u64 = null, rejected: ?u64 = null }, w
 }
 
 // ---------------------------------------------------------------------------
+// The trace half
+// ---------------------------------------------------------------------------
+
+/// The geometry every case renders at, in whole backing pixels.
+///
+/// 960x540 because that is what #38 measured, so every number this half prints
+/// is directly comparable to the table in that issue and to the rows quoted in
+/// `AGENTS.md`. It is also a default editor on a 2x display, which is the
+/// geometry a reader is most likely to be looking at.
+const trace_width: u32 = 960;
+const trace_height: u32 = 540;
+
+/// Energy above which a pixel counts as lit.
+///
+/// One deposit is the beam's green, which is 1.0, and the accumulation is linear
+/// and unclipped, so half of one deposit is an unambiguous floor. This is not
+/// `measure-trace`'s 64-of-255: that tool reads an 8-bit picture through a
+/// display's colour space, and this reads the float the shader wrote.
+const trace_threshold: f32 = 0.5;
+
+/// How many times a frame will be retried when every slot is still in flight.
+///
+/// Offscreen there is no display link pacing the loop, so a tight run of frames
+/// hits the three-deep semaphore on the fourth and `no_frame_slot` is the
+/// ordinary case rather than an overload signal: the slot comes back from a
+/// completion handler, and the handler runs when the GPU is done. Everything else
+/// `frame` can report is a failure here, because none of the machine conditions
+/// behind them should arise on a renderer with no compositor and no window.
+///
+/// **The bound is attempts rather than time, and each attempt yields**, so this
+/// is a bound on scheduler turns rather than on a duration. A frame at this
+/// geometry completes in well under a millisecond, and a hundred thousand yields
+/// is many seconds of slack on a loaded runner. That is the same reasoning
+/// `frame_timeout_us` carries: the margin is for a busy machine, and anything
+/// approaching this ceiling is the defect rather than the ceiling.
+const trace_frame_attempts = 100_000;
+
+/// Renders a window offscreen and holds what came back.
+///
+/// One instance per case, deliberately. The accumulation persists by design, so a
+/// second case run through the same renderer would measure its own trace over the
+/// previous one's fade; a fresh renderer starts from the cleared pair
+/// `buildAccumulation` guarantees. The cost is a shader compile per case, which
+/// is the most expensive thing `init` does, and it buys a measurement with
+/// nothing carried into it.
+const Probe = struct {
+    renderer: gpu.Renderer,
+    energy: []f32,
+    picture: []u8,
+
+    fn init(energy: []f32, picture: []u8) !Probe {
+        var diags: gpu.Diagnostics = .{};
+        const renderer = gpu.Renderer.initOffscreen(
+            .{ .width = trace_width, .height = trace_height },
+            &diags,
+        ) catch |err| {
+            say("  {s}", .{diags.message()});
+            return err;
+        };
+
+        return .{ .renderer = renderer, .energy = energy, .picture = picture };
+    }
+
+    fn deinit(self: *Probe) void {
+        self.renderer.deinit();
+    }
+
+    /// Upload a window, drive `frames` frames, and read both surfaces back.
+    ///
+    /// The frames run on a spawned thread because `upload` and `frame` assert
+    /// they are not on the main one, and that assertion is not an obstacle to
+    /// work around: it is ADR 0010's rule that the render path is unreachable
+    /// from the thread that owns the view lifecycle. Constructing here and
+    /// rendering there is the arrangement a host produces, so the harness adopts
+    /// it rather than relaxing anything.
+    ///
+    /// `deposit` is how many of those frames draw the trace. The rest upload an
+    /// empty window, which sets `window_len` to zero and makes `traceVertices`
+    /// return null, so the trace draw is skipped and the decay runs alone. That
+    /// is the shipping behaviour for an editor open on a plugin the host has not
+    /// activated, reused rather than simulated.
+    fn run(self: *Probe, window: []const f32, frames: u32, deposit: u32) !void {
+        var worker: Worker = .{
+            .renderer = &self.renderer,
+            .window = window,
+            .frames = frames,
+            .deposit = deposit,
+        };
+
+        const thread = try std.Thread.spawn(.{}, Worker.entry, .{&worker});
+        thread.join();
+        try worker.result;
+
+        try self.renderer.readback(.{ .energy = self.energy, .picture = self.picture });
+    }
+
+    fn image(self: *const Probe) measure.Image {
+        return .{ .width = trace_width, .height = trace_height, .pixels = self.energy };
+    }
+
+    fn pixel(self: *const Probe, x: usize, y: usize) []const u8 {
+        const at = (y * trace_width + x) * 4;
+        return self.picture[at .. at + 4];
+    }
+};
+
+const Worker = struct {
+    renderer: *gpu.Renderer,
+    window: []const f32,
+    frames: u32,
+    deposit: u32,
+    result: anyerror!void = {},
+
+    fn entry(self: *Worker) void {
+        self.result = self.drive();
+    }
+
+    fn drive(self: *Worker) !void {
+        self.renderer.upload(self.window);
+
+        var i: u32 = 0;
+        while (i < self.frames) : (i += 1) {
+            if (i == self.deposit) self.renderer.upload(&[_]f32{});
+            try driveFrame(self.renderer);
+        }
+    }
+};
+
+fn driveFrame(renderer: *gpu.Renderer) !void {
+    var attempt: usize = 0;
+    while (attempt < trace_frame_attempts) : (attempt += 1) {
+        switch (renderer.frame()) {
+            .presented => return,
+            // The one outcome worth waiting out. Yielding rather than sleeping
+            // because reaching for `std.Io` from a thread its single-threaded
+            // instance did not spawn is a bigger claim than this needs (ADR
+            // 0015), and `std.Thread.sleep` is gone in Zig 0.16. Yielding rather
+            // than spinning because a bare `spinLoopHint` loop measured out at
+            // roughly a millisecond over a hundred thousand turns, which is the
+            // same order as the frame it is waiting for: it failed on the fourth
+            // frame of every case, which reads exactly like a completion handler
+            // that never fires and was not one.
+            .no_frame_slot => std.Thread.yield() catch {},
+            else => |outcome| {
+                say("  frame reported {s} on a surface with no compositor", .{@tagName(outcome)});
+                return error.FrameSkipped;
+            },
+        }
+    }
+    return error.FramesNeverPresented;
+}
+
+/// Needs a device and no window, on `gpuHalf`'s terms, and answers the question
+/// that half cannot: not whether the pipeline assembled, but what it drew.
+///
+/// Every expectation here is computed in `gpu/measure.zig` from
+/// `iface.trace_full_scale` and `iface.trace_rail`, so an assertion compares two
+/// independent derivations of the mapping rather than the shader against itself.
+/// Vertical tolerances are one backing pixel expressed as a sample value, which
+/// is the display's own quantum and therefore cannot absorb any error the display
+/// could show; the errors being hunted are one to three orders of magnitude
+/// wider. Where an assertion can be exact it is exact, and the saturation and
+/// period checks are both.
+fn traceHalf() !void {
+    say("  rendering shaders/scope.metal into a {d}x{d} texture and measuring it", .{
+        trace_width,
+        trace_height,
+    });
+
+    const allocator = std.heap.c_allocator;
+    const pixels = @as(usize, trace_width) * trace_height;
+
+    const energy = try allocator.alloc(f32, pixels * 4);
+    defer allocator.free(energy);
+
+    const picture = try allocator.alloc(u8, pixels * 4);
+    defer allocator.free(picture);
+
+    const window = try allocator.alloc(f32, trace_width);
+    defer allocator.free(window);
+
+    try checkSilence(energy, picture, window);
+    try checkLevels(energy, picture, window);
+    try checkSaturation(energy, picture, window);
+    try checkSymmetry(energy, picture, window);
+    try checkHorizontalMapping(energy, picture);
+    try checkPeriods(energy, picture, window);
+    try checkBeamIsOneColour(energy, picture, window);
+    try checkResolve(energy, picture, window);
+    try checkDecay(energy, picture, window);
+}
+
+/// A window of zeros draws one flat line through the centre.
+fn checkSilence(energy: []f32, picture: []u8, window: []f32) !void {
+    var probe = try Probe.init(energy, picture);
+    defer probe.deinit();
+
+    measure.constant(window, 0.0);
+    try probe.run(window, 1, 1);
+
+    const image = probe.image();
+    if (!image.complete()) return error.ReadbackTruncated;
+
+    const lit = measure.litColumns(image, trace_threshold);
+    if (lit != trace_width) {
+        say("  silence lit {d} of {d} columns", .{ lit, trace_width });
+        return error.TraceNotDrawn;
+    }
+
+    const seen = measure.extremes(image, trace_threshold) orelse return error.TraceNotDrawn;
+
+    // One row of slack, and it is the centre line rather than the signal. At an
+    // even height the centre falls on an exact pixel boundary, so both candidate
+    // rows exist and the rasterizer picks one; what would be worth investigating
+    // is the line *flickering* between them, which is the tie-break going
+    // unstable rather than this.
+    if (seen.bottom - seen.top > 1) {
+        say("  silence spans rows {d} to {d}", .{ seen.top, seen.bottom });
+        return error.TraceNotFlat;
+    }
+
+    const implied = measure.impliedSample(seen.top, trace_height);
+    say("  silence: row {d}, implying a sample of {d:.5}", .{ seen.top, implied });
+
+    if (@abs(implied) > measure.pixelTolerance(trace_height)) return error.CentreLineWrong;
+}
+
+/// Each level lands where the constants say, inside one pixel.
+fn checkLevels(energy: []f32, picture: []u8, window: []f32) !void {
+    // Below the rail's threshold of 1.0889 throughout, so every one of these is
+    // a test of the mapping rather than of the clamp. 1.05 is the last level
+    // before clamping starts and is here to hold that line: if it ever reads as
+    // railed, the margin between the two constants has gone.
+    for ([_]f32{ 0.25, 0.5, 1.0, 1.05, -0.25, -0.5, -1.0 }) |level| {
+        var probe = try Probe.init(energy, picture);
+        defer probe.deinit();
+
+        measure.constant(window, level);
+        try probe.run(window, 1, 1);
+
+        const image = probe.image();
+        const seen = measure.extremes(image, trace_threshold) orelse return error.TraceNotDrawn;
+
+        const implied = measure.impliedSample(seen.top, trace_height);
+        const off = @abs(implied - level);
+        say("  level {d: >6.3}: row {d: >3}, implying {d: >8.5}, off by {d:.5}", .{
+            level,
+            seen.top,
+            implied,
+            off,
+        });
+
+        if (off > measure.pixelTolerance(trace_height)) return error.LevelMisplaced;
+    }
+}
+
+/// Every level at or above the rail lands on exactly the same row.
+fn checkSaturation(energy: []f32, picture: []u8, window: []f32) !void {
+    var railed: ?usize = null;
+
+    // 1.111 is `1 / trace_full_scale`, where the trace would reach the drawable's
+    // edge if nothing clamped. It is unreachable because `trace_rail` clamps
+    // first, and everything from there up must be pixel-identical: that
+    // saturation is the whole of what ADR 0017 means by refusing to say how far
+    // over a signal is. Asserted from just above the 1.0889 threshold rather than
+    // at it, because an equality exactly on the boundary would be a test of f32
+    // rounding.
+    for ([_]f32{ 1.111, 2.0, 8.0, 1000.0 }) |over| {
+        var probe = try Probe.init(energy, picture);
+        defer probe.deinit();
+
+        measure.constant(window, over);
+        try probe.run(window, 1, 1);
+
+        const seen = measure.extremes(probe.image(), trace_threshold) orelse
+            return error.TraceNotDrawn;
+
+        if (railed) |first| {
+            if (seen.top != first) {
+                say("  {d} railed on row {d}, not {d}", .{ over, seen.top, first });
+                return error.RailNotSaturated;
+            }
+        } else {
+            railed = seen.top;
+            const expected = measure.railRow(trace_height);
+            say("  rail: row {d}, expected {d:.1}", .{ seen.top, expected });
+            if (@abs(@as(f32, @floatFromInt(seen.top)) - expected) > 1.0) return error.RailMisplaced;
+        }
+    }
+}
+
+/// Positive is up, negative is down, and by the same distance.
+fn checkSymmetry(energy: []f32, picture: []u8, window: []f32) !void {
+    var rows: [2]f32 = undefined;
+
+    for ([_]f32{ 0.5, -0.5 }, 0..) |level, i| {
+        var probe = try Probe.init(energy, picture);
+        defer probe.deinit();
+
+        measure.constant(window, level);
+        try probe.run(window, 1, 1);
+
+        const seen = measure.extremes(probe.image(), trace_threshold) orelse
+            return error.TraceNotDrawn;
+        rows[i] = @floatFromInt(seen.top);
+    }
+
+    const centre = measure.centreRow(trace_height);
+    const above = centre - rows[0];
+    const below = rows[1] - centre;
+    say("  symmetry: +0.5 sits {d:.1} above centre, -0.5 sits {d:.1} below", .{ above, below });
+
+    // A Y flip would put both on the same side; an asymmetric clamp would leave
+    // them at different distances. One pixel of slack covers the tie-break at the
+    // centre and nothing else.
+    if (above <= 0 or below <= 0) return error.TraceInverted;
+    if (@abs(above - below) > 1.0) return error.TraceAsymmetric;
+}
+
+/// The first and last samples land on the drawable's edges.
+fn checkHorizontalMapping(energy: []f32, picture: []u8) !void {
+    var probe = try Probe.init(energy, picture);
+    defer probe.deinit();
+
+    // Three samples, because that is where the two candidate divisors are
+    // furthest apart. `2i / (n - 1)` puts the last vertex on the right edge;
+    // `2i / n` puts it two thirds of the way across, leaving 320 columns dark. No
+    // tolerance carries that argument, which is the point of choosing a short
+    // window over a full one, where the same error is a single column.
+    var window = [_]f32{ -1.0, 0.0, 1.0 };
+    try probe.run(&window, 1, 1);
+
+    const image = probe.image();
+    const span = measure.litSpan(image, trace_threshold) orelse return error.TraceNotDrawn;
+    say("  three samples span columns {d} to {d} of {d}", .{ span.first, span.last, trace_width - 1 });
+
+    // One column of slack at each end, for the diamond-exit rule: a line strip's
+    // final endpoint need not light the pixel it lands on. Against an error of a
+    // third of the width, one column is not a tolerance that could hide anything.
+    if (span.first > 1) return error.TraceStartsLate;
+    if (span.last < trace_width - 2) return error.TraceEndsEarly;
+
+    // And the vertical, which the same window checks for free: the ramp runs from
+    // -1 at the left to +1 at the right, so the corners are the extremes.
+    const left = measure.topRow(image, span.first, trace_threshold).?;
+    const right = measure.topRow(image, span.last, trace_threshold).?;
+    if (right >= left) {
+        say("  the ramp does not rise: column {d} is row {d}, column {d} is row {d}", .{
+            span.first,
+            left,
+            span.last,
+            right,
+        });
+        return error.TraceInverted;
+    }
+}
+
+/// A sine of k cycles shows exactly k periods.
+fn checkPeriods(energy: []f32, picture: []u8, window: []f32) !void {
+    var doubling: [3]usize = undefined;
+
+    for ([_]usize{ 1, 2, 4, 5, 8, 20 }) |cycles| {
+        var probe = try Probe.init(energy, picture);
+        defer probe.deinit();
+
+        measure.sine(window, @floatFromInt(cycles), 0.8);
+        try probe.run(window, 1, 1);
+
+        const counted = measure.periods(probe.image(), trace_threshold);
+        say("  {d: >2} cycles in, {d: >2} periods counted", .{ cycles, counted });
+
+        // Strict equality. #38's first counter was off by exactly one at every
+        // frequency and a ±1 tolerance reported all six as correct, which is what
+        // "a tolerance wide enough to absorb a systematic error is a tolerance
+        // that hides one" was written about.
+        if (counted != cycles) return error.PeriodMiscounted;
+
+        switch (cycles) {
+            2 => doubling[0] = counted,
+            4 => doubling[1] = counted,
+            8 => doubling[2] = counted,
+            else => {},
+        }
+    }
+
+    // The ratio form, which is robust to phase, to the `n - 1` quibble, and to
+    // miscounting a partial period at an edge in a way an absolute count is not.
+    if (doubling[1] != doubling[0] * 2 or doubling[2] != doubling[1] * 2) {
+        return error.PeriodRatioWrong;
+    }
+}
+
+/// Every deposit is the same colour, so accumulated energy lies on one ray.
+fn checkBeamIsOneColour(energy: []f32, picture: []u8, window: []f32) !void {
+    var probe = try Probe.init(energy, picture);
+    defer probe.deinit();
+
+    measure.sine(window, 4.0, 0.8);
+    try probe.run(window, 1, 1);
+
+    const image = probe.image();
+
+    // The premise `scripts/measure-trace`'s guard rests on and which nothing has
+    // ever checked: every deposit is one colour and the decay multiplies the
+    // whole vector, so a lit pixel is `c * beam` for some scalar `c` and green
+    // predicts red and blue exactly. Taken from the brightest pixel rather than
+    // from a restated literal, because the colour is a look constant #60 deletes
+    // and a fourth copy of it here would have nothing tying it back.
+    const peak_green = measure.maxChannel(image, 1);
+    if (peak_green <= trace_threshold) return error.TraceNotDrawn;
+
+    var reference: ?[2]f32 = null;
+    var worst: f32 = 0;
+
+    var y: usize = 0;
+    while (y < trace_height) : (y += 1) {
+        var x: usize = 0;
+        while (x < trace_width) : (x += 1) {
+            const g = image.channel(x, y, 1);
+            if (g <= trace_threshold) continue;
+
+            const ratio = [2]f32{ image.channel(x, y, 0) / g, image.channel(x, y, 2) / g };
+            if (reference) |want| {
+                worst = @max(worst, @abs(ratio[0] - want[0]));
+                worst = @max(worst, @abs(ratio[1] - want[1]));
+            } else {
+                reference = ratio;
+            }
+        }
+    }
+
+    const want = reference orelse return error.TraceNotDrawn;
+    say("  beam ray: red/green {d:.4}, blue/green {d:.4}, worst deviation {d:.5}", .{
+        want[0],
+        want[1],
+        worst,
+    });
+
+    // Half-float precision, not a rendering tolerance: `RGBA16Float` holds about
+    // three decimal digits, and both channels are compared after a division.
+    if (worst > 1e-3) return error.BeamNotOneColour;
+
+    // Green-dominant, which is what makes the green channel the trace's readout
+    // and what `measure-trace` isolates on. #60 ends this along with the colour.
+    if (want[0] >= 1.0 or want[1] >= 1.0) return error.BeamNotGreenDominant;
+}
+
+/// The resolve adds energy to a background at unit gain, and nothing else.
+fn checkResolve(energy: []f32, picture: []u8, window: []f32) !void {
+    var probe = try Probe.init(energy, picture);
+    defer probe.deinit();
+
+    measure.sine(window, 3.0, 0.8);
+    try probe.run(window, 1, 1);
+
+    const image = probe.image();
+
+    // The background, read off the picture rather than restated from the shader.
+    // Any pixel the beam missed carries it; the top-left corner is the safest,
+    // since a sine at this amplitude never reaches the corners.
+    const background = probe.pixel(0, 0);
+    say("  background: RGBA({d}, {d}, {d}, {d})", .{
+        background[0],
+        background[1],
+        background[2],
+        background[3],
+    });
+
+    // The structural premise `find_drawable` uses to locate a drawable inside a
+    // window capture: a dark ground with blue leading red and green, and red and
+    // green equal. The exact bytes are not asserted here, because that would be a
+    // fourth restatement of a literal already tied between the shader and
+    // `scripts/measure-trace` by a test in the renderer, with nothing tying this
+    // copy back. Printing them is what makes a change visible.
+    if (background[0] != background[1]) return error.BackgroundNotNeutral;
+    if (background[2] <= background[0]) return error.BackgroundNotBlueLeading;
+    if (background[0] >= 16) return error.BackgroundNotDark;
+    if (background[3] != 255) return error.BackgroundNotOpaque;
+
+    var worst: i32 = 0;
+    var lit: usize = 0;
+
+    var y: usize = 0;
+    while (y < trace_height) : (y += 1) {
+        var x: usize = 0;
+        while (x < trace_width) : (x += 1) {
+            const got = probe.pixel(x, y);
+            if (image.channel(x, y, 1) > trace_threshold) lit += 1;
+
+            for (0..3) |channel| {
+                const want = resolved(background[channel], image.channel(x, y, channel));
+                const off = @as(i32, got[channel]) - @as(i32, want);
+                if (@abs(off) > @abs(worst)) worst = off;
+            }
+        }
+    }
+
+    say("  resolve: {d} lit pixels, worst channel off by {d}", .{ lit, worst });
+    if (lit == 0) return error.TraceNotDrawn;
+
+    // **This is the assertion #55 would have failed.** That issue shipped a
+    // resolve gain of `1 - decay`, which divides a moving trace by ten and
+    // renders a sine as a black display; it passed 160 unit tests, both smoke
+    // halves, the leak check, `clap-validator` and the validation layer, and was
+    // found by eye. Comparing the two readbacks against each other is what makes
+    // it visible, and it assumes nothing about how many segments covered a pixel,
+    // which is the assumption a check against the beam's literal would need.
+    //
+    // One byte level of slack, for the rounding between a float the shader
+    // computed and the unorm the format stores. Against a gain of a tenth, whole
+    // channels move by a hundred levels.
+    if (@abs(worst) > 1) return error.ResolveNotAnAdd;
+}
+
+/// What the resolve should make of one channel: the background plus the energy,
+/// clipped by the format and quantized once.
+fn resolved(background: u8, energy: f32) u8 {
+    const linear = @as(f32, @floatFromInt(background)) / 255.0 + energy;
+    return @intFromFloat(@round(std.math.clamp(linear, 0.0, 1.0) * 255.0));
+}
+
+/// The phosphor dims by the decay factor once per frame.
+fn checkDecay(energy: []f32, picture: []u8, window: []f32) !void {
+    var first: f32 = 0;
+
+    for ([_]u32{ 1, 2, 3, 4, 5 }) |frames| {
+        var probe = try Probe.init(energy, picture);
+        defer probe.deinit();
+
+        // One depositing frame, then frames that decay alone. Fresh renderers
+        // rather than one driven further, so each measurement starts from the
+        // cleared pair rather than from the previous case's fade.
+        measure.constant(window, 0.5);
+        try probe.run(window, frames, 1);
+
+        const peak = measure.maxChannel(probe.image(), 1);
+        if (frames == 1) {
+            first = peak;
+            say("  decay: one deposit peaks at {d:.4}", .{peak});
+
+            // Reported rather than asserted, and deliberately. Whether a line
+            // strip's shared vertices deposit twice under Metal's diamond-exit
+            // rule is not documented anywhere this project can cite, so the
+            // number is a finding rather than a claim: one deposit of the beam's
+            // green would be 1.0, and anything above that is coverage counted
+            // more than once.
+            continue;
+        }
+
+        const quiet = frames - 1;
+        const ratio = peak / first;
+        const want = std.math.pow(f32, 0.90, @floatFromInt(quiet));
+        say("  decay: after {d} quiet frames, {d:.4} of the deposit, expected {d:.4}", .{
+            quiet,
+            ratio,
+            want,
+        });
+
+        // Two percent, which is half-float precision compounded over five frames
+        // rather than a rendering tolerance. A decay of 1.0 would hold the ratio
+        // at 1.0 and a decay applied twice would put it at 0.81 per frame; both
+        // are tens of times outside this.
+        if (@abs(ratio - want) > 0.02 * want) return error.DecayWrong;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The AppKit half
 // ---------------------------------------------------------------------------
 
@@ -579,7 +1165,9 @@ fn hostLog(
 }
 
 /// Needs a window server as well as a device, which is the part a headless
-/// runner may refuse, so CI runs this without gating on it.
+/// runner may refuse. CI gates on it anyway, since #72: 65 runs settled that a
+/// hosted runner grants one, and this half carries the only assertion anywhere
+/// on `liveAccumulationTextures`.
 fn appkitHalf(cycles: u32) !void {
     platform.assertMainThread();
 

@@ -23,14 +23,17 @@ Keep the harness, as `src/smoke.zig`, behind its own build steps, and never wire
 
 **An executable, not a test artifact.** A test binary gets `std.testing`'s assertions but must stay silent: `std.debug.print` from inside one interleaves with the test runner's stream, which the build runner reads as a failed step despite a zero exit code. `src/clap/log.zig` already documents that hazard, and its `mirror` is disabled under `builtin.is_test` for the same reason. A smoke test that cannot say what it was doing when it died is worth much less than one that can, so this reports through stderr and its own exit codes: 0 for a pass, 1 for a half that ran and failed, 2 for being invoked wrong.
 
-**Two halves, gated differently**, because their environmental requirements differ and so do their odds of running unattended:
+**Halves, gated differently**, because their environmental requirements differ and so do their odds of running unattended. Two when this was written; the third arrived with #51 and is recorded in the amendment at the foot of this document, corrected here in place rather than left stale:
 
 | Half     | Needs                        | Covers                                                               |
 | -------- | ---------------------------- | -------------------------------------------------------------------- |
 | `gpu`    | A Metal device, no window    | Runtime shader compilation, pipeline assembly, wrong Metal selectors |
+| `trace`  | A Metal device, no window    | What the shader drew: the mapping, the rail, the resolve, the decay  |
 | `appkit` | A window server and a device | View embedding, teardown order, the CLAP GUI lifecycle               |
 
 The GPU half is required in CI. The AppKit half runs there under `continue-on-error` until an actual run settles whether a hosted runner grants an unbundled process a window-server connection.
+
+Both sentences above are the decision as it was taken and are superseded rather than corrected: #51 added a third half that is required too, and #72 discharged the condition the second names. The amendments at the foot of this document carry both. The *table* is corrected in place, on the precedent the #38 amendment set for a stale list, because it enumerates what exists rather than stating a decision.
 
 **The GPU half reaches the device through the seam**, as `Renderer.probe`, one of the operations declared beside `init`, `deinit`, `resize`, `upload`, `frame`, and `liveWindowBuffers` in `src/gpu/iface.zig`. `Renderer.init` cannot run without a window, because its last step attaches a `CAMetalLayer` to an `NSView`. `probe` is everything before that step, sharing `buildPipelines` with `init` rather than paraphrasing it, so a pass means the shipping path compiled the shader. It names no Metal type above the seam, which [ADR 0005](./0005-metal-behind-a-renderer-seam.md) requires and the comptime block in that file enforces.
 
@@ -148,6 +151,8 @@ That is a class this document did not previously account for: not a resource lea
 
 None of the above sees whether the picture is bright enough to look at. #55 shipped a resolve gain that rendered a sine as a black display, and it passed 160 unit tests, both smoke halves, `smoke-leaks`, `clap-validator` and the validation layer. It was found by eye in under a minute. The harness answers whether frames are presented and whether resources balance; it has never answered what the pixels became, and #51 remains the issue that would change that.
 
+**Superseded by the #51 amendment below, which closed it.** Left standing rather than edited away, because the paragraph is the argument that issue was built against, and because the defect it describes is now the worked example of what the new half catches.
+
 ## Amended by issue #63: the leak check enters CI, and a fourth instrument is refused
 
 `zig build smoke-leaks` had never run anywhere but a keyboard. It now runs in the `smoke` job on every push, at 40 cycles rather than 400, under `continue-on-error` on the same reasoning as the AppKit half: it *is* the AppKit half with an instrument wrapped around it, so it inherits the dependency on a hosted runner granting an unbundled process a window-server connection. Promoting it, like promoting `smoke-appkit`, stays a separate decision about what may block a merge.
@@ -184,6 +189,70 @@ The short form, and the thing to re-read before proposing it again: **it is a ca
 
 The row nothing covers is left uncovered deliberately. Saying so is what stops it being rediscovered as a gap worth a fourth instrument.
 
+## Amended by issue #72: the AppKit half becomes required, and the leak half deliberately does not
+
+Three sentences above are superseded rather than corrected, and are left standing on this directory's rule that an in-place edit to an ADR is for a transcription error and nothing else. The Decision's "the AppKit half runs there under `continue-on-error` until an actual run settles whether a hosted runner grants an unbundled process a window-server connection" is the decision as it was taken, and the condition it names has been discharged rather than removed. The Consequences' "gating the uncertain half while keeping the certain half required is how it is contained rather than denied" is the counter-argument this issue was weighed against, and erasing it would erase what the decision cost. #63's "promoting it, like promoting `smoke-appkit`, stays a separate decision about what may block a merge" is the deferral this section answers.
+
+**The rule was written before the answer was known.** The plan for [issue #19](https://github.com/cboone/fosforo/issues/19) recorded it in these words: "if the AppKit half passes on the first run and on one re-run, drop `continue-on-error` in a follow-up; if it fails for want of a window server, leave the step in place with the flag and record the finding in ADR 0013's consequences, since a job that reports the runner's capability is still worth its seconds." Measured from the Actions API on 2026-08-29, the `smoke` job has 68 recorded runs, 65 of which completed and 3 of which the concurrency group cancelled, and `Smoke-test the AppKit path` **succeeded on all 65**. It has never failed and never timed out. A hosted macOS runner does grant an unbundled process a window-server connection, and the rule saying what to do about it was set down by someone who did not know that.
+
+**The step's cost is not the reason for anything and is recorded anyway.** All 65 durations fall between 0 and 5 seconds against a `timeout-minutes: 2`, a margin of 24x. That timeout was a label while the step could not fail the job; it is now a budget, because a wedged AppKit call is the one failure this step has that is not an assertion, and 120s is what stands between it and the other six minutes of the job's ceiling.
+
+**One consequence arrives free and is worth stating before it surprises someone.** The leak step carries `continue-on-error` and no `if:` condition, so a failing AppKit half now *skips* it rather than running it, and the notice reads `leaks: skipped`. That is this document's own assertion order enforced one level up: a leak report over a run that fell over partway through describes a process that never reached the teardown being measured.
+
+### What the sample cannot show, and why that retires a checkbox rather than ticking it
+
+Issue #72 asked for the outcome "across at least one runner image refresh". That evidence does not exist and cannot be waited for on any schedule this project controls.
+
+**Every one of the 65 runs used the same image: `macos-26-arm64`, version `20260728.0273.1`.** The first was on 2026-07-30 and the latest on 2026-08-29, thirty days apart. This repository's entire CI history contains exactly one image refresh, `20260720.0258.1` to `20260728.0273.1`, and it landed the day before the smoke job did. So this job has never crossed an image boundary, and the issue's claim that the sample spans "the `macos-latest` migration to macOS 26" is false: nothing here has ever run CI on anything but `macos-26-arm64`. Upstream corroborates the cadence rather than the hope: the most recent 30 `actions/runner-images` releases run through 2026-08-25 and contain no macOS release at all.
+
+What replaces the checkbox is instrumentation rather than patience. `Report what the smoke halves concluded` now prints `ImageOS` and `ImageVersion` on every run, so the first run after a refresh is attributable at a glance: a red AppKit half beside a version nobody has seen before is a different event from a red AppKit half on the image 65 runs have already passed on. Both are undocumented runner-image variables rather than Actions ones, so both carry defaults, and the `Set up job` log group stays the positive control if they ever read `unknown`.
+
+### The two halves are not symmetric, and that is the whole of why one moves and the other does not
+
+`smoke-leaks` keeps `continue-on-error`. That is not caution left over from the AppKit half. The reason #63 gave for it, that the leak step *is* the AppKit half with an instrument wrapped around it and therefore inherits its dependency on the runner, has stopped applying now that the dependency is settled. A different and better reason has taken its place.
+
+**`smoke-appkit` can only fail on its own assertions plus one runner capability.** `framesPresented`, `windowsUploaded`, `liveWindowBuffers`, `liveAccumulationTextures`, and the window-server connection that 65 runs have now answered. Every one of those is a fact about this repository.
+
+**`smoke-leaks` additionally judges the runner's own AppKit chatter.** `scripts/smoke-leak-check` matches leaked classes against `^(NSView|CALayer|CAMetalLayer|IOSurface|IOGPU|_?MTL|AGX)`, and several of those prefixes name classes that AppKit, CoreAnimation and the window server allocate on their own account. An `IOSurface` or an `NSView` leaked by a framework, for reasons that have nothing to do with this project, fails that step, and nothing in this repository would be wrong. That is the Consequences sentence above, exactly and specifically, and it applies to the leak step and not to the AppKit one.
+
+The byte total tells the same story from the other side, and the figure quoted under #63 is now stale in the direction that flatters the check less. Nine completed leak runs reported 18,656, 18,816, 14,080, 18,816, 14,080, 9,728, 18,624, 18,624 and 18,624 bytes: a low of 9,728 against a high of 18,816. **Quote that as a ratio rather than a percentage, because the two conventions differ by a factor of two and both are in circulation here.** By the `(max-min)/max` convention `scripts/smoke-leak-check` used for its "25% spread", nine runs give 48%; the naive `(max-min)/min` gives 93% for the same runs. As a ratio, which is unambiguous, the first three runs were **1.34x** and nine runs are **1.93x**. The bound of 1,048,576 absorbs it without effort, since the worst figure observed is 1.8% of it, and the low-end headroom the #63 section records as 74x is now **107x**. That is exactly the looseness the bound was bought for. But a number that moves by a factor of two between runs is the runner's number rather than this project's, and a check whose input moves like that is not one to put in front of a merge.
+
+### Required means red, not blocked
+
+`main` declares no required status checks and no ruleset that references a check name. Dropping `continue-on-error` therefore changes exactly one thing: a failing AppKit half turns the `smoke` job red instead of leaving a green job with a `::notice::` nobody reads. No ruleset is being changed and none is needed for this to be worth doing.
+
+That is enough because of what the step carries. #55 established that a leaked `MTLTexture` is invisible to `leaks` and to peak RSS both, so `liveAccumulationTextures` is not the better of two instruments, it is the only one, and it is asserted in `smoke-appkit` and nowhere else. #63 then refused the peak-RSS slope partly on the grounds that the counters already catch what it would, which is an argument that leans on the counters being load-bearing. A load-bearing check that cannot go red is a silent failure reported by a silent step.
+
+**The cost is real and is being accepted rather than argued away.** A runner image that stops granting a window server turns this job red on every push until someone reverts the flag, and it does so at the worst moment, when nobody is expecting it. The revert is one line, the notice now names the image that caused it, and the alternative was an instrument nobody is obliged to read.
+
+## Amended by issue #51: the readback this document refused, and the one it got
+
+The limit restated above is closed. `zig build smoke-trace` is a third half, needing a Metal device and no window, required in CI beside `smoke-gpu`. It renders through the shipping pipeline into a texture and asserts what the pixels became.
+
+**It sits second of four steps, which has the consequence #72 named for its own.** No step in that job carries an `if:`, so a failing trace half now skips the AppKit and leak steps below it rather than running them. That is the same assertion order both documents keep arriving at: a result from a run that fell over earlier describes something other than what it claims to. It also means the cheapest windowless check reports before either window-server step is reached, which is the order the steps were registered in for exactly that reason.
+
+**It is not the readback refused above, and the distinction is the whole design rather than a technicality.** That refusal had two halves. Reading the *drawable* back would mean dropping `setFramebufferOnly:`, changing the shipping renderer's storage mode in every host on every frame so a check could run; nothing here touches the layer, the drawable or that flag, and `init` is byte-for-byte the constructor it was. A *harness-only path* was called worse, on the grounds that "a path the shipping renderer never takes is a paraphrase"; the answer is that the offscreen path is not a second path but the same one against a different surface. `Renderer` gained a `Surface` union, `init` and `initOffscreen` share every acquisition through one function, and `frame` reads that union at exactly three points: where it takes a colour attachment, where it binds one to the resolve pass, and whether it presents. The pipelines, uniforms, bindings, draw calls, attachment formats, ping-pong and slot discipline are the shipping ones. That is `probe`'s discipline of sharing rather than paraphrasing, applied to a frame instead of a pipeline.
+
+**No golden image was built, and the criterion this document set is why.** It asked for a picture "expensive enough to justify a golden and stable enough that the golden does not churn". The picture is not stable — #57 replaces the primitive, #58 changes what brightness means, #60 replaces the resolve outright — so what landed instead asserts extracted features against values computed from `iface.trace_full_scale` and `iface.trace_rail`. Those survive the rest of phase 3 with changed expected numbers rather than a rewritten instrument, and the geometry assertions read the *accumulation* rather than the picture precisely because #60 rewrites only the latter.
+
+### What it can fail on
+
+Ten defects were planted and all ten were caught, each by a named assertion. The one that matters most is #55's `1 - decay` resolve gain, the failure the paragraph above was written about: replanted, it fails with a channel 224 levels out. The full table is in [`docs/plans/done/2026-08-29-verify-the-shader-offscreen-against-the-constants.md`](../plans/done/2026-08-29-verify-the-shader-offscreen-against-the-constants.md).
+
+**Where the assertions can be exact they are exact**, and three are: every level from 1.111 upward lands on one row, the period counts are compared under strict equality, and a three-sample window must reach both edges. The vertical tolerances are one backing pixel expressed as a sample value, which is the display's own quantum and therefore cannot absorb an error the display could show. That is #38's rule applied rather than restated: a tolerance wide enough to absorb a systematic error is a tolerance that hides one, and the ±1 period tolerance that once called six wrong counts "ok" is the thing being guarded against.
+
+### The analysis is tested too, which is the part that had been going wrong
+
+`src/gpu/measure.zig` holds the feature extraction and imports nothing but `std` and the seam, so `zig build test` covers it on a runner with no graphics support. That is not tidiness. #38's defect was in the *analysis* and not in the shader: its first period counter read the topmost lit pixel against the centre row, a steep segment crossing the centre lights every row it spans, and every tone came back exactly one period low. An analysis that runs only against a GPU is an analysis nothing tests, so this one has its own tests and a rasterizer that deliberately reproduces the spanning behaviour that broke the original.
+
+### Three findings from building it
+
+**A line strip deposits once per pixel here.** One depositing frame peaks at exactly 1.0000, which is the beam's green, so shared vertices do not double under Metal's diamond-exit rule at this geometry. That was an open question the plan declined to prejudge, and it is why the resolve check compares the two readbacks against each other rather than against the beam's literal: a check that assumed single coverage would have been resting on it. **Reproduced on a second GPU** by the first CI run, which printed 1.0000 and every other figure identically to the development machine, so this is not one machine's rasterizer. It is still a measurement at one geometry rather than a general claim, and #57 replaces the primitive it is about.
+
+**Offscreen frames stop at three without a wait**, because that is the semaphore's depth and there is no display link pacing the loop. A `spinLoopHint` retry measured out at roughly the length of the frame it was waiting for and failed on the fourth frame of every case, which reads exactly like a completion handler that never fires and was not one. The harness yields instead.
+
+**Binding the wrong accumulation texture does not compile.** Planting it makes `source` an unused local, which Zig rejects. A better outcome than a caught defect, and worth recording as the reason that row had to be silenced before it could be exercised at all.
+
 ## Amended by issue #61: the harness asserts a swap, a refusal, and a recovery
 
 Shader hot-reload ([ADR 0009](./0009-runtime-shader-compilation.md)) is the first feature here whose entire observable effect is the picture, which is the one thing this document has repeatedly recorded that nothing automated can see. The seam therefore grew a ninth operation, `shaderStats`, of the same kind as the two live-resource counters: a question about the backend rather than an instruction to it.
@@ -192,7 +261,7 @@ Shader hot-reload ([ADR 0009](./0009-runtime-shader-compilation.md)) is the firs
 
 **The fallback arms are in the `gpu` half**, which CI requires. They need a device and no window, and what they assert is the invariant that can otherwise ruin a day: *a debug build opens its editor whatever is on disk.* A missing file, a malformed one, and one that compiles without defining what the pipelines ask for are three different failures, and all three must leave the plugin able to start.
 
-**Only the live swap is in the `appkit` half**, which runs under `continue-on-error`, because only it needs a running render loop.
+**Only the live swap is in the `appkit` half**, because only it needs a running render loop. That half is required as of #72, so the split no longer trades coverage against gating the way it did when this was written; what it still buys is that the invariant which must never break is asserted by the half needing no window server at all.
 
 ### One phase per process, and the reason is measured
 
@@ -223,14 +292,18 @@ A swap that leaked its outgoing pipeline states is caught by `smoke-leaks` with 
 Consistent with the section under #55, and worth stating rather than glossing. Both were found by asking what a passing run would still permit, and they were answered differently.
 
 - **A compile moved onto the render thread passes.** An extra 40 ms in a tick is invisible to a frame counter with a two-second timeout, so the harness reports a clean run. **This one is now closed outside the harness**, which is the point worth carrying: a debug-only `threadlocal` marks any thread that has entered the render path, and `buildPipelinesFromSource` asserts it is unset. That is `assertNotMainThread` from the other side, and it is the shape to reach for when the harness turns out to be the wrong instrument — the same conclusion the #55 section reached about the validation layer. Verified by planting a compile in `frame`, which panics naming the assertion.
-- **A reload with a moved `[[buffer(N)]]` passes, and still does.** Nothing validates a hot-reloaded shader's bindings; the comptime tests pin the embedded copy, correctly. This one was **not** closed, and is [#77](https://github.com/cboone/fosforo/issues/77), because the obvious fix is a runtime text scan that needs a warn-versus-refuse decision and is blind to the sharper failure anyway: `TraceUniforms` layout drift, where MSL computes its own offsets and no amount of reading the text would see it. That belongs to [#51](https://github.com/cboone/fosforo/issues/51). ADR 0009's amendment carries the full statement of what is uncovered.
+- **A reload with a moved `[[buffer(N)]]` passes, and still does.** Nothing validates a hot-reloaded shader's bindings; the comptime tests pin the embedded copy, correctly. This one was **not** closed, and is [#77](https://github.com/cboone/fosforo/issues/77), because the obvious fix is a runtime text scan that needs a warn-versus-refuse decision and is blind to the sharper failure anyway: `TraceUniforms` layout drift, where MSL computes its own offsets and no amount of reading the text would see it. #51 has since landed and does not close it either, which is worth stating precisely because the names are close: `smoke-trace` measures what the **embedded** shader draws, so it would catch a moved binding in the shipped source and cannot see one in a file swapped in at runtime, since nothing reloads during a trace run. ADR 0009's amendment carries the full statement of what is uncovered.
 
 The asymmetry is the lesson rather than an inconsistency. One of the two had a cheap structural guard available that makes the defect impossible; the other has only instruments, and the instrument that would work is a readback this document has already refused twice on its own terms.
 
-### The leak baseline moved, and it moved down
+### The leak baseline wandered and then came back, which is the point
 
-Across three runs at 40 cycles the report now gives **36 to 54 leaks for 3,648 to 5,472 bytes**, against the 288 for 18,816 this project has been quoting since #63. The phase adds roughly 2.5 seconds before the cycle loop, and that is apparently long enough for AppKit's LaunchServices chatter to settle before exit.
+Measured before this branch merged `main`, three runs at 40 cycles reported **36 to 54 leaks for 3,648 to 5,472 bytes**, against the 288 for 18,816 quoted since #63 — and the tempting conclusion was that the reload phase's extra couple of seconds let AppKit's LaunchServices chatter settle before exit.
 
-That is one more demonstration of the rule already stated above, that **the leak count is not a discriminator**, arriving from the opposite direction: a change that added a thread per editor and five out-of-process compiles made the report look four times cleaner. The 1 MiB byte bound is unaffected and now has around 190x of headroom rather than 56x, which is the property it was chosen for.
+**Re-measured after the merge, it is 288 for 18,816, three times in a row.** The earlier excursion does not reproduce, so the explanation was a story fitted to two data points and is withdrawn rather than kept with a hedge.
+
+What survives is the rule this document already states, arriving from a third direction: **the leak count is not a discriminator, and neither is the byte total near it.** It has now been seen to move without a cause anyone can name, in both directions, which is exactly why the gate is a bound 56x above the observed figure rather than anything calibrated. `scripts/smoke-leak-check` records the same widening from CI's own side, where nine runs span 9,728 to 18,816 bytes.
+
+**The obligation this creates for a merge is worth naming.** A number measured on a branch is a number measured against that branch's harness, and #51 and #72 both changed this one underneath. Re-measuring after the merge is not diligence, it is the only way the figure means anything.
 
 `smoke-appkit` measures 4.4 s and `smoke-leaks -Dleak-cycles=40` 15.6 s against a documented 13 s. Both sit far inside ceilings set at roughly 4x the slowest observed run, so no `timeout-minutes` changed.

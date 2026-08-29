@@ -95,6 +95,20 @@ const mtl = struct {
     /// textures exist to provide.
     const storage_mode_private: u64 = 2;
 
+    /// `MTLStorageModeShared`, the same enum as `storage_mode_private` above and
+    /// **not** the `MTLResourceOptions` word at the foot of this block, however
+    /// alike the two names read. Both are zero, which is the whole reason that
+    /// warning is repeated here rather than left one bullet up.
+    ///
+    /// Reached only by the surfaces `initOffscreen` builds. The shipping
+    /// renderer's accumulation stays `Private` in both cases: an offscreen
+    /// renderer that quietly allocated a differently-backed texture would be
+    /// measuring a resource the shipping path never has, which is the whole
+    /// failure mode ADR 0013 refuses. What is `Shared` is the offscreen colour
+    /// target, which has no counterpart at all in a layer-backed renderer, and
+    /// the staging texture `readback` blits into.
+    const storage_mode_shared: u64 = 0;
+
     /// `MTLPrimitiveTypeLineStrip` and `MTLPrimitiveTypeTriangle`. These two were
     /// read out of `MTLRenderCommandEncoder.h` rather than recalled, which is
     /// worth saying in a block whose header admits it has nothing to check itself
@@ -300,6 +314,47 @@ const Pipelines = struct {
     decay: objc.Object,
     trace: objc.Object,
     resolve: objc.Object,
+};
+
+/// Where the resolve pass puts its picture.
+///
+/// A renderer has exactly one of these for its whole life: `init` builds a
+/// `layer` and `initOffscreen` builds a `target`, and nothing converts between
+/// them. That is deliberate and it is the distinction ADR 0013 turns on. Reading
+/// a *drawable* back would mean dropping `setFramebufferOnly:`, changing the
+/// shipping renderer's storage mode in every host on every frame so that a check
+/// could run; this instead hands the resolve a different surface, one no drawable
+/// is involved in, and leaves the layer path byte-for-byte what it was.
+///
+/// What the two cases share is everything the shader does. `frame` reads this
+/// union at exactly three points — where it acquires a colour attachment, where
+/// it binds one to the resolve pass, and whether it presents — and is otherwise
+/// one code path. So the pipelines, the uniforms, the bindings, the draw calls,
+/// the attachment formats, the ping-pong and the slot discipline are the shipping
+/// ones rather than a copy, which is what makes a measurement taken offscreen a
+/// statement about what a host sees. It is `probe`'s discipline of sharing rather
+/// than paraphrasing, applied to a frame instead of to a pipeline.
+const Surface = union(enum) {
+    /// The shipping case: a `CAMetalLayer` hung off the host's view, whose
+    /// drawables are write-only and are presented.
+    layer: objc.Object,
+
+    /// A `BGRA8Unorm` texture this renderer allocated, in shared storage so the
+    /// CPU can read it. Nothing is presented and no drawable exists, so `frame`
+    /// can never return `.no_drawable` on this side.
+    target: objc.Object,
+};
+
+/// One frame's colour attachment for the resolve pass, and the drawable it came
+/// out of when it came out of one.
+///
+/// Exists so `frame` resolves the surface once, at the top, rather than
+/// switching on it again at each of the three places that care. The optional is
+/// the whole difference between the two paths by the time the encoding starts:
+/// present it, or do not.
+const Attachment = struct {
+    texture: objc.Object,
+    drawable: ?objc.Object,
 };
 
 /// What both fullscreen passes read besides the texture they are handed.
@@ -780,11 +835,109 @@ const Watcher = if (shader.live) struct {
     }
 };
 
+/// Everything a renderer owns except the surface it draws onto.
+///
+/// The whole of what `init` and `initOffscreen` have in common, in one place so
+/// they cannot drift into two acquisition orders. That matters more than the
+/// duplication it saves: the argument for measuring anything offscreen is that
+/// the resources under test are the shipping ones, and an offscreen constructor
+/// that built its own pipelines in its own order would be asserting about a
+/// second renderer that merely resembles the first.
+///
+/// It is a separate struct rather than a partly-filled `Renderer` because a
+/// union has no placeholder: there is no `Surface` value meaning "not yet", and
+/// inventing one would put a state in the type that no renderer is ever in.
+const Acquired = struct {
+    device: objc.Object,
+    queue: objc.Object,
+    pipelines: Pipelines,
+    in_flight: objc.Object,
+    windows: [max_frames_in_flight]objc.Object,
+    accum: [2]objc.Object,
+
+    /// Hands ownership to the caller, which then owes `release` on any later
+    /// failure of its own.
+    fn assemble(self: Acquired, pixels: Pixels, surface: Surface) Renderer {
+        return .{
+            .device = self.device,
+            .queue = self.queue,
+            .pipelines = self.pipelines,
+            .surface = surface,
+            .in_flight = self.in_flight,
+            .windows = self.windows,
+            .pixels = pixels,
+            .accum = self.accum,
+        };
+    }
+
+    /// Unwinds a successful `acquire` when the caller's own last step failed.
+    ///
+    /// In reverse order, matching the `errdefer` ladder this replaced, and
+    /// through `releaseWindows` and `releaseAccumulation` rather than bare loops
+    /// because both are counted: releasing them any other way would leave
+    /// `liveWindowBuffers` or `liveAccumulationTextures` permanently high after a
+    /// failed construction, which is worse than the leak they exist to catch,
+    /// since the count would never return to zero and would then either report a
+    /// leak on every later run or hide a real one behind the offset.
+    fn release(self: Acquired) void {
+        releaseAccumulation(self.accum);
+        releaseWindows(self.windows);
+        self.in_flight.release();
+        releasePipelines(self.pipelines);
+        self.queue.release();
+        self.device.release();
+    }
+};
+
+/// [main-thread] Take everything but the surface, in the order `init` has always
+/// taken it.
+fn acquire(pixels: Pixels, diags: *iface.Diagnostics) iface.Error!Acquired {
+    const device = objc.Object.fromId(MTLCreateSystemDefaultDevice() orelse {
+        diags.set("Metal reported no default device");
+        return error.NoDevice;
+    });
+    errdefer device.release();
+
+    const queue = device.msgSend(objc.Object, "newCommandQueue", .{});
+    if (queue.value == null) {
+        diags.set("the Metal device would not create a command queue");
+        return error.NoDevice;
+    }
+    errdefer queue.release();
+
+    const pipelines = try buildPipelines(device, diags);
+    errdefer releasePipelines(pipelines);
+
+    const in_flight = objc.Object.fromId(dispatch_semaphore_create(max_frames_in_flight) orelse {
+        diags.set("libdispatch would not create the in-flight-frames semaphore");
+        return error.NoDevice;
+    });
+    errdefer in_flight.release();
+
+    const windows = try buildWindows(device, diags);
+    errdefer releaseWindows(windows);
+
+    const accum = try buildAccumulation(device, queue, pixels, diags);
+
+    return .{
+        .device = device,
+        .queue = queue,
+        .pipelines = pipelines,
+        .in_flight = in_flight,
+        .windows = windows,
+        .accum = accum,
+    };
+}
+
 pub const Renderer = struct {
     device: objc.Object,
     queue: objc.Object,
     pipelines: Pipelines,
-    layer: objc.Object,
+
+    /// Where the resolve pass writes: a layer's drawable, or a texture this
+    /// renderer owns. Fixed at construction and never reassigned; see `Surface`
+    /// for why the two are a union rather than a flag on one surface.
+    surface: Surface,
 
     /// Counts free frame slots. Waited on at the top of every frame and
     /// signalled from the GPU's completion handler.
@@ -870,6 +1023,11 @@ pub const Renderer = struct {
     /// nicety. Without one the objects accumulate until whatever pool the host
     /// happens to have open drains, which inside a DAW is not a schedule this
     /// plugin controls.
+    ///
+    /// Every acquisition but the surface lives in `acquire`, shared with
+    /// `initOffscreen`. What is left here is the layer, which is the one thing
+    /// the two constructors do differently and the whole of the difference
+    /// between them.
     pub fn init(
         view: iface.NativeView,
         size: iface.Size,
@@ -881,58 +1039,163 @@ pub const Renderer = struct {
         const pool = objc.AutoreleasePool.init();
         defer pool.deinit();
 
-        const device = objc.Object.fromId(MTLCreateSystemDefaultDevice() orelse {
-            diags.set("Metal reported no default device");
-            return error.NoDevice;
-        });
-        errdefer device.release();
-
-        const queue = device.msgSend(objc.Object, "newCommandQueue", .{});
-        if (queue.value == null) {
-            diags.set("the Metal device would not create a command queue");
-            return error.NoDevice;
-        }
-        errdefer queue.release();
-
-        const pipelines = try buildPipelines(device, diags);
-        errdefer releasePipelines(pipelines);
-
-        const in_flight = objc.Object.fromId(dispatch_semaphore_create(max_frames_in_flight) orelse {
-            diags.set("libdispatch would not create the in-flight-frames semaphore");
-            return error.NoDevice;
-        });
-        errdefer in_flight.release();
-
-        // `releaseWindows` rather than a bare release loop, because these are
-        // counted: `buildWindows` reported them the moment it handed the whole
-        // ring over. Releasing them here without saying so would leave
-        // `liveWindowBuffers` permanently three high after a failed `init`,
-        // which is worse than the leak it exists to catch. The count would then
-        // never return to zero and the harness would report a leak on every
-        // later run, or hide a real one behind the offset.
-        const windows = try buildWindows(device, diags);
-        errdefer releaseWindows(windows);
-
         // Computed once and handed on rather than recomputed at each call site,
         // which is the whole discipline `backingPixels` exists to enforce.
         const pixels = backingPixels(size, scale);
 
-        const accum = try buildAccumulation(device, queue, pixels, diags);
-        errdefer releaseAccumulation(accum);
+        const parts = try acquire(pixels, diags);
+        errdefer parts.release();
 
-        // Last, so it is the one acquisition needing no `errdefer`.
-        const layer = try attachLayer(view, device, size, pixels, scale, diags);
+        // Last, so it is the one acquisition needing no `errdefer` of its own.
+        const layer = try attachLayer(view, parts.device, size, pixels, scale, diags);
 
-        return .{
-            .device = device,
-            .queue = queue,
-            .pipelines = pipelines,
-            .layer = layer,
-            .in_flight = in_flight,
-            .windows = windows,
-            .pixels = pixels,
-            .accum = accum,
+        return parts.assemble(pixels, .{ .layer = layer });
+    }
+
+    /// [main-thread] Builds everything the GPU needs and draws into a texture of
+    /// its own instead of a host's view.
+    ///
+    /// The constructor whose renderers `readback` can answer for, and the reason
+    /// this project can say what its pixels became at all. Everything before the
+    /// surface is `init`'s, through the same `acquire`: the same device, queue,
+    /// pipelines, semaphore, window buffers and accumulation, allocated in the
+    /// same order with the same failure ladder. `frame` then runs unmodified
+    /// except where it reads `Surface`, so what this measures is the shipping
+    /// path rather than a second implementation of it.
+    ///
+    /// **The size is whole backing pixels, not logical points.** `init` takes
+    /// points and a scale because a view publishes one; there is no view here, so
+    /// a scale would have to be invented, and `backingPixels` would then round it
+    /// in between a caller and the geometry that caller is trying to measure. The
+    /// rounding is not the subject and it is tested where it lives. Floored at
+    /// one pixel per axis on `backingPixels`' precedent, because Metal rejects a
+    /// zero-dimension texture and a caller asking for one has made an arithmetic
+    /// error rather than a request.
+    ///
+    /// Nothing here is presented, so a renderer built this way never returns
+    /// `.no_drawable` and never waits on a compositor. It still takes a frame
+    /// slot, still runs the completion handler and still advances the ping-pong,
+    /// because those are `frame`'s and not the surface's.
+    pub fn initOffscreen(size: iface.Size, diags: *iface.Diagnostics) iface.Error!Renderer {
+        platform.assertMainThread();
+
+        const pool = objc.AutoreleasePool.init();
+        defer pool.deinit();
+
+        const pixels: Pixels = .{
+            .width = @max(1, size.width),
+            .height = @max(1, size.height),
         };
+
+        const parts = try acquire(pixels, diags);
+        errdefer parts.release();
+
+        const target = try buildTarget(parts.device, pixels, diags);
+
+        return parts.assemble(pixels, .{ .target = target });
+    }
+
+    /// [main-thread] Copy the last committed frame's pixels out of an offscreen
+    /// renderer.
+    ///
+    /// Two readbacks because they answer different questions, which
+    /// `iface.Readback` sets out: the accumulation is linear and unclipped and is
+    /// the only form the geometry survives #60 in, and the picture is what the
+    /// resolve actually made of it and is the only place a defect confined to
+    /// that pass can show. #55's resolve gain is the worked example, and it is
+    /// why reading one and not the other would be a check that passed it.
+    ///
+    /// The accumulation is `Private` and has to be blitted; the offscreen target
+    /// is `Shared` and does not. Keeping the accumulation private rather than
+    /// allocating a readable one for this path is the point rather than an
+    /// inconvenience: a texture with different backing is a different resource,
+    /// and measuring one the shipping renderer never has is the paraphrase this
+    /// whole design exists to avoid.
+    ///
+    /// **The wait is what makes this a readback rather than a race.** Frames are
+    /// committed and never waited on, so several may still be executing; one
+    /// queue completes its buffers in order, so waiting on this one is also
+    /// waiting on every frame encoded before it. That is the only unbounded wait
+    /// anywhere in this file, and it is legal here for the reason it is refused in
+    /// `frame`: this runs on a harness's main thread with nothing behind it,
+    /// rather than on a display link with an editor's teardown behind it.
+    ///
+    /// Reads `accum[accum_source]`, which is the half the last committed frame
+    /// wrote, because `frame` advances the index after committing.
+    ///
+    /// Short buffers are filled as far as they go rather than refused, on
+    /// `upload`'s precedent.
+    pub fn readback(self: *Renderer, out: iface.Readback) iface.Error!void {
+        platform.assertMainThread();
+
+        const target = switch (self.surface) {
+            .target => |texture| texture,
+            .layer => return error.SurfaceNotReadable,
+        };
+
+        const pool = objc.AutoreleasePool.init();
+        defer pool.deinit();
+
+        const accum = self.accum orelse return error.TextureAllocationFailed;
+        const newest = accum[self.accum_source];
+
+        var diags: iface.Diagnostics = .{};
+        const staging = try buildStaging(self.device, self.pixels, &diags);
+        defer staging.release();
+
+        // `NoDevice` rather than a member of its own, on that error's stated
+        // terms: a queue that will not produce a buffer or an encoder is device
+        // loss or memory pressure, and there is nothing a caller could do
+        // differently for the two. `frame` reports the same conditions as
+        // outcomes because a render loop must not escalate them; here there is no
+        // loop to keep running.
+        const buffer = self.queue.msgSend(objc.Object, "commandBuffer", .{});
+        if (buffer.value == null) return error.NoDevice;
+
+        const blit = buffer.msgSend(objc.Object, "blitCommandEncoder", .{});
+        if (blit.value == null) return error.NoDevice;
+
+        // **`destinationBytesPerRow` is the texture's own row stride, with no
+        // alignment padding, and that was measured rather than assumed.** The
+        // 256-byte rule worth knowing about is real and does not apply here: it
+        // is a macOS-on-Intel and discrete-GPU constraint, and ADR 0001 makes
+        // Apple Silicon the only target. Verified at two widths whose rows are
+        // deliberately not multiples of 256 — 962 pixels at 7696 bytes and 1000
+        // at 8000 — under `MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert`,
+        // which is the instrument that reports exactly this class of error and
+        // the one this project already leans on for texture usage and format
+        // mismatches. Both ran clean and both measured correctly, which the
+        // second half establishes independently: a mishandled stride skews each
+        // row against the last, and `litColumns` and the period counts would not
+        // survive that.
+        //
+        // The harness's own 960 cannot show this either way, since 960 * 8 is
+        // 7680 and exactly 30 * 256. That is why the widths above were chosen and
+        // why a validation-layer run at the default geometry proves nothing about
+        // this line.
+        const row_bytes = @as(usize, self.pixels.width) * energy_bytes_per_pixel;
+        blit.msgSend(
+            void,
+            "copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:" ++
+                "toBuffer:destinationOffset:destinationBytesPerRow:destinationBytesPerImage:",
+            .{
+                newest,
+                @as(u64, 0),
+                @as(u64, 0),
+                MTLOrigin{},
+                MTLSize{ .width = self.pixels.width, .height = self.pixels.height },
+                staging,
+                @as(u64, 0),
+                @as(u64, row_bytes),
+                @as(u64, row_bytes * self.pixels.height),
+            },
+        );
+        blit.msgSend(void, "endEncoding", .{});
+        buffer.msgSend(void, "commit", .{});
+        buffer.msgSend(void, "waitUntilCompleted", .{});
+
+        readEnergy(staging, self.pixels, out.energy);
+        readPicture(target, self.pixels, out.picture);
     }
 
     /// [main-thread] Everything `init` does that needs neither a surface nor a
@@ -1028,7 +1291,10 @@ pub const Renderer = struct {
         if (self.accum) |pair| releaseAccumulation(pair);
         releaseWindows(self.windows);
         self.in_flight.release();
-        self.layer.release();
+        switch (self.surface) {
+            .layer => |layer| layer.release(),
+            .target => |texture| texture.release(),
+        }
 
         // The staged set as well as the live one, and through the same function,
         // so `releasePipelines` stays the one release site. An editor closed
@@ -1065,7 +1331,14 @@ pub const Renderer = struct {
         defer pool.deinit();
 
         const pixels = backingPixels(size, scale);
-        self.applyLayerGeometry(pixels, scale);
+
+        switch (self.surface) {
+            .layer => self.applyLayerGeometry(pixels, scale),
+            // An offscreen target is reallocated below rather than reconfigured.
+            // There is no `drawableSize` to set and no `contentsScale` to mean
+            // anything, since nothing composites it.
+            .target => {},
+        }
 
         // A scale can change without the pixel count changing, and
         // `Editor.onDisplayChanged` posts the current size with a freshly read
@@ -1075,8 +1348,38 @@ pub const Renderer = struct {
         // cost decision worth making rather than a micro-optimisation.
         if (self.accum != null and std.meta.eql(pixels, self.pixels)) return;
 
+        // The offscreen target is the resolve's colour attachment and the
+        // accumulation is what that pass reads at the same integer coordinates,
+        // so the two have to be one size or the fragment reads past the end of a
+        // texture, which MSL does not define as a benign zero. Replacing the
+        // target *before* `pixels` moves, and abandoning the resize outright if
+        // that allocation fails, is what keeps them in step. The layer case needs
+        // no equivalent because a drawable is sized by CoreAnimation from the
+        // `drawableSize` set above rather than allocated here.
+        switch (self.surface) {
+            .layer => {},
+            .target => if (!self.replaceTarget(pixels)) return,
+        }
+
         self.pixels = pixels;
         self.replaceAccumulation(pixels);
+    }
+
+    /// [render-thread] Build an offscreen target at a new size, or keep the old
+    /// one and say so.
+    ///
+    /// The new texture is taken before the old one is released, which is the
+    /// opposite order from `replaceAccumulation` and deliberately so: that
+    /// function can afford to fail into `null` because `frame` has an outcome for
+    /// an absent accumulation, and there is no outcome for an absent surface. So
+    /// this fails into "unchanged" instead, and the caller abandons the resize.
+    fn replaceTarget(self: *Renderer, pixels: Pixels) bool {
+        var diags: iface.Diagnostics = .{};
+        const replacement = buildTarget(self.device, pixels, &diags) catch return false;
+
+        self.surface.target.release();
+        self.surface = .{ .target = replacement };
+        return true;
     }
 
     /// [render-thread] Throw the accumulation away and build it at a new size.
@@ -1128,8 +1431,9 @@ pub const Renderer = struct {
         defer transaction.msgSend(void, "commit", .{});
         transaction.msgSend(void, "setDisableActions:", .{true});
 
-        self.layer.msgSend(void, "setContentsScale:", .{scale});
-        self.layer.msgSend(void, "setDrawableSize:", .{drawableSize(pixels)});
+        const layer = self.surface.layer;
+        layer.msgSend(void, "setContentsScale:", .{scale});
+        layer.msgSend(void, "setDrawableSize:", .{drawableSize(pixels)});
     }
 
     /// [render-thread] Hand over the window the next frame should draw.
@@ -1194,7 +1498,19 @@ pub const Renderer = struct {
         //
         // This is state between ticks rather than part of a frame, which is the
         // same argument `Editor.tick` makes one layer up for its own mailbox.
-        self.watcher.start(self.device);
+        //
+        // **Only for a renderer somebody is looking at**, which is an interaction
+        // between #61 and #51 rather than something either needed alone. An
+        // offscreen renderer built by `initOffscreen` also reaches this line, and
+        // watching a file from one would be worse than pointless: `smoke-trace`
+        // measures rows and periods against fixed constants, so a shader swapped
+        // in partway through a run would turn a measurement into a race with
+        // whoever happened to be editing. Nothing is presenting its picture
+        // either, so there is nobody to show a reload to.
+        switch (self.surface) {
+            .layer => self.watcher.start(self.device),
+            .target => {},
+        }
         if (self.watcher.drain()) |fresh| {
             const outgoing = self.pipelines;
             self.pipelines = fresh;
@@ -1257,12 +1573,29 @@ pub const Renderer = struct {
         self.slot = (self.slot + 1) % max_frames_in_flight;
         self.writeWindow();
 
-        // Nil under load, and that is normal rather than an error: the
-        // compositor is holding every drawable and the right answer is to let
-        // this tick go. Treating it as a failure is how a render loop turns a
-        // busy moment into a visible stall.
-        const drawable = self.layer.msgSend(objc.Object, "nextDrawable", .{});
-        if (drawable.value == null) return .no_drawable;
+        // **The first of exactly three points in this function that know which
+        // kind of surface this renderer has**, and the only one that can decline
+        // a frame. A layer hands out a drawable, which is nil under load, and
+        // that is normal rather than an error: the compositor is holding every
+        // one and the right answer is to let this tick go. Treating it as a
+        // failure is how a render loop turns a busy moment into a visible stall.
+        //
+        // An offscreen target is simply there, so a renderer built by
+        // `initOffscreen` never returns `.no_drawable` and never waits on a
+        // compositor. Everything past this line is shared, which is what makes a
+        // measurement taken offscreen a statement about this function rather
+        // than about a copy of it.
+        const attachment: Attachment = switch (self.surface) {
+            .layer => |layer| blk: {
+                const drawable = layer.msgSend(objc.Object, "nextDrawable", .{});
+                if (drawable.value == null) return .no_drawable;
+                break :blk .{
+                    .texture = drawable.msgSend(objc.Object, "texture", .{}),
+                    .drawable = drawable,
+                };
+            },
+            .target => |texture| .{ .texture = texture, .drawable = null },
+        };
 
         // The half the beam deposits into this frame, and the half it reads.
         // They swap only once the command buffer below is committed, which is
@@ -1366,7 +1699,9 @@ pub const Renderer = struct {
         // action's clear and the `background` colour that went with it.
         const resolve_pass_descriptor = drawablePass();
         const resolve_attachment = colorAttachment(resolve_pass_descriptor);
-        resolve_attachment.msgSend(void, "setTexture:", .{drawable.msgSend(objc.Object, "texture", .{})});
+        // Point two. The texture was resolved above rather than here, so this
+        // line is the same for both surfaces.
+        resolve_attachment.msgSend(void, "setTexture:", .{attachment.texture});
 
         const resolver = buffer.msgSend(objc.Object, "renderCommandEncoderWithDescriptor:", .{
             resolve_pass_descriptor,
@@ -1393,7 +1728,12 @@ pub const Renderer = struct {
         buffer.msgSend(void, "addCompletedHandler:", .{&completion});
         handed_off = true;
 
-        buffer.msgSend(void, "presentDrawable:", .{drawable});
+        // Point three, and the last. There is nothing to present offscreen; the
+        // completion handler above was registered either way, so the frame slot
+        // comes back on both paths and `.presented` stays the truthful answer,
+        // since what it has always meant here is "encoded and committed" rather
+        // than "reached a screen".
+        if (attachment.drawable) |drawable| buffer.msgSend(void, "presentDrawable:", .{drawable});
         buffer.msgSend(void, "commit", .{});
 
         // Only now, and the asymmetry with `slot` above is deliberate. `slot`
@@ -1898,6 +2238,133 @@ fn attachLayer(
     host_view.msgSend(void, "setWantsLayer:", .{true});
 
     return layer;
+}
+
+/// `MTLOrigin`, `MTLSize` and `MTLRegion`, three `NSUInteger`s each and a pair of
+/// the first two, restated on the same terms as the constants at the head of this
+/// file and with the same absence of anything to check them against.
+///
+/// Reached only by `readback`. Nothing on the render path takes any of them,
+/// because a render pass gets its extent from its attachment and a fullscreen
+/// triangle gets its from the viewport.
+const MTLOrigin = extern struct { x: u64 = 0, y: u64 = 0, z: u64 = 0 };
+const MTLSize = extern struct { width: u64, height: u64, depth: u64 = 1 };
+const MTLRegion = extern struct { origin: MTLOrigin = .{}, size: MTLSize };
+
+/// Bytes one pixel occupies in each of the two formats read back.
+///
+/// Stated rather than derived, because Metal derives neither for a buffer: the
+/// blit in `readback` has to be told its destination's row stride, and getting it
+/// wrong produces a picture skewed by a fraction of a row rather than a failure.
+/// Eight for `RGBA16Float`, four for `BGRA8Unorm`.
+const energy_bytes_per_pixel: usize = 8;
+const picture_bytes_per_pixel: usize = 4;
+
+/// Build the colour target an offscreen renderer resolves into.
+///
+/// The same format as the drawable, because the resolve pipeline is compiled
+/// against exactly one and a mismatch is a draw-time validation failure. Shared
+/// storage, because the whole point is that the CPU reads it; that is the one
+/// place an offscreen renderer's resources differ from a layer-backed one's, and
+/// it differs there because a layer-backed renderer has no counterpart to this at
+/// all rather than because a shipping resource was reconfigured.
+///
+/// **Deliberately not counted by `live_textures`.** That counter answers for the
+/// accumulation, which the smoke harness asserts is zero after its cycles; this
+/// is a surface, and the layer it stands in for is not counted either. It is
+/// released in `deinit` alongside it.
+///
+/// **`TextureAllocationFailed` rather than `SurfaceCreationFailed`**, though this
+/// is the offscreen renderer's surface and that name would read as the symmetric
+/// choice. What failed decides the name here, not what the thing is for: this is
+/// a texture sized from the caller's geometry, `replaceTarget` reaches it from
+/// `resize`, and "an allocation that scales with the editor and can be provoked
+/// by dragging an edge" is the condition that error was added to describe.
+/// `SurfaceCreationFailed` stays what `attachLayer` reports, where the failure is
+/// CoreAnimation declining to make a layer and no allocation is in question. It
+/// also follows `buildAccumulation`, the only other texture builder here, which
+/// reports the same error for both its descriptor and its allocation.
+fn buildTarget(device: objc.Object, pixels: Pixels, diags: *iface.Diagnostics) iface.Error!objc.Object {
+    const descriptor = objc.getClass("MTLTextureDescriptor").?.msgSend(
+        objc.Object,
+        "texture2DDescriptorWithPixelFormat:width:height:mipmapped:",
+        .{ drawable_pixel_format, @as(u64, pixels.width), @as(u64, pixels.height), false },
+    );
+    if (descriptor.value == null) {
+        diags.set("Metal would not describe an offscreen render target");
+        return error.TextureAllocationFailed;
+    }
+
+    descriptor.msgSend(void, "setUsage:", .{mtl.texture_usage_render_target | mtl.texture_usage_shader_read});
+    descriptor.msgSend(void, "setStorageMode:", .{mtl.storage_mode_shared});
+
+    const texture = device.msgSend(objc.Object, "newTextureWithDescriptor:", .{descriptor});
+    if (texture.value == null) {
+        diags.set("the Metal device would not allocate an offscreen render target");
+        return error.TextureAllocationFailed;
+    }
+    return texture;
+}
+
+/// Build the buffer `readback` blits the accumulation into.
+///
+/// A buffer rather than a second texture, which is what makes the read
+/// allocation-free on this side: `contents` is a mapped pointer, so the halves
+/// can be widened straight into the caller's slice with no intermediate of our
+/// own. Blitting texture-to-texture would leave `getBytes` needing a destination
+/// this file has no allocator to provide.
+fn buildStaging(device: objc.Object, pixels: Pixels, diags: *iface.Diagnostics) iface.Error!objc.Object {
+    const length = @as(usize, pixels.width) * pixels.height * energy_bytes_per_pixel;
+
+    const staging = device.msgSend(objc.Object, "newBufferWithLength:options:", .{
+        @as(u64, length),
+        mtl.resource_storage_mode_shared,
+    });
+    if (staging.value == null) {
+        diags.set("the Metal device would not allocate a readback buffer");
+        return error.BufferAllocationFailed;
+    }
+    return staging;
+}
+
+/// Widen the blitted half-floats into the caller's slice.
+///
+/// Short slices are filled as far as they go, on `upload`'s precedent. `f16` is
+/// what `RGBA16Float` holds and Zig has the type, so the conversion is a cast
+/// rather than a bit-twiddle.
+fn readEnergy(staging: objc.Object, pixels: Pixels, out: []f32) void {
+    const contents = staging.msgSend(?*anyopaque, "contents", .{}) orelse return;
+    const halves: [*]const f16 = @ptrCast(@alignCast(contents));
+
+    const available = @as(usize, pixels.width) * pixels.height * 4;
+    const n = @min(out.len, available);
+    for (out[0..n], 0..) |*slot, i| slot.* = @floatCast(halves[i]);
+}
+
+/// Copy the resolved picture out and put it in red-first order.
+///
+/// Whole rows only, so a short slice truncates at a row boundary rather than
+/// halfway through one and leaves a picture that reads as skewed. The swizzle is
+/// what keeps `iface.Readback` able to say "RGBA" without this file's drawable
+/// format leaking into the seam's vocabulary.
+fn readPicture(target: objc.Object, pixels: Pixels, out: []u8) void {
+    const row_bytes = @as(usize, pixels.width) * picture_bytes_per_pixel;
+    if (row_bytes == 0) return;
+
+    const rows = @min(@as(usize, pixels.height), out.len / row_bytes);
+    if (rows == 0) return;
+
+    target.msgSend(void, "getBytes:bytesPerRow:fromRegion:mipmapLevel:", .{
+        out.ptr,
+        @as(u64, row_bytes),
+        MTLRegion{ .size = .{ .width = pixels.width, .height = rows } },
+        @as(u64, 0),
+    });
+
+    var i: usize = 0;
+    while (i + picture_bytes_per_pixel <= rows * row_bytes) : (i += picture_bytes_per_pixel) {
+        std.mem.swap(u8, &out[i], &out[i + 2]);
+    }
 }
 
 /// A render pass writing into one half of the accumulation.

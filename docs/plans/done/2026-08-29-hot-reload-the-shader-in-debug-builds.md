@@ -330,7 +330,7 @@ Re-measure the `smoke-leaks` baseline afterwards. The harness now spawns and joi
 
 ## Out of scope
 
-Hot-reloading Zig, which the issue excludes. Validating a reloaded shader's binding indices at runtime, which is [#51](https://github.com/cboone/fosforo/issues/51)'s territory and needs a readback rather than a text scan. Any release-build reload path, which ADR 0009 rules out.
+Hot-reloading Zig, which the issue excludes. Validating a reloaded shader's binding indices at runtime, filed as [#77](https://github.com/cboone/fosforo/issues/77). [#51](https://github.com/cboone/fosforo/issues/51) landed while this branch was open and does not cover it: `smoke-trace` measures what the **embedded** shader draws, and nothing reloads during a trace run. Any release-build reload path, which ADR 0009 rules out.
 
 ## Outcome
 
@@ -382,4 +382,4 @@ Both findings on the pull request were of one kind, which is worth naming becaus
 
 ### The host result is worth noting beyond itself
 
-This is worth noting beyond its own result. ADR 0013 records that nothing automated here has ever answered what the pixels became, and #55 proved the cost of that the expensive way. A window-id capture plus a pixel count against a deliberately unmissable edit is not a general answer to that, and it is not a golden-image comparison, which [#51](https://github.com/cboone/fosforo/issues/51) still owns. It is a usable one for *this* kind of change, where the question is whether a swap reached the screen at all rather than whether the picture is right.
+This is worth noting beyond its own result. ADR 0013 records that nothing automated here has ever answered what the pixels became, and #55 proved the cost of that the expensive way. A window-id capture plus a pixel count against a deliberately unmissable edit is not a general answer to that, and it is not the offscreen readback [#51](https://github.com/cboone/fosforo/issues/51) has since landed, which measures the embedded shader against the constants rather than watching a reload arrive. It is a usable one for *this* kind of change, where the question is whether a swap reached the screen at all rather than whether the picture is right.

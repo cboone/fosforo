@@ -20,6 +20,14 @@ on:
       - "**/CLAUDE.md"
       - "**/AGENTS.md"
 
+  # The escape hatch the other three workflows already have, added after a
+  # conflicted pull request went four hours with no checks at all. A PR that
+  # conflicts with its base has no `refs/pull/N/merge` for GitHub to build, so
+  # nothing `pull_request` triggers can dispatch, and with no manual trigger there
+  # was no way to run *this* workflow by hand while that lasted -- only `typos`,
+  # `gitleaks` and `trufflehog`, none of which build anything.
+  workflow_dispatch:
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -121,14 +129,33 @@ jobs:
   # paid once for all of them. They are gated differently:
   #
   #   gpu     needs a Metal device and no window. Required.
-  #   appkit  needs a window server as well, which a headless runner may not
-  #           grant. `continue-on-error`, and the step after it reports what
-  #           happened, because settling that question is what this run is for.
-  #   leaks   the same window server, plus `leaks`. `continue-on-error` for the
-  #           same reason, since it is the appkit half under an instrument.
+  #   trace   needs a Metal device and no window, so required on the same terms.
+  #           It is the only check here that answers what the pixels became.
+  #   appkit  needs a window server as well. Required too, since #72: 65 runs
+  #           answered whether a hosted runner grants one to an unbundled
+  #           process, and this half carries the only assertion anywhere on
+  #           `liveAccumulationTextures`.
+  #   leaks   the same window server, plus `leaks`. Still `continue-on-error`,
+  #           and that asymmetry is the argument rather than a leftover.
   #
-  # This is the one check in the project that can go red for reasons unrelated to
-  # the code, which is the cost of being the only one that runs anything.
+  # **The two halves are not exposed to the same thing, which is why only one of
+  # them moved.** `smoke-appkit` fails on its own assertions and on the
+  # window-server connection those 65 runs settled, and both of those are facts
+  # about this repository. `smoke-leaks` additionally judges the runner's own
+  # AppKit chatter, against the class prefixes in `scripts/smoke-leak-check`,
+  # several of which name classes the frameworks allocate on their own account.
+  # An `IOSurface` or an `NSView` leaked for reasons that have nothing to do
+  # with this project fails that step, and nothing here would be wrong.
+  #
+  # "Several" rather than a count, deliberately. Which of those seven prefixes
+  # the frameworks allocate under on their own account was never measured, so a
+  # number here would be the one unmeasured figure in a comment block whose
+  # every other figure is quoted from the Actions API. ADR 0013 says "several"
+  # for the same list and this now matches it.
+  #
+  # So this is still the one check in the project that can go red for reasons
+  # unrelated to the code, which is the cost of being the only one that runs
+  # anything. What #72 settled is which step carries that cost.
   #
   # **The leak step runs 40 cycles here and 400 by hand, and that is measured
   # rather than a concession.** `scripts/smoke-leak-check` judges leaked classes
@@ -145,10 +172,12 @@ jobs:
   # rate. 400 cycles takes 113 s on that machine and would take around twice that
   # here; 40 takes 13 s there and should land near 25 s here.
   #
-  # 58s max over 10 runs, re-measured from the Actions API on 2026-08-28 before
-  # the leak step landed (25, 28, 29, 35, 35, 38, 38, 40, 49, 58). The 38s over 3
-  # runs this comment used to carry was true when it was written and had drifted
-  # by half; re-measure rather than trusting it, which is what #63 did.
+  # 98s max over the 65 runs that completed, re-measured from the Actions API on
+  # 2026-08-29 with the leak step in. The 58s over 10 runs this comment used to
+  # carry was taken the day before that step landed, so it was already a figure
+  # for a job that no longer existed; the 38s over 3 runs before it had drifted
+  # by half. Re-measure rather than trusting it, which is what #63 did and what
+  # #72 did again.
   #
   # **The ceiling deliberately stays at 8 rather than tracking 4x that.** Every
   # other ceiling here is 4x an observed run because its worst case is
@@ -161,17 +190,66 @@ jobs:
   # That margin was 2.7x before the leak step and is 1.5x after it, which is the
   # number to watch: a third gated step in this job, which is what [#69] would be,
   # takes it below 1 and the ceiling has to move. The 75% criterion is the other
-  # one — 360s against 8 minutes — and the leak step is expected to put the job
-  # near 80s rather than near 360. Re-measure before assuming either still holds.
+  # one, 360s against 8 minutes, and the leak step's prediction held: it was
+  # expected to put the job near 80s rather than near 360, and the worst of 65
+  # runs is 98s, or 20% of the ceiling. Re-measure before assuming either still
+  # holds.
+  #
+  # **The trace step does not enter that arithmetic**, and the reason is worth
+  # stating so the next step added is judged the same way. The margin above counts
+  # step-level timeouts, and this step has none, for the same reason `smoke-gpu`
+  # has none: it needs no window server, so it has no wedge to be seen doing and
+  # nothing to label. It costs wall clock rather than budget.
+  #
+  # **3s max over 2 runs, measured rather than predicted.** The prediction in this
+  # comment was 10s, reasoning that the step's cost is a shader compile per case
+  # paid twenty-eight times and that a hosted runner is slower at exactly that. It
+  # was wrong by 3x in the conservative direction, and the job moved from a 58s max
+  # to 73s and 91s, still 5x inside the ceiling and a quarter of the 75% criterion.
+  # Recorded rather than quietly corrected, because a comment that estimated and
+  # never checked is what every other timeout here was written to stop being — and
+  # stated as a max over a sample rather than as one number, because the figure
+  # this block used to carry drifted by half while reading like a measurement.
+  #
+  # **Every number the step printed is identical to the development machine's**,
+  # on different silicon: row 269 for silence, row 26 for full scale, rail on row
+  # 5, twenty periods from twenty cycles, a beam ray of 0.2998 and 0.4500 with
+  # 0.00000 worst deviation, and one deposit peaking at exactly 1.0000. That last
+  # one is the interesting one, since it means the diamond-exit finding recorded in
+  # ADR 0013 holds on more than one GPU.
   #
   # [#69]: https://github.com/cboone/fosforo/issues/69
   #
-  # The experiment this job was added to run has an answer: the AppKit half
-  # succeeded on all 3 sampled runs, so a hosted macOS runner does grant an
-  # unbundled process a window-server connection. `continue-on-error` is kept
-  # anyway for now, because promoting a check to required is a decision about
-  # what may block a merge rather than a fact about the runner, and nothing has
-  # yet observed this job across an image refresh.
+  # **The experiment this job was added to run has an answer, and the rule for
+  # reading it was written down before the answer was known.** #19's plan said:
+  # "if the AppKit half passes on the first run and on one re-run, drop
+  # `continue-on-error` in a follow-up; if it fails for want of a window server,
+  # leave the step in place with the flag and record the finding in ADR 0013's
+  # consequences". Measured from the Actions API on 2026-08-29, this job has 68
+  # recorded runs, 65 of which completed, and `Smoke-test the AppKit path`
+  # succeeded on every one of them. It has never failed and never timed out. So
+  # [#72] drops the flag on a rule stated in advance, rather than on a reading of
+  # the runs arrived at afterwards.
+  #
+  # **The one thing the sample cannot show is the thing #72 asked for, and it is
+  # retired rather than ticked.** All 65 runs used the same runner image,
+  # `macos-26-arm64` version `20260728.0273.1`, over the 30 days from 2026-07-30
+  # to 2026-08-29. This repository's whole CI history contains exactly one image
+  # refresh and it landed the day before this job did, so waiting for the job to
+  # cross one means holding the decision open on GitHub's release cadence for
+  # evidence a month of runs did not produce. The notice step below prints the
+  # image instead, which makes the first run after a refresh self-diagnosing
+  # rather than making it wait.
+  #
+  # **Required here means the job goes red, not that a merge is blocked.** `main`
+  # declares no required status checks, so what changes is that a failure is
+  # visible as one. That is enough, because of what this half carries:
+  # `liveAccumulationTextures` is asserted here and nowhere else, and #55
+  # established that a leaked `MTLTexture` is invisible to `leaks` and to peak
+  # RSS both, so the project's only instrument for its largest resource was
+  # reporting through a step that could not go red.
+  #
+  # [#72]: https://github.com/cboone/fosforo/issues/72
   smoke:
     runs-on: macos-latest
     timeout-minutes: 8
@@ -185,20 +263,51 @@ jobs:
       - name: Smoke-test the GPU path
         run: zig build smoke-gpu
 
-      # A label, on the precedent of the Metal download above. The plausible
-      # failure here is not a red result but a wedge: an AppKit call that blocks
-      # waiting on a window server this process was never granted. Two minutes is
-      # far above the seconds it takes locally, and it makes that case read as
-      # itself instead of as the whole job timing out.
+      # Required, ungated and with no step timeout, on `smoke-gpu`'s terms: it
+      # acquires a device and never opens a window, so the wedge the two steps
+      # below are labelled for cannot happen here.
+      #
+      # It is the only check in this repository that answers what the pixels
+      # became. #55 shipped a resolve gain that rendered a sine as a black
+      # display and passed 160 unit tests, both smoke halves, the leak check,
+      # `clap-validator` and the validation layer; it was found by eye. That exact
+      # defect, replanted, fails this step with a channel 224 levels out.
+      - name: Verify the shader draws what the constants say
+        run: zig build smoke-trace
+
+      # **A budget now, not a label.** While this step ran under
+      # `continue-on-error` the job's own ceiling was the only real bound and
+      # this timeout just made a wedge read as itself. Now that the step can fail
+      # the job, 120s is what stands between a wedged AppKit call and the other
+      # six minutes of the job's ceiling, and the failure it produces names this
+      # step rather than the whole job.
+      #
+      # The plausible failure here is still a wedge rather than a red result: an
+      # AppKit call that blocks waiting on a window server this process was never
+      # granted. 5s max over the 65 runs measured on 2026-08-29, with the whole
+      # distribution between 0 and 5s, so this is 24x the worst observed. That is
+      # wider than the 4x this repository uses for job ceilings, deliberately and
+      # for the same reason `smoke`'s own ceiling is not 4x: a wedge has no
+      # duration to take a multiple of.
       - name: Smoke-test the AppKit path
         id: appkit
-        continue-on-error: true
         timeout-minutes: 2
         run: zig build smoke-appkit
 
-      # A label on the same precedent, and sized the same way: far above the 13 s
-      # this takes locally at the same cycle count, so a wedge on a window server
-      # reads as itself rather than as the whole job timing out.
+      # Still a label, and now on the Metal download's precedent rather than on
+      # the step above's, which #72 turned into a budget. This step keeps
+      # `continue-on-error`, so the job's ceiling is the bound either way and
+      # three minutes only makes a wedge read as itself. Sized the same way
+      # regardless: far above the 13 s this takes locally at the same cycle
+      # count. 28s max over 9 runs on 2026-08-29 (23, 23, 24, 24, 25, 25, 25, 28,
+      # 28).
+      #
+      # **An AppKit failure now skips this step rather than running it**, since
+      # nothing here carries an `if:` and the step above can fail the job. That
+      # is what `scripts/smoke-leak-check`'s own first assertion already says: a
+      # leak report over a run that fell over partway through describes a process
+      # that never reached the teardown being measured. The notice below will
+      # read `leaks: skipped` on exactly those runs.
       #
       # `tee` because the figures are wanted whether this passes or fails, and the
       # script writes all of them to stderr. `pipefail` because a pipeline's status
@@ -217,6 +326,25 @@ jobs:
       # a notice in the run summary is how the answer gets read without opening
       # the log of a job that passed.
       #
+      # **The runner image goes out with it, because the evidence that promoted
+      # the AppKit half has exactly one hole and this is what watches it.** All
+      # 65 runs behind #72 ran on `macos-26-arm64` version `20260728.0273.1`, so
+      # nothing here has ever seen this job cross an image refresh. Printing the
+      # image on every run makes the first one after a refresh attributable at a
+      # glance: a red AppKit half beside a version nobody has seen before is a
+      # different event from a red AppKit half on the image 65 runs have already
+      # passed on.
+      #
+      # `ImageOS` and `ImageVersion` come from the GitHub-hosted runner images
+      # rather than from Actions, and are undocumented, so they are exactly the
+      # kind of thing that can go missing under a self-hosted runner or an image
+      # change. The defaults are what keep the reporting step from being the
+      # thing that breaks when they do: a notice reading `unknown` is itself a
+      # finding, and an unset variable taking down the step that reports the leak
+      # figures is not. The `Set up job` log group prints the same two values
+      # unconditionally, so it stays the positive control if these ever read
+      # `unknown`.
+      #
       # **The leak figures go out on green runs too, and that is the point rather
       # than a courtesy.** The byte bound in `scripts/smoke-leak-check` is set
       # against a baseline measured on the development machine, and this runner's
@@ -228,9 +356,11 @@ jobs:
       - name: Report what the smoke halves concluded
         if: always()
         run: |
-          echo "::notice::AppKit smoke half: ${{ steps.appkit.outcome }}; leaks: ${{ steps.leaks.outcome }}"
+          echo "::notice::AppKit smoke half: ${{ steps.appkit.outcome }}; leaks: ${{ steps.leaks.outcome }}; runner image: ${ImageOS:-unknown} ${ImageVersion:-unknown}"
           {
             echo "### Leak check (${{ steps.leaks.outcome }})"
+            echo
+            echo "Runner image: \`${ImageOS:-unknown}\` \`${ImageVersion:-unknown}\`"
             echo
             echo '```'
             grep '^smoke-leak-check:' leaks.log 2>/dev/null || echo "no report; see the step log"

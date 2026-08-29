@@ -71,6 +71,14 @@ test {
     _ = @import("platform/objc.zig");
     _ = @import("platform/view.zig");
 
+    // Not reached from the plugin at all: it reads a rendered trace back as
+    // numbers, and its one caller is `src/smoke.zig`. Named here for the reason
+    // the race harness below is, and for one of its own: the analysis it holds is
+    // where #38's period counter went wrong, and an analysis checked only by the
+    // build step that needs a GPU is an analysis this project's usual test run
+    // would never see.
+    _ = @import("gpu/measure.zig");
+
     // Not reached from the plugin at all: it is the root of the race harness,
     // which `zig build ring-race` builds as its own executable. Named here so its
     // pure parts are still checked by `zig build test`, because the machine that
