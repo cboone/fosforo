@@ -53,6 +53,23 @@ writes to `zig-out`. Compare the hash a step prints against the build you meant
 to test before trusting anything a host tells you: several worktrees compete for
 one plug-in folder, and the failure is silent.
 
+Every bundle also carries the branch and commit it was built from, which the
+install steps print and `scripts/read-provenance` reads back out of any built
+file. That is the check to reach for when there is nothing here to compare a
+hash against, such as a component another branch installed.
+
+A CLAP needs no install at all. REAPER honours `CLAP_PATH`, so a bundle can be
+loaded straight out of a worktree, which sidesteps the shared folder entirely.
+Move any installed copy aside first, because the variable adds to the standard
+locations rather than replacing them:
+
+```bash
+CLAP_PATH="$PWD/zig-out" /Applications/REAPER.app/Contents/MacOS/REAPER
+```
+
+There is no equivalent for the Audio Unit, and a symlinked component is not
+registered by macOS at all, so that half really does have to be copied.
+
 ### Building the Audio Unit
 
 Only needed for Logic Pro, which does not load CLAP plugins. This fetches the

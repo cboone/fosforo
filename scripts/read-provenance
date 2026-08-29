@@ -1,0 +1,366 @@
+#!/usr/bin/env bash
+# read-provenance — say which worktree and which commit a built bundle came from
+# Author: Christopher Boone
+# Date: 2026-08-28
+#
+# Several worktrees compete for one plug-in folder under ~/Library/Audio/Plug-Ins,
+# and the installed bundle belongs to whichever of them copied last. `install-plugins`
+# answers "is this the build I just made?" by comparing hashes, which works only when
+# this worktree has something to compare against. The case that has actually cost time
+# is the other one: a bundle nobody here built, where the hash has no counterpart and
+# the modification date is the only evidence there is.
+#
+# This is the missing half. `build.zig` asks git what the build is and
+# src/build_info.zig stamps it into the binary, so the answer travels with the file
+# and can be read back out of an installed bundle with nothing else in hand.
+#
+# Read with grep rather than `strings`, deliberately. /usr/bin/strings is an xcrun
+# shim and fails without the Command Line Tools; /usr/bin/grep is a base-OS binary, on
+# the same reasoning that makes build.zig name /usr/bin/codesign by absolute path. The
+# pattern stops at the first control character, which is the NUL terminating the
+# literal in the binary.
+#
+# The marker prefix below is restated from src/build_info.zig, in a second language,
+# with nothing but a test linking the two spellings. That test is in build_info.zig
+# and it reads this file as text, the way the shader tests read the shader.
+#
+# Usage:
+#   read-provenance [--check] [--short] <path> [<path>...]
+#
+#   --check   Exit non-zero unless every path carries a well-formed marker. Without
+#             it, a bundle with no marker is reported and tolerated, because bundles
+#             built before this existed are a state worth describing rather than
+#             failing on.
+#   --short   Print `<branch> <commit>` alone, with no path and no prefix, for a
+#             caller embedding the answer in a line of its own. `install-plugins`
+#             uses this, which is why the parsing lives here rather than there.
+#
+#   A path may be a bundle directory or the Mach-O inside one.
+#
+# Exit codes:
+#   0  - Every path was read; under --check, every one carried a marker
+#  64  - Invalid arguments
+#  65  - A marker is present but malformed
+#  66  - A path does not exist, or under --check carries no marker
+
+set -euo pipefail
+
+if [[ -n "${TRACE:-}" ]]; then
+  set -x
+fi
+
+readonly E_USAGE=64
+readonly E_DATAERR=65
+readonly E_NOINPUT=66
+
+# What `report` hands back, so main can honour the exit codes documented above. Three
+# outcomes that look alike and are not: a path that cannot be read is a caller error
+# and is always fatal; a readable file with no marker is the ordinary state of a
+# bundle built before this existed, and is fatal only under --check; a marker that is
+# present and the wrong shape is a defect on this side and is always fatal. Collapsing
+# them would make --check either too strict to use or too weak to mean anything.
+readonly REPORT_NO_MARKER=1
+readonly REPORT_MALFORMED=2
+readonly REPORT_UNREADABLE=3
+
+readonly PROGRAM_NAME="${0##*/}"
+
+# Keep in step with `marker_prefix` in src/build_info.zig, which is the source of
+# truth. The test named in the header is what stops these two drifting: a prefix that
+# moved on one side leaves this script reporting "no provenance" for every bundle,
+# which reads exactly like a bundle predating the stamp and would be believed.
+readonly MARKER_PREFIX="fosforo-build: "
+
+# A bounded run of printable characters after the prefix. `[^[:cntrl:]]` is what makes
+# this safe to run against a Mach-O: the match ends at the NUL that terminates the
+# string literal, so neighbouring literals in __cstring cannot bleed into the result.
+readonly MARKER_PATTERN="${MARKER_PREFIX}[^[:cntrl:]]*"
+
+# What a well-formed marker must contain. Checked as a whole rather than field by
+# field, because a marker that has lost a field is a build.zig or build_info.zig
+# defect and the useful report is "this is not the shape I know", not a list.
+readonly MARKER_SHAPE="^${MARKER_PREFIX}version=[^ ]+ branch=[^ ]+ commit=[^ ]+ dirty=(yes|no)\$"
+
+readonly NO_PROVENANCE="(no provenance)"
+
+# A marker that is there and cannot be parsed, which is not the same as one that is
+# absent and must not be reported as it: a bundle predating the stamp is ordinary,
+# while this is a defect on this side. Both are stand-ins rather than a `<branch>
+# <commit>` pair, so `--short`'s output stays one line either way and a caller
+# embedding it in a sentence gets something true in both cases.
+readonly BAD_PROVENANCE="(unreadable provenance)"
+
+function warn() {
+  echo "${PROGRAM_NAME}: ${*}" >&2
+}
+
+function usage() {
+  cat >&2 << 'USAGE'
+usage: read-provenance [--check] [--short] <path> [<path>...]
+
+  --check   Exit non-zero unless every path carries a well-formed marker.
+  --short   Print `<branch> <commit>` alone, with no path and no prefix.
+
+  A path may be a bundle directory or the Mach-O inside one.
+USAGE
+}
+
+# Resolve a path to the file that actually carries the marker.
+#
+# A bundle is a directory and the marker is in the Mach-O inside it, at
+# Contents/MacOS/<name>. The name is not assumed: both bundles here happen to hold
+# `Fosforo`, but reading whatever single executable is there costs nothing and does
+# not have to be kept in step with build.zig's install layout.
+# Arguments:
+#   $1 - a bundle directory or a file
+# Outputs:
+#   The path to read, on stdout
+# Returns:
+#   0 on success, REPORT_UNREADABLE when nothing readable is there
+function binary_in() {
+  local path="${1}"
+  local resolved=""
+
+  # `-f` and `-d` both follow symlinks, so a path that is one is read through to the
+  # bundle it points at. Nothing here installs a symlinked component any more, since
+  # macOS does not register one (ADR 0018), but a link made by hand still has to be
+  # readable: naming the build it resolves to is how `install-plugins` explains a
+  # component Logic is silently ignoring.
+  if [[ -f "${path}" ]]; then
+    resolved="${path}"
+  elif [[ -d "${path}" ]]; then
+    local candidate
+    for candidate in "${path}/Contents/MacOS/"*; do
+      if [[ -f "${candidate}" ]]; then
+        resolved="${candidate}"
+        break
+      fi
+    done
+
+    if [[ -z "${resolved}" ]]; then
+      warn "${path} has no Contents/MacOS binary"
+      return "${REPORT_UNREADABLE}"
+    fi
+  else
+    warn "cannot read ${path}"
+    return "${REPORT_UNREADABLE}"
+  fi
+
+  # **Readability is checked as well as existence, and once, covering both branches
+  # above.** `marker_in` sends grep's stderr to /dev/null and falls back to an empty
+  # match, so a file that exists and cannot be opened produces exactly what a file
+  # with no marker produces. The caller would then be told "(no provenance)", which
+  # means "a bundle older than the stamp" and sends the reader somewhere else
+  # entirely, and without --check it would not even be an error. Refused here, where
+  # the two are still distinguishable.
+  if [[ ! -r "${resolved}" ]]; then
+    warn "cannot read ${resolved}: it exists but is not readable"
+    return "${REPORT_UNREADABLE}"
+  fi
+
+  echo "${resolved}"
+}
+
+# Extract the marker from one file.
+#
+# Prints nothing and succeeds when there is no marker: that is a report, not an error,
+# and only --check turns it into one. The caller distinguishes the two by the empty
+# result rather than by an exit code, because "unreadable file" and "readable file
+# with no marker" are genuinely different and both reach here.
+# Arguments:
+#   $1 - path to a file
+# Outputs:
+#   The marker line on stdout, or nothing
+function marker_in() {
+  local binary="${1}"
+  local matches line
+  local best=""
+
+  # No pipeline into `head`, deliberately. Under `set -o pipefail` a grep that finds
+  # nothing fails the script, and a `head` that closes the pipe early can take grep
+  # down with SIGPIPE, so both of the ordinary outcomes here would be fatal. Capture
+  # everything and choose in the shell instead.
+  matches="$(LC_ALL=C /usr/bin/grep -a -o -E "${MARKER_PATTERN}" "${binary}" 2> /dev/null || true)"
+
+  # **The longest match, not the first, and that is not a refinement.** Zig emits
+  # `marker_prefix` into the binary as a literal in its own right, ahead of the marker
+  # composed from it: a Debug .clap holds `fosforo-build: ` at one offset and the full
+  # line 57 bytes later. Taking the first match therefore reported a marker consisting
+  # of nothing but its own prefix, which --check then called malformed.
+  #
+  # The count is not stable either, so it cannot be relied on instead: the same source
+  # at --release=fast emits the full line and *not* the bare prefix, because nothing
+  # references the constant at runtime. Two matches in Debug, one in ReleaseFast,
+  # measured rather than assumed. Length is the discriminator that holds for both, and
+  # for a compiler that later decides to emit neither or more.
+  while IFS= read -r line; do
+    if [[ "${#line}" -gt "${#best}" ]]; then
+      best="${line}"
+    fi
+  done <<< "${matches}"
+
+  # A bare prefix carries nothing and must read as absent rather than as malformed,
+  # so that a bundle built before any of this existed is reported the same way.
+  if [[ "${best}" == "${MARKER_PREFIX}" ]]; then
+    best=""
+  fi
+
+  echo "${best}"
+}
+
+# Reduce a well-formed marker to the two fields a caller wants in a line of its own.
+#
+# The shape has already been asserted by the time this runs, which is what lets these
+# expansions be this blunt. Parsing lives here rather than in `install-plugins`
+# because that would be a second place the marker's grammar is written down.
+# Arguments:
+#   $1 - a well-formed marker line
+# Outputs:
+#   `<branch> <commit>`, with ` (dirty)` appended when the tree was not clean
+function short_form() {
+  local marker="${1}"
+  local branch commit dirty
+
+  branch="${marker#*branch=}"
+  branch="${branch%% *}"
+  commit="${marker#*commit=}"
+  commit="${commit%% *}"
+  dirty="${marker##*dirty=}"
+
+  if [[ "${dirty}" == yes ]]; then
+    echo "${branch} ${commit} (dirty)"
+  else
+    echo "${branch} ${commit}"
+  fi
+}
+
+# Report on one path, and say whether it was well-formed.
+# Arguments:
+#   $1 - a bundle directory or a file
+#   $2 - true to print `<branch> <commit>` alone, without the path
+# Returns:
+#   0 when a well-formed marker was found, or one of the three REPORT_ codes
+function report() {
+  local path="${1}"
+  local short="${2}"
+
+  local binary
+  if ! binary="$(binary_in "${path}")"; then
+    return "${REPORT_UNREADABLE}"
+  fi
+
+  local marker
+  marker="$(marker_in "${binary}")"
+
+  if [[ -z "${marker}" ]]; then
+    if [[ "${short}" == true ]]; then
+      echo "${NO_PROVENANCE}"
+    else
+      echo "${path}: ${NO_PROVENANCE}"
+    fi
+    return "${REPORT_NO_MARKER}"
+  fi
+
+  # The shape is judged before anything is printed, because --short parses the marker
+  # and one that is not the expected shape cannot be parsed into anything worth
+  # printing.
+  #
+  # **The raw line goes to stdout only in the default mode.** `--short` promises a
+  # machine-readable line, and a caller embedding it in a sentence gets a path and a
+  # whole marker spliced into the middle of that sentence otherwise. It is still worth
+  # showing, because it is the most useful thing this script knows about the file, so
+  # under --short it goes to stderr with the diagnostic instead of contaminating the
+  # channel the caller is reading.
+  if ! echo "${marker}" | /usr/bin/grep -q -E "${MARKER_SHAPE}"; then
+    if [[ "${short}" == true ]]; then
+      echo "${BAD_PROVENANCE}"
+      warn "${path}: ${marker}"
+    else
+      echo "${path}: ${marker}"
+    fi
+
+    warn "${path}: marker is present but not the expected shape"
+    return "${REPORT_MALFORMED}"
+  fi
+
+  if [[ "${short}" == true ]]; then
+    short_form "${marker}"
+  else
+    echo "${path}: ${marker}"
+  fi
+}
+
+function main() {
+  local check=false
+  local short=false
+  local -a paths=()
+
+  while [[ "${#}" -gt 0 ]]; do
+    case "${1}" in
+      --check)
+        check=true
+        ;;
+      --short)
+        short=true
+        ;;
+      -h | --help)
+        usage
+        return 0
+        ;;
+      -*)
+        warn "unknown option: ${1}"
+        usage
+        return "${E_USAGE}"
+        ;;
+      *)
+        paths+=("${1}")
+        ;;
+    esac
+    shift
+  done
+
+  if [[ "${#paths[@]}" -eq 0 ]]; then
+    usage
+    return "${E_USAGE}"
+  fi
+
+  local path
+  local -i result
+  local -i missing=0
+  local -i malformed=0
+  local -i unreadable=0
+
+  for path in "${paths[@]}"; do
+    result=0
+    report "${path}" "${short}" || result="${?}"
+
+    case "${result}" in
+      0) ;;
+      "${REPORT_MALFORMED}") ((malformed++)) || true ;;
+      "${REPORT_UNREADABLE}") ((unreadable++)) || true ;;
+      *) ((missing++)) || true ;;
+    esac
+  done
+
+  # An unreadable path outranks everything, because it means the caller named
+  # something that is not there and no report below it describes anything.
+  if ((unreadable > 0)); then
+    return "${E_NOINPUT}"
+  fi
+
+  # A malformed marker outranks a missing one. Missing is the ordinary state of a
+  # bundle predating the stamp; malformed means this project wrote something it cannot
+  # read back, which is a defect on this side and the one to fix first. It is fatal
+  # without --check as well, because nothing asked for it and it should not be
+  # possible.
+  if ((malformed > 0)); then
+    return "${E_DATAERR}"
+  fi
+
+  if [[ "${check}" == true ]] && ((missing > 0)); then
+    warn "expected every path to carry a ${MARKER_PREFIX}marker"
+    return "${E_NOINPUT}"
+  fi
+}
+
+main ${1+"$@"}

@@ -48,6 +48,7 @@
 const std = @import("std");
 const objc = @import("objc");
 
+const build_info = @import("build_info.zig");
 const clap = @import("clap/c.zig");
 const gpu = @import("gpu/iface.zig");
 const gui = @import("clap/gui.zig");
@@ -125,6 +126,13 @@ pub fn main(init: std.process.Init.Minimal) u8 {
     _ = args.next();
 
     const half = args.next() orelse return usage();
+
+    // Before any half runs, so a CI log or a scrollback says which build produced
+    // the result below it. This harness is the one check here that can go red for
+    // reasons unrelated to the code (ADR 0013), which makes "which build was that?"
+    // a question worth answering without being asked. It sits above the dispatch
+    // rather than inside each half, which is why the third one inherited it.
+    say("smoke: {s}", .{build_info.marker});
 
     if (std.mem.eql(u8, half, "gpu")) return report("gpu", gpuHalf());
 
