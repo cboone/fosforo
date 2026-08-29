@@ -113,10 +113,18 @@ readonly REPORT_MARKER='leaks Report Version'
 # slope would have needed and could not have (#63).
 #
 # **The runner is noisier than this machine, and the looseness is what absorbs
-# it.** Three CI runs reported 18,656, 18,816 and 14,080 bytes: a 25% spread
-# against the 2% seen across six runs here. Anything tight enough to be called
-# calibrated would have to be re-measured against that; this has 74x of room at
-# the low end and 56x at the high end, so it does not.
+# it.** Nine CI runs reported 18,656, 18,816, 14,080, 18,816, 14,080, 9,728,
+# 18,624, 18,624 and 18,624 bytes: a low of 9,728 against a high of 18,816.
+# **Quote that as a ratio, not a percentage.** This comment used to say "a 25%
+# spread" over the first three runs, which is (max-min)/max; the naive
+# (max-min)/min gives 93% for the same nine runs and is not the same measure.
+# As a ratio the first three were 1.34x and nine are 1.93x, against the 2% seen
+# across six runs here. The figure widened as the sample grew, which is the
+# argument for the looseness rather than against it, and it is why `smoke-leaks`
+# keeps `continue-on-error` where `smoke-appkit` no longer does (#72). Anything
+# tight enough to be called calibrated would have to be re-measured against
+# that, and again whenever the image refreshed; this has 107x of room at the low
+# end and 56x at the high end, so it does not.
 readonly MAXIMUM_LEAKED_BYTES=1048576
 
 # Class-name prefixes this project is responsible for, as `leaks` spells them.

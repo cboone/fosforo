@@ -195,8 +195,10 @@ fn say(comptime fmt: []const u8, args: anytype) void {
 // The GPU half
 // ---------------------------------------------------------------------------
 
-/// Needs a device and nothing else, which is what makes it the half that can be
-/// required in CI. Runtime shader compilation is precisely what
+/// Needs a device and nothing else, which is what made it the half that could be
+/// required in CI first; #72 required the other one too, once 65 runs had
+/// settled that a hosted runner grants a window server. Runtime shader
+/// compilation is precisely what
 /// `zig build validate-shaders` cannot prove, since a file can type-check under
 /// `metal -fsyntax-only` and still fail `newLibraryWithSource:`.
 fn gpuHalf() !void {
@@ -835,7 +837,9 @@ fn hostLog(
 }
 
 /// Needs a window server as well as a device, which is the part a headless
-/// runner may refuse, so CI runs this without gating on it.
+/// runner may refuse. CI gates on it anyway, since #72: 65 runs settled that a
+/// hosted runner grants one, and this half carries the only assertion anywhere
+/// on `liveAccumulationTextures`.
 fn appkitHalf(cycles: u32) !void {
     platform.assertMainThread();
 

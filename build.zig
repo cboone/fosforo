@@ -618,7 +618,9 @@ fn addRingRaceStep(b: *std.Build) void {
     step.dependOn(&check.step);
 }
 
-/// One half, as its own step, so CI can require the halves that need no window.
+/// One half, as its own step, so each can be required, timed out and reported on
+/// its own terms. CI requires all three since #72 and #51; the split is what let
+/// it require the halves that need no window first.
 fn addSmokeHalf(
     b: *std.Build,
     exe: *std.Build.Step.Compile,
