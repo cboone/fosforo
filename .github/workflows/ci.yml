@@ -193,14 +193,15 @@ jobs:
   # has none: it needs no window server, so it has no wedge to be seen doing and
   # nothing to label. It costs wall clock rather than budget.
   #
-  # **2s here, measured on the first run rather than predicted.** The prediction
-  # in this comment was 10s, reasoning that the step's cost is a shader compile per
-  # case paid twenty-eight times and that a hosted runner is slower at exactly
-  # that. It was wrong by 5x in the conservative direction, and the job went from a
-  # 58s max to 73s, which is still 6.5x inside the ceiling and a fifth of the 75%
-  # criterion. Recorded rather than quietly corrected, because a comment that
-  # estimated and never checked is what every other timeout here was written to
-  # stop being.
+  # **3s max over 2 runs, measured rather than predicted.** The prediction in this
+  # comment was 10s, reasoning that the step's cost is a shader compile per case
+  # paid twenty-eight times and that a hosted runner is slower at exactly that. It
+  # was wrong by 3x in the conservative direction, and the job moved from a 58s max
+  # to 73s and 91s, still 5x inside the ceiling and a quarter of the 75% criterion.
+  # Recorded rather than quietly corrected, because a comment that estimated and
+  # never checked is what every other timeout here was written to stop being — and
+  # stated as a max over a sample rather than as one number, because the figure
+  # this block used to carry drifted by half while reading like a measurement.
   #
   # **Every number the step printed is identical to the development machine's**,
   # on different silicon: row 269 for silence, row 26 for full scale, rail on row
