@@ -121,6 +121,8 @@ jobs:
   # paid once for all of them. They are gated differently:
   #
   #   gpu     needs a Metal device and no window. Required.
+  #   trace   needs a Metal device and no window, so required on the same terms.
+  #           It is the only check here that answers what the pixels became.
   #   appkit  needs a window server as well. Required too, since #72: 65 runs
   #           answered whether a hosted runner grants one to an unbundled
   #           process, and this half carries the only assertion anywhere on
@@ -185,6 +187,29 @@ jobs:
   # runs is 98s, or 20% of the ceiling. Re-measure before assuming either still
   # holds.
   #
+  # **The trace step does not enter that arithmetic**, and the reason is worth
+  # stating so the next step added is judged the same way. The margin above counts
+  # step-level timeouts, and this step has none, for the same reason `smoke-gpu`
+  # has none: it needs no window server, so it has no wedge to be seen doing and
+  # nothing to label. It costs wall clock rather than budget.
+  #
+  # **3s max over 2 runs, measured rather than predicted.** The prediction in this
+  # comment was 10s, reasoning that the step's cost is a shader compile per case
+  # paid twenty-eight times and that a hosted runner is slower at exactly that. It
+  # was wrong by 3x in the conservative direction, and the job moved from a 58s max
+  # to 73s and 91s, still 5x inside the ceiling and a quarter of the 75% criterion.
+  # Recorded rather than quietly corrected, because a comment that estimated and
+  # never checked is what every other timeout here was written to stop being — and
+  # stated as a max over a sample rather than as one number, because the figure
+  # this block used to carry drifted by half while reading like a measurement.
+  #
+  # **Every number the step printed is identical to the development machine's**,
+  # on different silicon: row 269 for silence, row 26 for full scale, rail on row
+  # 5, twenty periods from twenty cycles, a beam ray of 0.2998 and 0.4500 with
+  # 0.00000 worst deviation, and one deposit peaking at exactly 1.0000. That last
+  # one is the interesting one, since it means the diamond-exit finding recorded in
+  # ADR 0013 holds on more than one GPU.
+  #
   # [#69]: https://github.com/cboone/fosforo/issues/69
   #
   # **The experiment this job was added to run has an answer, and the rule for
@@ -229,6 +254,18 @@ jobs:
 
       - name: Smoke-test the GPU path
         run: zig build smoke-gpu
+
+      # Required, ungated and with no step timeout, on `smoke-gpu`'s terms: it
+      # acquires a device and never opens a window, so the wedge the two steps
+      # below are labelled for cannot happen here.
+      #
+      # It is the only check in this repository that answers what the pixels
+      # became. #55 shipped a resolve gain that rendered a sine as a black
+      # display and passed 160 unit tests, both smoke halves, the leak check,
+      # `clap-validator` and the validation layer; it was found by eye. That exact
+      # defect, replanted, fails this step with a channel 224 levels out.
+      - name: Verify the shader draws what the constants say
+        run: zig build smoke-trace
 
       # **A budget now, not a label.** While this step ran under
       # `continue-on-error` the job's own ceiling was the only real bound and
