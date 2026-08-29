@@ -240,9 +240,17 @@ pub const Diagnostics = struct {
 /// watcher there to move one. A caller that wants to tell that apart from a
 /// watcher that never fired reads `watching`.
 pub const ShaderStats = struct {
-    /// Whether this build resolved a path and is watching it at all. False in
-    /// every release build, and false in a debug build whose path is missing.
-    watching: bool = false,
+    /// Whether this process resolved a shader path to compile from at all.
+    ///
+    /// **It says a path was chosen, and deliberately not two things it looks
+    /// like it might.** It does not say the file exists: a path that resolves
+    /// and then cannot be read leaves this true and moves `fallbacks`, which is
+    /// how a caller tells those apart. And it does not say a watcher thread is
+    /// running, because `probe` resolves a path without starting one.
+    ///
+    /// False in every release build, where no path is emitted, and false in a
+    /// debug build that was given no path or a relative one.
+    path_resolved: bool = false,
 
     /// Sources read off disk and compiled successfully, including the first.
     reloads: u64 = 0,

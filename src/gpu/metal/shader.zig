@@ -63,22 +63,53 @@ pub const path_env = "FOSFORO_SHADER_PATH";
 /// at runtime by a developer who has to work out why.
 pub const max_bytes = 64 * 1024;
 
+/// Storage for a resolved path, owned by the caller.
+///
+/// A caller's buffer rather than a static one, because the callers are on two
+/// different threads: the watcher polls four times a second while `init` and
+/// `probe` resolve on the main thread. One shared buffer would be a data race
+/// for no saving, since this is a kilobyte on a stack that already carries the
+/// 64 KiB `Buffer`.
+pub const PathBuffer = [std.fs.max_path_bytes]u8;
+
 /// The file this process should compile from, or null for the embedded copy.
 ///
-/// **The slice points into the process environment block and must be copied
-/// before anything else calls into libc.** A `setenv` anywhere in the host can
-/// free it. Called once, early, on the main thread, and copied.
+/// **The result is copied into `buf`, and that is a correctness requirement
+/// rather than a convenience.** `std.c.getenv` returns a pointer into the process
+/// environment block, and a `setenv` anywhere in the host can free it: `setenv`
+/// may reallocate the `environ` array and release the old entry. The watcher then
+/// holds the slice across a `statFile`, a `readFile` and a log call, on a thread
+/// that shares nothing with whoever might be writing the environment. Returning
+/// the borrowed slice would make that a use-after-free appearing only when a host
+/// mutates its own environment at runtime.
 ///
 /// **`std.c.getenv`, and there is no alternative in Zig 0.16.** `std.posix.getenv`
 /// and `std.process.getEnvVarOwned` are both gone; what replaced them is
 /// `std.process.Environ`, which hangs off the `std.process.Init` that a `main`
 /// receives, and a plugin loaded into a host's address space has no `main`.
 /// `link_libc` in `build.zig`'s `Core.module` is what makes this callable.
-pub fn resolvePath() ?[]const u8 {
+pub fn resolvePath(buf: *PathBuffer) ?[]const u8 {
     if (!live) return null;
 
     const env: ?[]const u8 = if (std.c.getenv(path_env)) |raw| std.mem.span(raw) else null;
-    return choosePath(env, build_options.shader_path);
+    return copyInto(buf, choosePath(env, build_options.shader_path));
+}
+
+/// Take ownership of a chosen path by copying it.
+///
+/// Split out of `resolvePath` so the copy is testable, which it otherwise is not:
+/// `live` is false in a test build by design, so `resolvePath` returns null there
+/// and a test of it would assert nothing about the property that matters.
+///
+/// A path longer than the buffer is refused rather than truncated, on the
+/// reasoning `read` gives for a file that exactly fills its own: half a path is a
+/// different file, and opening it would be worse than falling back.
+fn copyInto(buf: *PathBuffer, chosen: ?[]const u8) ?[]const u8 {
+    const path = chosen orelse return null;
+    if (path.len > buf.len) return null;
+
+    @memcpy(buf[0..path.len], path);
+    return buf[0..path.len];
 }
 
 /// Pick between the two places a path can come from.
@@ -227,6 +258,33 @@ test "nothing is read from disk in a test build" {
     // **Not vacuous.** A test binary is a Debug build, so this fails the moment
     // `!builtin.is_test` is dropped from `live`, which is the exact regression
     // that would put filesystem I/O inside the hermetic path ADR 0009 protects.
+    var buf: PathBuffer = undefined;
     try testing.expect(!live);
-    try testing.expectEqual(@as(?[]const u8, null), resolvePath());
+    try testing.expectEqual(@as(?[]const u8, null), resolvePath(&buf));
+}
+
+test "a resolved path is copied rather than borrowed" {
+    // The property the whole `PathBuffer` parameter exists for. `getenv` returns
+    // a pointer into the environment block, a `setenv` in the host can free it,
+    // and the watcher holds the result across a stat, a read and a log call. A
+    // borrowed slice would be a use-after-free that appears only when a host
+    // mutates its own environment, so aliasing is what has to be asserted.
+    var buf: PathBuffer = undefined;
+    const source = "/somewhere/scope.metal";
+
+    const copied = copyInto(&buf, source).?;
+
+    try testing.expectEqualStrings(source, copied);
+    try testing.expect(copied.ptr != source.ptr);
+    try testing.expect(copied.ptr == buf[0..].ptr);
+}
+
+test "a path too long for the buffer is refused rather than truncated" {
+    // Half a path is a different file, and opening it would be worse than the
+    // fallback. Same reasoning as `read`'s exactly-fills-the-buffer refusal.
+    var buf: PathBuffer = undefined;
+    const long = "/" ** (@sizeOf(PathBuffer) + 1);
+
+    try testing.expectEqual(@as(?[]const u8, null), copyInto(&buf, long));
+    try testing.expectEqual(@as(?[]const u8, null), copyInto(&buf, null));
 }

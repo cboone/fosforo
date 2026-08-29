@@ -339,7 +339,7 @@ fn reloadFallbackArms() !void {
     try fixture.use();
     const start = gpu.Renderer.shaderStats();
     try probeSucceeds("an identical copy on disk");
-    if (!gpu.Renderer.shaderStats().watching) return error.ShaderPathNotWatched;
+    if (!gpu.Renderer.shaderStats().path_resolved) return error.ShaderPathNotResolved;
     if (gpu.Renderer.shaderStats().reloads == start.reloads) return error.ShaderNotReadFromDisk;
     if (gpu.Renderer.shaderStats().fallbacks != start.fallbacks) return error.UnexpectedShaderFallback;
 
@@ -510,11 +510,11 @@ fn waitForReload(want: struct { reloads: ?u64 = null, rejected: ?u64 = null }, w
                 reload_timeout_us / std.time.us_per_ms,
                 what,
             });
-            say("  reloads={d} rejected={d} fallbacks={d} watching={}", .{
+            say("  reloads={d} rejected={d} fallbacks={d} path_resolved={}", .{
                 now.reloads,
                 now.rejected,
                 now.fallbacks,
-                now.watching,
+                now.path_resolved,
             });
             return error.ShaderNeverReloaded;
         }

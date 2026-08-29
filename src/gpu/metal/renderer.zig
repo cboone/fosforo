@@ -434,11 +434,11 @@ var live_textures: std.atomic.Value(usize) = .init(0);
 /// and every open editor in the process answers it at once.
 ///
 /// Zero and immovable in a release build, where nothing reads a file. A caller
-/// telling that apart from a watcher that never fired reads `watching`.
+/// telling that apart from a watcher that never fired reads `path_resolved`.
 var shader_reloads: std.atomic.Value(u64) = .init(0);
 var shader_rejected: std.atomic.Value(u64) = .init(0);
 var shader_fallbacks: std.atomic.Value(u64) = .init(0);
-var shader_watching: std.atomic.Value(bool) = .init(false);
+var shader_path_resolved: std.atomic.Value(bool) = .init(false);
 
 /// Say something once about the shader on disk, on the watcher's own thread.
 ///
@@ -640,7 +640,8 @@ const Watcher = if (shader.live) struct {
         if (self.started) return;
         self.started = true;
 
-        if (shader.resolvePath() == null) return;
+        var path_buf: shader.PathBuffer = undefined;
+        if (shader.resolvePath(&path_buf) == null) return;
 
         self.thread = std.Thread.spawn(.{}, run, .{ self, device }) catch |err| {
             sayShader("the watcher thread would not start ({t}); reload is off for this editor", .{err});
@@ -699,7 +700,8 @@ const Watcher = if (shader.live) struct {
         // edit would be recorded rather than acted on. `init` compiled this file
         // moments ago, so what is wanted is "changed since then", and taking the
         // stamp now rather than 250 ms from now is what makes that true.
-        if (shader.resolvePath()) |path| {
+        var path_buf: shader.PathBuffer = undefined;
+        if (shader.resolvePath(&path_buf)) |path| {
             self.seen = shader.stamp(path) catch null;
         }
 
@@ -725,7 +727,8 @@ const Watcher = if (shader.live) struct {
         // outstanding and the next poll picks it up.
         if (!self.mailbox.vacant()) return;
 
-        const path = shader.resolvePath() orelse return;
+        var path_buf: shader.PathBuffer = undefined;
+        const path = shader.resolvePath(&path_buf) orelse return;
         const now = shader.stamp(path) catch return;
 
         // Null only when the baseline stat in `run` failed, which means the file
@@ -1430,7 +1433,7 @@ pub const Renderer = struct {
     /// The one observable of hot reload, and it exists for the reason ADR 0013
     /// gives for `framesPresented`: the thing the feature changes is the picture,
     /// and the picture is precisely what nothing here can see. All zero and
-    /// `watching = false` in a release build, permanently, because nothing there
+    /// `path_resolved = false` in a release build, permanently, because nothing there
     /// reads a file.
     ///
     /// **The counters cannot tell a swap that used the new bytes from one that
@@ -1438,7 +1441,7 @@ pub const Renderer = struct {
     /// fixture only the new bytes could produce a diagnostic for.
     pub fn shaderStats() iface.ShaderStats {
         return .{
-            .watching = shader_watching.load(.acquire),
+            .path_resolved = shader_path_resolved.load(.acquire),
             .reloads = shader_reloads.load(.acquire),
             .rejected = shader_rejected.load(.acquire),
             .fallbacks = shader_fallbacks.load(.acquire),
@@ -1712,8 +1715,9 @@ fn buildPipelines(device: objc.Object, diags: *iface.Diagnostics) iface.Error!Pi
 /// the kind of thing that gets blamed on the GPU. Once, because the watcher asks
 /// this four times a second and a missing file is a state that persists.
 fn readShader(buf: *shader.Buffer) ?[:0]const u8 {
-    const path = shader.resolvePath() orelse return null;
-    shader_watching.store(true, .release);
+    var path_buf: shader.PathBuffer = undefined;
+    const path = shader.resolvePath(&path_buf) orelse return null;
+    shader_path_resolved.store(true, .release);
 
     shader.read(buf, path) catch |err| {
         if (shader_fallbacks.fetchAdd(1, .release) == 0) {
