@@ -18,17 +18,17 @@ Phase 3's remaining issues are all judged in a running host, so an ambiguous ins
 
 `build.zig` asks git at configure time and passes three facts through `build_options`. `src/build_info.zig` composes the three strings anyone needs from them, and is the only place any of those formats is written down:
 
-| Declaration          | Read by                                          |
-| -------------------- | ------------------------------------------------ |
-| `marker`             | `scripts/read-provenance`, out of a built file   |
-| `descriptor_version` | the host, as the plugin's version                |
-| `summary`            | the `clap.log` line and the smoke harness banner |
+| Declaration          | Read by                                                       |
+| -------------------- | ------------------------------------------------------------- |
+| `marker`             | `scripts/read-provenance`; also logged, which keeps it live   |
+| `descriptor_version` | the host, as the plugin's version                             |
 
 ```text
 marker              fosforo-build: version=0.0.0 branch=chore/x commit=84bd70d dirty=no
 descriptor_version  0.0.0+chore-x.84bd70d
-summary             chore/x 84bd70d
 ```
+
+A short `branch commit` form is deliberately absent. One was written and removed before merge: `scripts/read-provenance --short` already derives it from the marker, and a second declaration of that format in a second language is the duplication this module exists to prevent.
 
 `scripts/read-provenance` is the one implementation of reading it back, and `scripts/install-plugins` uses it to say whose build is installed rather than only whether it is this one.
 

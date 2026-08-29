@@ -1,13 +1,18 @@
-//! What this build is, in the three shapes anything here needs to read it.
+//! What this build is, in the two shapes anything here needs to read it.
 //!
 //! `build.zig` supplies the facts (branch, commit, dirty) and this file owns every
-//! string composed from them, so no consumer restates a format. Three consumers,
-//! three shapes, and they differ because their readers do:
+//! string composed from them, so no consumer restates a format. Two shapes, and they
+//! differ because their readers do:
 //!
 //!   `marker`             a line in the binary, for a script to grep out of a file
-//!                        nobody in this worktree built
+//!                        nobody in this worktree built. Also what `plugin.init` and
+//!                        the smoke harness log, which is what keeps its bytes live
 //!   `descriptor_version` semver build metadata, for the host to display
-//!   `summary`            a phrase, for the `clap.log` line and the smoke banner
+//!
+//! **There is deliberately no short `branch commit` form here.** One was written and
+//! removed: `scripts/read-provenance --short` already derives it from the marker, and
+//! a second declaration of the same format in a second language is exactly what this
+//! module exists to prevent. A Zig caller that wants one should log the marker.
 //!
 //! The problem all three exist for is in ADR 0018: several worktrees compete for one
 //! plug-in folder, the installed bundle belongs to whichever copied last, and a host
@@ -76,9 +81,6 @@ pub const descriptor_version: [:0]const u8 = terminate(if (!known)
     version ++ "+unknown"
 else
     version ++ "+" ++ sanitize(branch) ++ "." ++ sanitize(commit) ++ (if (dirty) ".dirty" else ""));
-
-/// The short phrase, for a diagnostic that has already said what it is about.
-pub const summary: [:0]const u8 = terminate(branch ++ " " ++ commit ++ (if (dirty) " (dirty)" else ""));
 
 /// Replace anything semver build metadata does not admit.
 fn sanitize(comptime s: []const u8) []const u8 {
