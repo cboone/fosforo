@@ -121,6 +121,8 @@ jobs:
   # paid once for all of them. They are gated differently:
   #
   #   gpu     needs a Metal device and no window. Required.
+  #   trace   needs a Metal device and no window, so required on the same terms.
+  #           It is the only check here that answers what the pixels became.
   #   appkit  needs a window server as well, which a headless runner may not
   #           grant. `continue-on-error`, and the step after it reports what
   #           happened, because settling that question is what this run is for.
@@ -164,6 +166,17 @@ jobs:
   # one — 360s against 8 minutes — and the leak step is expected to put the job
   # near 80s rather than near 360. Re-measure before assuming either still holds.
   #
+  # **The trace step does not enter that arithmetic**, and the reason is worth
+  # stating so the next step added is judged the same way. The margin above counts
+  # step-level timeouts, and this step has none, for the same reason `smoke-gpu`
+  # has none: it needs no window server, so it has no wedge to be seen doing and
+  # nothing to label. It costs wall clock rather than budget. Locally it runs in
+  # 1.5s of process time against the whole job's 58s, and the trace half's cost is
+  # a shader compile per case, which is the most expensive thing `init` does and
+  # is paid twenty-eight times here. A hosted runner is slower at exactly that, so
+  # expect this step to land nearer 10s than 2s and the job to stay far inside the
+  # 75% criterion. Re-measure from the Actions API once this has run.
+  #
   # [#69]: https://github.com/cboone/fosforo/issues/69
   #
   # The experiment this job was added to run has an answer: the AppKit half
@@ -184,6 +197,18 @@ jobs:
 
       - name: Smoke-test the GPU path
         run: zig build smoke-gpu
+
+      # Required, ungated and with no step timeout, on `smoke-gpu`'s terms: it
+      # acquires a device and never opens a window, so the wedge the two steps
+      # below are labelled for cannot happen here.
+      #
+      # It is the only check in this repository that answers what the pixels
+      # became. #55 shipped a resolve gain that rendered a sine as a black
+      # display and passed 160 unit tests, both smoke halves, the leak check,
+      # `clap-validator` and the validation layer; it was found by eye. That exact
+      # defect, replanted, fails this step with a channel 224 levels out.
+      - name: Verify the shader draws what the constants say
+        run: zig build smoke-trace
 
       # A label, on the precedent of the Metal download above. The plausible
       # failure here is not a red result but a wedge: an AppKit call that blocks

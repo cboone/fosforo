@@ -135,22 +135,50 @@ Case 3 is ADR 0017's saturation claim, and it needs no rasterization model at al
 
 The harness also **reports** the maximum energy per pixel rather than asserting it, because whether a line strip's shared vertices deposit twice under Metal's diamond-exit rule is not documented anywhere this project can cite. That number is a finding to record, not a claim to make in advance.
 
+### What it measured
+
+The rows are #38's table, from an instrument sharing nothing with the throwaway Objective-C probe that produced it:
+
+| Sample   | Measured row | Implied sample | #38's row |
+| -------- | ------------ | -------------- | --------- |
+| `0.000`  | 269          | +0.00206       | 269       |
+| `+0.500` | 148          | +0.50000       | 148       |
+| `+1.000` | 26           | +1.00206       | 26        |
+| `+1.050` | 14           | +1.05144       | 14        |
+| `-1.000` | 512          | -0.99794       | 512       |
+
+Sines at 1, 2, 4, 5, 8 and 20 cycles counted exactly, the rail held row 5 for every level from 1.111 to 1000.0, and the background reached the picture as `RGBA(5, 5, 8, 255)`, which is the value `find_drawable` searches a window capture for.
+
+**One deposit peaks at exactly 1.0000.** That answers the open question this plan declined to prejudge: a line strip's shared vertices do *not* deposit twice, so coverage is counted once per pixel at this geometry. It is a measurement at one geometry rather than a general claim about the rasterizer, and #57 replaces the primitive it is about.
+
+The beam's ray measured red/green 0.2998 and blue/green 0.4500 against literals of 0.30 and 0.45, with a worst deviation of 0.00000 across every lit pixel: half-float precision, and the first executable confirmation of the premise `scripts/measure-trace`'s colour guard rests on.
+
 ## Verification
 
-The harness's own correctness is established by planting defects and confirming each fails a *named* assertion, not merely some assertion. Record the results in a table in this plan, on ADR 0013's precedent.
+The harness's own correctness is established by planting defects and confirming each fails a *named* assertion. **All ten were planted and all ten were caught**, measured rather than predicted:
 
-| Planted defect                                              | Expected failure  |
-| ----------------------------------------------------------- | ----------------- |
-| Swap `full_scale` and `rail` in `trace_vertex`               | case 2            |
-| Apply `full_scale` twice                                     | case 2            |
-| Divide x by `sample_count` rather than `sample_count - 1`    | case 5            |
-| Negate y                                                     | case 4            |
-| Drop the `clamp`                                             | case 3            |
-| Change the beam colour literal                               | case 7            |
-| Change the background literal                                | case 9            |
-| Reinstate #55's `1 - decay` resolve gain                      | case 8            |
-| `decay_per_frame` of 1.0                                     | case 10           |
-| Bind `target` rather than `source` to the decay pass          | case 10           |
+| Planted defect                                            | Error returned              | What the harness printed                     |
+| --------------------------------------------------------- | --------------------------- | -------------------------------------------- |
+| Swap `full_scale` and `rail` in `trace_vertex`             | `LevelMisplaced`            | 0.250 read as 0.27366, off by 0.02366        |
+| Apply `full_scale` twice                                   | `LevelMisplaced`            | 0.250 read as 0.22428, off by 0.02572        |
+| Divide x by `sample_count` rather than `sample_count - 1`  | `TraceNotDrawn`             | silence lit 959 of 960 columns               |
+| The same, with the silence check relaxed by one column     | `TraceEndsEarly`            | three samples span columns 0 to 639 of 959   |
+| Negate y                                                   | `LevelMisplaced`            | 0.250 read as -0.24897, off by 0.49897       |
+| The same, with the level and rail checks skipped           | `TraceInverted`             | +0.5 sits -121.5 above centre                |
+| Drop the `clamp`                                           | `RailMisplaced`             | rail on row 0, expected 4.9                  |
+| A beam colour that varies across the fragment              | `BeamNotOneColour`          | worst ray deviation 0.28152                  |
+| Reorder the background literal's channels                  | `BackgroundNotNeutral`      | background RGBA(8, 5, 5, 255)                |
+| Reinstate #55's `1 - decay` resolve gain                   | `ResolveNotAnAdd`           | worst channel off by -224                    |
+| `decay_per_frame` of 1.0                                   | `DecayWrong`                | 1.0000 of the deposit, expected 0.9000       |
+| Bind `target` rather than `source` to the decay pass       | `DecayWrong`                | 0.0000 of the deposit, expected 0.9000       |
+
+Three things fell out of doing this rather than predicting it.
+
+**The wrong divisor is caught twice, and the broad net fires first.** At a full window it costs one column, which the silence check sees as 959 of 960; the three-sample probe is what makes the error 320 columns wide, and it had to be reached by relaxing the first check. Both are worth keeping: the second is the one that would still be decisive if Metal's diamond-exit rule ever made a one-column deficit ambiguous.
+
+**Binding the wrong accumulation texture does not compile.** Zig's unused-local rule catches it before any harness runs, which is a better outcome than a caught defect and worth recording as the reason that row needed `_ = &source;` to be exercised at all.
+
+**A uniform change to the beam's colour is invisible to the ray check, by construction.** The check takes its reference from the brightest lit pixel rather than from a restated literal, so it asserts that every deposit is the *same* colour and says nothing about which. That is the premise `scripts/measure-trace`'s guard rests on and had never been checked; pinning the literal here would be a fourth copy with nothing tying it back.
 
 Then, in order:
 
