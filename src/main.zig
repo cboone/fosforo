@@ -66,6 +66,7 @@ test {
     _ = @import("dsp/ring.zig");
     _ = @import("gpu/iface.zig");
     _ = @import("gpu/metal/renderer.zig");
+    _ = @import("gpu/metal/shader.zig");
     _ = @import("platform/displaylink.zig");
     _ = @import("platform/objc.zig");
     _ = @import("platform/view.zig");

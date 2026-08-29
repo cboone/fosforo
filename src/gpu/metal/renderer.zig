@@ -15,17 +15,27 @@ const std = @import("std");
 const objc = @import("objc");
 const iface = @import("../iface.zig");
 const platform = @import("../../platform/objc.zig");
+const shader = @import("shader.zig");
 
 const CGRect = platform.CGRect;
 const CGSize = platform.CGSize;
 
-/// The shader source, compiled at runtime rather than linked as a `.metallib`
-/// (ADR 0009), which is what keeps `zig build` free of the Metal toolchain.
+/// The bytes this build was compiled from, and what every test at the foot of
+/// this file talks about.
 ///
-/// Reached through the import table rather than by relative path: `@embedFile`
-/// cannot escape the module root, and `shaders/` sits beside `src/` rather than
-/// inside it. `build.zig` puts it there.
-const shader_source = @embedFile("scope.metal");
+/// Compiled at runtime rather than linked as a `.metallib` (ADR 0009), which is
+/// what keeps `zig build` free of the Metal toolchain and what makes reloading
+/// possible at all. `shader.zig` owns where it comes from; this file owns what is
+/// done with it.
+///
+/// **Still the embedded copy after #61, deliberately.** A debug build may compile
+/// something else at runtime, and the tests below would say nothing about a file
+/// that can change between a build and a frame. What they pin is the agreement
+/// between this file's constants and the shader the build shipped: the whole of
+/// the shipping path in a release, and the starting point in a debug build.
+/// **Nothing anywhere validates a hot-reloaded shader's binding indices**, which
+/// gets `buildPipeline`'s missing-function check and nothing else.
+const shader_source = shader.embedded;
 
 /// Metal's own enum values, restated because its headers are Objective-C and
 /// `translate-c` cannot read them.
