@@ -374,13 +374,18 @@ fn addSmokeSteps(core: Core) void {
     // which is what makes that claim true rather than merely intended.
     //
     // It is there to be run by hand at a depth the steps do not reach:
-    // `zig-out/bin/fosforo-smoke appkit 5000`. The two run steps below pass no
-    // count at all and take the harness's own default of 10; `smoke-leaks` is the
-    // one that offers one, for the reason in its own comment.
+    // `zig-out/bin/fosforo-smoke appkit 5000`. The run steps below pass no count
+    // at all and take the harness's own default of 10; `smoke-leaks` is the one
+    // that offers one, for the reason in its own comment.
     const install = b.addInstallArtifact(exe, .{});
 
-    const smoke = b.step("smoke", "Run both halves of the GUI smoke harness");
+    // Three halves now. `gpu` and `trace` need a device and no window, which is
+    // what lets CI require both; `appkit` needs a window server and runs there
+    // under `continue-on-error` (ADR 0013). They are registered in that order so
+    // running `smoke` locally reports the cheap failures first.
+    const smoke = b.step("smoke", "Run every half of the GUI smoke harness");
     smoke.dependOn(addSmokeHalf(b, exe, install, "gpu"));
+    smoke.dependOn(addSmokeHalf(b, exe, install, "trace"));
     smoke.dependOn(addSmokeHalf(b, exe, install, "appkit"));
 
     // Measured from outside the process, because a leak the harness could see is
@@ -509,7 +514,7 @@ fn addRingRaceStep(b: *std.Build) void {
     step.dependOn(&check.step);
 }
 
-/// One half, as its own step, so CI can require the half that needs no window.
+/// One half, as its own step, so CI can require the halves that need no window.
 fn addSmokeHalf(
     b: *std.Build,
     exe: *std.Build.Step.Compile,
@@ -528,9 +533,12 @@ fn addSmokeHalf(
     run.stdio = .inherit;
     run.has_side_effects = true;
 
+    // "GUI" dropped from the description when the third half arrived: `gpu` never
+    // opened a window and `trace` does not either, so two of the three were being
+    // described by the one requirement they do not have.
     const step = b.step(
         b.fmt("smoke-{s}", .{half}),
-        b.fmt("Run the {s} half of the GUI smoke harness", .{half}),
+        b.fmt("Run the {s} half of the smoke harness", .{half}),
     );
     step.dependOn(&run.step);
     return step;

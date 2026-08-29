@@ -124,6 +124,48 @@ pub fn extremes(image: Image, threshold: f32) ?Extremes {
     return found;
 }
 
+/// The leftmost and rightmost lit columns, or nothing when the image is dark.
+///
+/// The horizontal mapping's readout. `2i / (n - 1)` puts the last vertex exactly
+/// on the right edge and `2i / n` puts it a column short, which is a difference
+/// of one column at a full window and of a third of the width at three samples.
+/// So this is checked with a short window, where the two divisors are hundreds of
+/// columns apart and no tolerance has to carry the argument.
+pub const Span = struct { first: usize, last: usize };
+
+pub fn litSpan(image: Image, threshold: f32) ?Span {
+    var found: ?Span = null;
+
+    var x: usize = 0;
+    while (x < image.width) : (x += 1) {
+        if (topRow(image, x, threshold) == null) continue;
+        if (found) |*seen| seen.last = x else found = .{ .first = x, .last = x };
+    }
+
+    return found;
+}
+
+/// The largest value any pixel holds in one channel.
+///
+/// Unclipped, because the accumulation is floating point and a beam crossing its
+/// own path deposits twice. That headroom is the thing #60 wants and it is also
+/// the only way to measure decay: the ratio of this across successive frames is
+/// the decay factor, and taking it as a ratio is what makes the measurement
+/// independent of how many segments happened to cover the brightest pixel.
+pub fn maxChannel(image: Image, c: usize) f32 {
+    var peak: f32 = 0;
+
+    var y: usize = 0;
+    while (y < image.height) : (y += 1) {
+        var x: usize = 0;
+        while (x < image.width) : (x += 1) {
+            peak = @max(peak, image.channel(x, y, c));
+        }
+    }
+
+    return peak;
+}
+
 /// The sample value a row implies, inverting the shader's mapping.
 ///
 /// The row's *centre* rather than its edge, since a pixel is a square and the
@@ -410,8 +452,10 @@ test "a dark image yields nothing rather than a guess" {
     try testing.expectEqual(@as(?usize, null), bottomRow(image, 0, 0.5));
     try testing.expectEqual(@as(usize, 0), litColumns(image, 0.5));
     try testing.expectEqual(@as(?Extremes, null), extremes(image, 0.5));
+    try testing.expectEqual(@as(?Span, null), litSpan(image, 0.5));
     try testing.expectEqual(@as(usize, 0), periods(image, 0.5));
     try testing.expectEqual(@as(usize, 0), plateauWidth(image, 0.5));
+    try testing.expectEqual(@as(f32, 0), maxChannel(image, 1));
 }
 
 test "an image shorter than its declared geometry is reported as incomplete" {
@@ -523,8 +567,35 @@ test "a three-sample ramp reaches both edges" {
     // width. That is the property the offscreen harness checks against the real
     // shader, where a divisor of `n` would leave the right third dark.
     const image = rasterize(&pixels, width, height, &window);
-    try testing.expect(topRow(image, 0, 0.5) != null);
-    try testing.expect(topRow(image, width - 1, 0.5) != null);
+    const span = litSpan(image, 0.5).?;
+    try testing.expectEqual(@as(usize, 0), span.first);
+    try testing.expectEqual(width - 1, span.last);
+
+    // What the wrong divisor would give, computed rather than asserted, so the
+    // margin the harness relies on is written down: `2i / n` puts the last vertex
+    // at `(n - 1) / n` of the way across, a third of the width short at n = 3.
+    const wrong_last = (width - 1) * 2 / 3;
+    try testing.expect(span.last - wrong_last > width / 4);
+}
+
+test "a lit span and a peak channel are read off the same image" {
+    const width: usize = 64;
+    const height: usize = 32;
+
+    var pixels: [width * height * 4]f32 = @splat(0);
+    const image: Image = .{ .width = width, .height = height, .pixels = &pixels };
+
+    // Two lit pixels, of different brightness, in known columns.
+    pixels[(5 * width + 10) * 4 + 1] = 1.0;
+    pixels[(7 * width + 40) * 4 + 1] = 2.5;
+
+    const span = litSpan(image, 0.5).?;
+    try testing.expectEqual(@as(usize, 10), span.first);
+    try testing.expectEqual(@as(usize, 40), span.last);
+
+    // Unclipped, which is what makes the decay ratio measurable at all.
+    try testing.expectEqual(@as(f32, 2.5), maxChannel(image, 1));
+    try testing.expectEqual(@as(f32, 0.0), maxChannel(image, 0));
 }
 
 test "a sine window holds whole cycles across the drawn span" {
