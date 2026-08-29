@@ -119,6 +119,7 @@ USAGE
 #   0 on success, REPORT_UNREADABLE when nothing readable is there
 function binary_in() {
   local path="${1}"
+  local resolved=""
 
   # `-f` and `-d` both follow symlinks, so a path that is one is read through to the
   # bundle it points at. Nothing here installs a symlinked component any more, since
@@ -126,25 +127,38 @@ function binary_in() {
   # readable: naming the build it resolves to is how `install-plugins` explains a
   # component Logic is silently ignoring.
   if [[ -f "${path}" ]]; then
-    echo "${path}"
-    return 0
-  fi
+    resolved="${path}"
+  elif [[ -d "${path}" ]]; then
+    local candidate
+    for candidate in "${path}/Contents/MacOS/"*; do
+      if [[ -f "${candidate}" ]]; then
+        resolved="${candidate}"
+        break
+      fi
+    done
 
-  if [[ ! -d "${path}" ]]; then
+    if [[ -z "${resolved}" ]]; then
+      warn "${path} has no Contents/MacOS binary"
+      return "${REPORT_UNREADABLE}"
+    fi
+  else
     warn "cannot read ${path}"
     return "${REPORT_UNREADABLE}"
   fi
 
-  local candidate
-  for candidate in "${path}/Contents/MacOS/"*; do
-    if [[ -f "${candidate}" ]]; then
-      echo "${candidate}"
-      return 0
-    fi
-  done
+  # **Readability is checked as well as existence, and once, covering both branches
+  # above.** `marker_in` sends grep's stderr to /dev/null and falls back to an empty
+  # match, so a file that exists and cannot be opened produces exactly what a file
+  # with no marker produces. The caller would then be told "(no provenance)", which
+  # means "a bundle older than the stamp" and sends the reader somewhere else
+  # entirely, and without --check it would not even be an error. Refused here, where
+  # the two are still distinguishable.
+  if [[ ! -r "${resolved}" ]]; then
+    warn "cannot read ${resolved}: it exists but is not readable"
+    return "${REPORT_UNREADABLE}"
+  fi
 
-  warn "${path} has no Contents/MacOS binary"
-  return "${REPORT_UNREADABLE}"
+  echo "${resolved}"
 }
 
 # Extract the marker from one file.
@@ -194,10 +208,6 @@ function marker_in() {
   echo "${best}"
 }
 
-# Report on one path, and say whether it was well-formed.
-# Arguments:
-#   $1 - a bundle directory or a file
-#   $2 - true to print the marker alone, without the path
 # Reduce a well-formed marker to the two fields a caller wants in a line of its own.
 #
 # The shape has already been asserted by the time this runs, which is what lets these
@@ -224,6 +234,10 @@ function short_form() {
   fi
 }
 
+# Report on one path, and say whether it was well-formed.
+# Arguments:
+#   $1 - a bundle directory or a file
+#   $2 - true to print `<branch> <commit>` alone, without the path
 # Returns:
 #   0 when a well-formed marker was found, or one of the three REPORT_ codes
 function report() {
