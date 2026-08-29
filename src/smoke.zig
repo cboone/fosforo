@@ -245,21 +245,40 @@ fn gpuHalf() !void {
 /// leaves a file the OS reaps rather than one anybody has to find. `$TMPDIR`
 /// rather than a hardcoded `/tmp`, on `scripts/smoke-leak-check`'s precedent,
 /// falling back to the `/tmp` POSIX guarantees and macOS supplies.
+///
+/// **An empty or relative `$TMPDIR` is refused rather than used**, which is what
+/// makes the paragraph above a guarantee instead of an expectation. Empty would
+/// root the fixture at `/`, and relative would resolve it against the working
+/// directory, which for `zig build smoke-appkit` is the worktree: the one place
+/// this must never write. That is `shader.choosePath`'s rule arriving at a second
+/// caller for the same reason, and neither case is hypothetical enough to leave
+/// to a comment, since a harness that dirtied the tree would look like a bug in
+/// whatever ran next.
 const Fixture = struct {
     path_buf: [512]u8 = undefined,
     path: [:0]const u8 = "",
 
     fn create(self: *Fixture, tag: []const u8) !void {
-        const dir: []const u8 = if (std.c.getenv("TMPDIR")) |raw| std.mem.span(raw) else "/tmp";
-        const trimmed = std.mem.trimEnd(u8, dir, "/");
-
         self.path = std.fmt.bufPrintZ(&self.path_buf, "{s}/fosforo-smoke-{d}-{s}.metal", .{
-            trimmed,
-            std.Thread.getCurrentId(),
+            tempDir(),
+            // The process, matching what the paragraph above promises. A thread
+            // id is unique within a process and says nothing across two, which is
+            // the collision this name is for.
+            std.c.getpid(),
             tag,
         }) catch return error.FixturePathTooLong;
 
         try self.write(shader.embedded);
+    }
+
+    /// Where a fixture may live: `$TMPDIR` when it is absolute, `/tmp` otherwise.
+    fn tempDir() []const u8 {
+        const raw = std.c.getenv("TMPDIR") orelse return "/tmp";
+
+        const dir = std.mem.trimEnd(u8, std.mem.span(raw), "/");
+        if (dir.len == 0 or !std.fs.path.isAbsolute(dir)) return "/tmp";
+
+        return dir;
     }
 
     /// Written, then stat'd. **An arm whose fixture never landed has to fail as
