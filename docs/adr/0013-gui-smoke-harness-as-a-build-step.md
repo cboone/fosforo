@@ -207,7 +207,7 @@ Ten defects were planted and all ten were caught, each by a named assertion. The
 
 ### Three findings from building it
 
-**A line strip deposits once per pixel here.** One depositing frame peaks at exactly 1.0000, which is the beam's green, so shared vertices do not double under Metal's diamond-exit rule at this geometry. That was an open question the plan declined to prejudge, and it is why the resolve check compares the two readbacks against each other rather than against the beam's literal: a check that assumed single coverage would have been resting on it.
+**A line strip deposits once per pixel here.** One depositing frame peaks at exactly 1.0000, which is the beam's green, so shared vertices do not double under Metal's diamond-exit rule at this geometry. That was an open question the plan declined to prejudge, and it is why the resolve check compares the two readbacks against each other rather than against the beam's literal: a check that assumed single coverage would have been resting on it. **Reproduced on a second GPU** by the first CI run, which printed 1.0000 and every other figure identically to the development machine, so this is not one machine's rasterizer. It is still a measurement at one geometry rather than a general claim, and #57 replaces the primitive it is about.
 
 **Offscreen frames stop at three without a wait**, because that is the semaphore's depth and there is no display link pacing the loop. A `spinLoopHint` retry measured out at roughly the length of the frame it was waiting for and failed on the fourth frame of every case, which reads exactly like a completion handler that never fires and was not one. The harness yields instead.
 
