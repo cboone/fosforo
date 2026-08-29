@@ -15,6 +15,7 @@ const std = @import("std");
 const objc = @import("objc");
 const iface = @import("../iface.zig");
 const platform = @import("../../platform/objc.zig");
+const io = @import("../../platform/io.zig");
 const shader = @import("shader.zig");
 
 const CGRect = platform.CGRect;
@@ -465,6 +466,275 @@ fn signalCompleted(block: *const Completion.Context, buffer: objc.c.id) callconv
     if (block.sema) |sema| _ = dispatch_semaphore_signal(@ptrCast(sema));
 }
 
+/// A single-slot mailbox carrying one finished set of pipeline states from the
+/// watcher thread to the render thread.
+///
+/// `Pending` in `src/clap/gui.zig` is the shape, and the place the reasoning
+/// already lives: one producer, one consumer, drained at the top of a tick before
+/// anything it invalidates is read (ADR 0010). This is that one layer down.
+///
+/// **It cannot be `Pending`'s single atomic swap, and the reason is the payload's
+/// size rather than a difference of opinion.** `Pending` packs a size and a scale
+/// into one `u64`, so a post is a store and a drain is a swap with no torn read
+/// to reason about. A `Pipelines` is three object pointers, so the payload sits
+/// beside the word and the word is what orders access to it.
+const Mailbox = struct {
+    /// Written `.release` by whichever side made the transition and read
+    /// `.acquire` by the other, which is what *publishes* `staged` rather than
+    /// merely announcing it.
+    state: std.atomic.Value(State) = .init(.empty),
+
+    /// Written only by the watcher, and only while `state` is `.empty`. Read only
+    /// by the render thread, and only while `state` is `.full`. Those two windows
+    /// provably cannot overlap, which is the whole of why this needs no lock.
+    staged: Pipelines = undefined,
+
+    const State = enum(u32) { empty, full };
+
+    /// [watcher-thread] Whether there is room to publish into.
+    ///
+    /// **Asked before the compile rather than after it**, which is what makes the
+    /// already-full case free: an editor hidden for an hour costs four `stat`
+    /// calls a second and no XPC round trips at all. A watcher that compiled
+    /// first would throw the result away and pay 40 ms for it every poll.
+    ///
+    /// The answer cannot go stale in the unsafe direction, because only the
+    /// render thread performs full -> empty: a slot seen empty stays empty until
+    /// this thread fills it.
+    fn vacant(self: *const Mailbox) bool {
+        return self.state.load(.acquire) == .empty;
+    }
+
+    /// [watcher-thread] Hand a finished set over.
+    fn publish(self: *Mailbox, pipelines: Pipelines) void {
+        std.debug.assert(self.state.load(.monotonic) == .empty);
+        self.staged = pipelines;
+        self.state.store(.full, .release);
+    }
+
+    /// [render-thread, and [main-thread] once the watcher is joined] Take the
+    /// set, if there is one.
+    ///
+    /// **The copy happens before the state moves, and reversing those two lines
+    /// is the defect this comment exists to prevent.** `Pending.take` is a single
+    /// swap because its payload *is* the word; here the word only guards the
+    /// payload, so emptying the slot first would let the watcher start writing
+    /// `staged` while this thread was still reading it, and what came out would
+    /// be three pointers drawn from two different compiles. That is not a crash,
+    /// it is a picture that is subtly wrong. The release store below is what
+    /// orders the watcher's next write after this read.
+    fn take(self: *Mailbox) ?Pipelines {
+        if (self.state.load(.acquire) != .full) return null;
+
+        const taken = self.staged;
+        self.state.store(.empty, .release);
+        return taken;
+    }
+};
+
+/// Watches the shader file and compiles it somewhere the render thread is not.
+///
+/// **Why a thread at all**, given this project has never had one: compiling a
+/// source Metal has not seen takes about 40 ms (measured; see `Pipelines`), which
+/// is five vsyncs at 120 Hz. `Editor.tick` holds its `Gate` across its whole
+/// body, so a compile inside a tick is not merely a dropped frame, it is up to
+/// 40 ms of busy-spin on the host's main thread whenever an editor closes during
+/// one. #59 defers the same question about its own upsampling, so what this
+/// establishes is reusable rather than one-off.
+///
+/// Debug builds only, one per `Renderer`, which means one per open editor. A
+/// process-wide watcher would need a registry of live renderers to fan out to,
+/// which is worse than N threads parked in a futex; the cost worth naming is that
+/// eight open editors means eight compiles per save.
+const Watcher = if (shader.live) struct {
+    thread: ?std.Thread = null,
+    started: bool = false,
+
+    /// The stop flag **and** the futex word, which is what makes the wake
+    /// race-free rather than lucky. The kernel re-checks the word under its own
+    /// lock before parking, so a `halting` that lands between this thread's last
+    /// check and its wait returns immediately instead of sleeping the interval
+    /// out. Split into a `bool` and a separate word and the classic missed wakeup
+    /// is back, at a quarter second on the host's main thread every time an
+    /// editor closes.
+    halt: std.atomic.Value(u32) = .init(running),
+
+    mailbox: Mailbox = .{},
+
+    /// Owned by the watcher thread alone, and a field rather than a local because
+    /// 64 KiB is worth allocating once per editor rather than once per poll.
+    buf: shader.Buffer = .{},
+
+    /// What the file looked like last time this looked. Null until the first
+    /// successful stat, so the file as it stands when an editor opens is not
+    /// treated as an edit: `init` already compiled it.
+    seen: ?shader.Stamp = null,
+
+    const running: u32 = 0;
+    const halting: u32 = 1;
+
+    /// Four times a second, which is under the ~40 ms a compile costs and far
+    /// under the time it takes to notice a change by eye. A `stat` is cheap
+    /// enough that the interval is chosen for latency rather than for cost.
+    const poll_ms = 250;
+
+    /// [render-thread] Start on the first frame, and never again.
+    ///
+    /// **Not in `init`, and this is not a preference.** `Renderer.init` returns
+    /// by value (the seam pins that signature) and `gui.Editor` copies the result
+    /// into a field, so `&self` inside `init` is the address of a temporary. The
+    /// first `frame` is the earliest moment this object has the address the
+    /// render thread will keep using.
+    ///
+    /// Two properties fall out and both are wanted. An editor created and never
+    /// shown never ticks, so it never watches. And the spawn lands once inside a
+    /// frame budget rather than on `set_parent`, where a host is already waiting.
+    ///
+    /// A failed spawn is survivable and is not reported through `Diagnostics`,
+    /// which this thread has no way to reach a caller with. A debug build that
+    /// renders without hot reload is strictly better than an editor that will not
+    /// open, so it says so once and leaves `thread` null forever.
+    fn start(self: *Watcher, device: objc.Object) void {
+        if (self.started) return;
+        self.started = true;
+
+        if (shader.resolvePath() == null) return;
+
+        self.thread = std.Thread.spawn(.{}, run, .{ self, device }) catch |err| {
+            sayShader("the watcher thread would not start ({t}); reload is off for this editor", .{err});
+            return;
+        };
+    }
+
+    /// [main-thread] Ask the watcher to finish, and wait until it has.
+    ///
+    /// The worst case is one compile, because `newLibraryWithSource:` cannot be
+    /// interrupted: Metal offers no cancellation and the work is out of process.
+    /// That is symmetric with a cost the host already pays on `set_parent`, it
+    /// needs a save and an editor closing to overlap within one compile, and it
+    /// is debug-only. The expected case is zero, since the thread is parked in
+    /// the futex more than 99% of the time.
+    fn stop(self: *Watcher) void {
+        const thread = self.thread orelse return;
+
+        // The flag before the wake, never after. A wake that arrived first would
+        // wake a thread with nothing to find, which would park again for a full
+        // interval. The `.release` pairs with `stopping`'s `.acquire`.
+        self.halt.store(halting, .release);
+        io.get().futexWake(u32, &self.halt.raw, 1);
+
+        thread.join();
+        self.thread = null;
+    }
+
+    fn stopping(self: *const Watcher) bool {
+        return self.halt.load(.acquire) != running;
+    }
+
+    /// [watcher-thread] Wait out one poll interval, or until `stop` says
+    /// otherwise.
+    ///
+    /// `error.Canceled` cannot fire, for the reason `src/smoke.zig` records about
+    /// `sleep`: `Threaded.Thread.current` is a threadlocal only threads the
+    /// runtime itself spawns ever set, and this one came from `std.Thread.spawn`,
+    /// so the syscall region takes the uncancelable branch. It is swallowed
+    /// rather than propagated because the loop re-reads the flag on the next
+    /// line, so a cancelled, spurious and timed-out wake are one event here.
+    fn park(self: *Watcher) void {
+        io.get().futexWaitTimeout(u32, &self.halt.raw, running, .{
+            .duration = .{ .raw = .fromMilliseconds(poll_ms), .clock = .awake },
+        }) catch {};
+    }
+
+    /// [render-thread] Take a finished set if the watcher left one.
+    fn drain(self: *Watcher) ?Pipelines {
+        return self.mailbox.take();
+    }
+
+    fn run(self: *Watcher, device: objc.Object) void {
+        // The baseline is taken here rather than on the first poll, and the
+        // difference is a whole poll interval of an editor's life during which an
+        // edit would be recorded rather than acted on. `init` compiled this file
+        // moments ago, so what is wanted is "changed since then", and taking the
+        // stamp now rather than 250 ms from now is what makes that true.
+        if (shader.resolvePath()) |path| {
+            self.seen = shader.stamp(path) catch null;
+        }
+
+        while (true) {
+            self.park();
+            if (self.stopping()) return;
+
+            // Its own pool per poll. `platform.nsString` returns an autoreleased
+            // object and a spawned thread has no pool and no run loop to drain
+            // one, so without this the runtime logs "autoreleased with no pool in
+            // place" and leaks every string this loop makes.
+            const pool = objc.AutoreleasePool.init();
+            defer pool.deinit();
+
+            self.poll(device);
+        }
+    }
+
+    /// [watcher-thread] One look at the file.
+    fn poll(self: *Watcher, device: objc.Object) void {
+        // Before the stat, so a hidden editor costs nothing. Skipping without
+        // advancing `seen` is what makes it lossless: the change is still
+        // outstanding and the next poll picks it up.
+        if (!self.mailbox.vacant()) return;
+
+        const path = shader.resolvePath() orelse return;
+        const now = shader.stamp(path) catch return;
+
+        // Null only when the baseline stat in `run` failed, which means the file
+        // was unreadable when this editor opened. Recording rather than reloading
+        // is right there too: `buildPipelines` already fell back and said so, and
+        // a file that has since appeared is a change this will see next time.
+        const previous = self.seen orelse {
+            self.seen = now;
+            return;
+        };
+        if (!previous.differs(now)) return;
+
+        // **Advanced before the compile, and on every outcome including failure.**
+        // Without that a broken file prints the same diagnostic four times a
+        // second forever; with it, it prints once per save and recovers when the
+        // file is fixed.
+        self.seen = now;
+
+        shader.read(&self.buf, path) catch |err| {
+            _ = shader_fallbacks.fetchAdd(1, .release);
+            sayShader("cannot read {s} ({t}); keeping the shader now running", .{ path, err });
+            return;
+        };
+
+        var diags: iface.Diagnostics = .{};
+        const pipelines = buildPipelinesFromSource(device, self.buf.source(), &diags) catch {
+            _ = shader_rejected.fetchAdd(1, .release);
+            sayShader("{s}; keeping the shader now running", .{diags.message()});
+            return;
+        };
+
+        // Said out loud, because the alternative is watching a picture for a
+        // change that may legitimately be invisible. An edit to a constant nobody
+        // can see by eye is exactly the kind this is for, and "did that take?" is
+        // otherwise unanswerable without another edit that does show.
+        _ = shader_reloads.fetchAdd(1, .release);
+        sayShader("recompiled {d} bytes from {s}", .{ self.buf.len, path });
+
+        self.mailbox.publish(pipelines);
+    }
+} else struct {
+    // Release builds get a type with the same shape and no behaviour, so the two
+    // call sites in `frame` and `deinit` need no `if (shader.live)` around them
+    // and cannot drift from each other.
+    fn start(_: *Watcher, _: objc.Object) void {}
+    fn stop(_: *Watcher) void {}
+    fn drain(_: *Watcher) ?Pipelines {
+        return null;
+    }
+};
+
 pub const Renderer = struct {
     device: objc.Object,
     queue: objc.Object,
@@ -540,6 +810,13 @@ pub const Renderer = struct {
     /// what makes every early return in `frame` leave the accumulation intact
     /// rather than half-updated.
     accum_source: u1 = 0,
+
+    /// Recompiles the shader off this thread when the file changes.
+    ///
+    /// Zero-sized and inert outside a debug build. Started by the first `frame`
+    /// rather than by `init`, for the reason `Watcher.start` gives, and stopped
+    /// by `deinit` before anything it compiles against is released.
+    watcher: Watcher = .{},
 
     /// [main-thread] Builds everything the GPU needs and hangs a layer off the
     /// host's view.
@@ -695,11 +972,30 @@ pub const Renderer = struct {
     pub fn deinit(self: *Renderer) void {
         platform.assertMainThread();
 
+        // First, and before any release below. The watcher compiles against
+        // `self.device`, which this function gives back six lines down, so a join
+        // that ran last could leave `newLibraryWithSource:` holding a device that
+        // had already been released. `gui.Editor.destroy` closed its gate before
+        // reaching here, so no tick can be inside the swap either, which is what
+        // makes reading the thread handle from this thread sound.
+        self.watcher.stop();
+
         if (self.accum) |pair| releaseAccumulation(pair);
         releaseWindows(self.windows);
         self.in_flight.release();
         self.layer.release();
+
+        // The staged set as well as the live one, and through the same function,
+        // so `releasePipelines` stays the one release site. An editor closed
+        // within a poll interval of a save would otherwise leak three pipeline
+        // states, and that is the one leak on this path `leaks` can actually see.
+        //
+        // The atomics inside `take` are redundant here and kept anyway: the
+        // watcher is joined, so nothing can race this, and going through the same
+        // function is what stops a second, subtly different drain existing.
+        if (self.watcher.drain()) |staged| releasePipelines(staged);
         releasePipelines(self.pipelines);
+
         self.queue.release();
         self.device.release();
         self.* = undefined;
@@ -832,6 +1128,52 @@ pub const Renderer = struct {
         const pool = objc.AutoreleasePool.init();
         defer pool.deinit();
 
+        // The shader swap comes first, above both returns below, and those are
+        // two different mistakes rather than one.
+        //
+        // **Above `.no_accumulation`** because that is the one skip here that
+        // *persists*: `iface.Outcome` records that it lasts until a resize
+        // succeeds, where the others describe a moment. A drain beneath it would
+        // stop for as long as an allocation failure lasted, the watcher would sit
+        // on a full slot refusing to recompile, and every later edit would do
+        // nothing with no explanation.
+        //
+        // **Above the slot wait** because `.no_frame_slot` is what a loaded GPU
+        // returns, and a run of them is exactly when someone is editing the
+        // shader that caused it. Gating the fix on the problem stopping is
+        // backwards, and the swap needs no slot: it touches no drawable, no
+        // window buffer and no accumulation.
+        //
+        // This is state between ticks rather than part of a frame, which is the
+        // same argument `Editor.tick` makes one layer up for its own mailbox.
+        self.watcher.start(self.device);
+        if (self.watcher.drain()) |fresh| {
+            const outgoing = self.pipelines;
+            self.pipelines = fresh;
+
+            // Safe here and only here, on the rule `replaceAccumulation` already
+            // leans on: a command buffer created through `-[MTLCommandQueue
+            // commandBuffer]` retains every resource it references until it
+            // completes, so this drops this object's claim and not the GPU's.
+            // Every buffer still holding the outgoing set took its reference at
+            // encode time in an earlier `frame`, and this one is not created
+            // until further down.
+            //
+            // **What would break it**: releasing from the watcher thread instead,
+            // which is the whole reason the mailbox exists; or a future that
+            // reaches for `MTLIndirectCommandBuffer` or a pipeline state resident
+            // in an argument buffer, neither of which takes that reference for
+            // you.
+            releasePipelines(outgoing);
+        }
+
+        // Taken once rather than re-read at each of the three binds below. The
+        // swap above is the only thing that replaces it and runs on this thread
+        // before this line, so re-reading would be safe today; a copy is what
+        // keeps it safe by construction, because the failure it prevents is a
+        // decay pass from one library and a resolve from another.
+        const pipelines = self.pipelines;
+
         // Before the semaphore, so a tick with nowhere to draw takes no slot and
         // leaves the staged window alone. Checked every frame rather than once,
         // because a resize can fail at any point in an editor's life and a later
@@ -915,7 +1257,7 @@ pub const Renderer = struct {
         // A fullscreen triangle, which is cheaper than a quad and needs no
         // vertex buffer: the vertex function derives its positions from the
         // vertex id alone.
-        encoder.msgSend(void, "setRenderPipelineState:", .{self.pipelines.decay});
+        encoder.msgSend(void, "setRenderPipelineState:", .{pipelines.decay});
         encoder.msgSend(void, "setFragmentTexture:atIndex:", .{ source, accumulation_texture_index });
         encoder.msgSend(void, "setFragmentBytes:length:atIndex:", .{
             &accum_uniforms,
@@ -937,7 +1279,7 @@ pub const Renderer = struct {
         // `window_len` is zero until the first upload, so an editor opened on a
         // plugin the host has not activated sits here for as long as that lasts.
         if (traceVertices(self.window_len)) |count| {
-            encoder.msgSend(void, "setRenderPipelineState:", .{self.pipelines.trace});
+            encoder.msgSend(void, "setRenderPipelineState:", .{pipelines.trace});
 
             // An encoder retains what it binds until its command buffer
             // completes, which is the retain `deinit` leans on. A frame that
@@ -987,7 +1329,7 @@ pub const Renderer = struct {
         // accumulation exactly where it was.
         if (resolver.value == null) return .no_encoder;
 
-        resolver.msgSend(void, "setRenderPipelineState:", .{self.pipelines.resolve});
+        resolver.msgSend(void, "setRenderPipelineState:", .{pipelines.resolve});
         resolver.msgSend(void, "setFragmentTexture:atIndex:", .{ target, accumulation_texture_index });
         resolver.msgSend(void, "drawPrimitives:vertexStart:vertexCount:", .{
             mtl.primitive_type_triangle,
