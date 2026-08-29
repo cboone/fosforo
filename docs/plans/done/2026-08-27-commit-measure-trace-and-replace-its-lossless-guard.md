@@ -91,7 +91,7 @@ The test lives in `src/gpu/metal/renderer.zig`, beside `bindingIndexAfter` and t
 
 Two comptime helpers, on `bindingIndexAfter`'s pattern of anchoring on the declaration rather than on the value:
 
-- `scalarAfter(source, needle) ?f64`, for `FULL_SCALE = ` and `RAIL = `.
+- `scalarAfter(source, needle) ?f64`, for the needles `FULL_SCALE =` and `RAIL =`, each written with a trailing space.
 - `scalarsAfter(source, needle, n) ?[n]f64`, for the first parenthesised list after a needle. One helper covers both a Python tuple and an MSL constructor, which is a small piece of luck worth taking.
 
 The MSL anchors must be the definitions, not the names: `trace_fragment` and `resolve_fragment` both appear in the file's header comment, and the first `float4(` after that comment is in `fullscreen_vertex`. Anchor on `"fragment float4 trace_fragment"` and `"fragment float4 resolve_fragment"`, which appear once each.

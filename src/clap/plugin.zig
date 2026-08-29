@@ -5,7 +5,7 @@
 //! and below it everything sees an `*Instance`.
 
 const std = @import("std");
-const build_options = @import("build_options");
+const build_info = @import("../build_info.zig");
 const clap = @import("c.zig");
 const gpu = @import("../gpu/iface.zig");
 const gui = @import("gui.zig");
@@ -41,6 +41,14 @@ const features = [_:null]?[*:0]const u8{
 
 /// Owned by the plugin and valid until `clap_plugin_entry.deinit`, so it is
 /// static rather than built per instance.
+///
+/// **`name` deliberately carries no build provenance, and `version` does.** Several
+/// worktrees compete for one plug-in folder, so which build a host loaded is a real
+/// question, and the version string is where it is answered: no host persists it,
+/// unlike the `id` above, so it is free to vary. The display name is not, and
+/// suffixing it would buy least where the problem is worst, since
+/// `cmake/set-au-display-name` rewrites the Audio Unit's plist name from a constant
+/// and the Audio Unit is the half that goes stale. See ADR 0018.
 pub const descriptor: c.clap_plugin_descriptor_t = .{
     .clap_version = clap.version,
     .id = id,
@@ -49,7 +57,7 @@ pub const descriptor: c.clap_plugin_descriptor_t = .{
     .url = "https://github.com/cboone/fosforo",
     .manual_url = "https://github.com/cboone/fosforo#readme",
     .support_url = "https://github.com/cboone/fosforo/issues",
-    .version = build_options.version.ptr,
+    .version = build_info.descriptor_version.ptr,
     .description = "A GPU-rendered phosphor oscilloscope.",
     .features = @ptrCast(&features),
 };
@@ -224,6 +232,15 @@ fn init(plugin: [*c]const c.clap_plugin_t) callconv(.c) bool {
     const self = Instance.from(plugin);
 
     self.log = log.Log.init(self.host);
+
+    // First, because it is what makes every message below it attributable to a
+    // build. `CLAP_LOG_INFO` rather than the `CLAP_LOG_DEBUG` its neighbours use,
+    // and that is the one severity decision in this file worth arguing: the stderr
+    // mirror in log.zig is compiled out of a release build, so in the build you are
+    // most likely to be merely holding, the host channel is the only carrier there
+    // is. Passing the marker as a runtime argument is also what keeps its bytes in
+    // the binary for `scripts/read-provenance` to find.
+    self.log.print(c.CLAP_LOG_INFO, "{s}", .{build_info.marker});
 
     // The editor's render loop reports through the same channel. `&self.log` is
     // stable because an `Instance` is heap-allocated and outlives the editor

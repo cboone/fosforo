@@ -570,6 +570,18 @@ jobs:
       - name: Assert the CLAP signature stays ad-hoc
         run: ./scripts/assert-adhoc-signature zig-out/Fosforo.clap
 
+      # Provenance is only useful if it is actually in the file, and nothing else
+      # here would notice its absence: the marker is kept alive by being passed to
+      # `Log.print` from `plugin.init`, which is a claim about what the optimizer
+      # does rather than something the type system enforces. A build that quietly
+      # stopped carrying it would leave `install-plugins` reporting "(no provenance)"
+      # for every bundle, which reads exactly like a bundle predating the stamp.
+      #
+      # This job builds Debug. The `clap-wrapper` job asserts the same thing against
+      # `--release=fast` artifacts, which is the case that would actually break.
+      - name: Assert the CLAP carries its build provenance
+        run: ./scripts/read-provenance --check zig-out/Fosforo.clap
+
       # The gate. That a failing test actually reaches a non-zero exit code was
       # confirmed against a deliberately broken build rather than assumed: a
       # duplicated feature entry compiles, passes `zig build test`, and takes
@@ -681,6 +693,25 @@ jobs:
       - name: Assert the wrapper signatures stay ad-hoc
         run: |
           ./scripts/assert-adhoc-signature \
+            build/assets/Fosforo.component \
+            build/assets/Fosforo.clap
+
+      # Repeated from the `clap-validator` job rather than inherited, on the same
+      # reasoning as the two assertions above: the two jobs build through different
+      # systems, so either can leak without the other.
+      #
+      # **And this is the half that matters.** cmake/CMakeLists.txt drives Zig itself
+      # with `--release=fast`, where everything the other job builds is Debug, and
+      # the marker's survival is a claim about dead-code elimination. Measured here
+      # rather than reasoned about: Debug emits `marker_prefix` as a separate literal
+      # beside the composed marker and ReleaseFast emits only the composed one, so
+      # the two modes genuinely differ in what reaches the binary.
+      #
+      # The component is the more important of the two paths, because it is the half
+      # that goes stale in the shared plug-in folder and the half `auval` cannot see.
+      - name: Assert the wrapper artifacts carry their build provenance
+        run: |
+          ./scripts/read-provenance --check \
             build/assets/Fosforo.component \
             build/assets/Fosforo.clap
 

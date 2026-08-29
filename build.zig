@@ -40,6 +40,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .clap_c = translateClap(b, target, optimize),
         .objc = b.dependency("objc", .{ .target = target, .optimize = optimize }).module("objc"),
+
+        // Deliberately below the early return above, so the one step that builds
+        // off macOS never spawns a process it has no use for.
+        .provenance = gitProvenance(b),
     };
 
     // Zig's own step, re-described. Its default text is "Copy build artifacts to
@@ -84,6 +88,89 @@ pub fn build(b: *std.Build) void {
     addTestStep(core);
     addShaderValidationStep(b);
     addSmokeSteps(core);
+}
+
+/// Which worktree and which commit a binary came from, stamped in so the question
+/// can be answered from the installed file rather than from memory.
+///
+/// This repository is normally several worktrees competing for one plug-in folder,
+/// and the failure that costs time is not a collision but an *unnoticed* one: the
+/// installed bundle belongs to whichever worktree copied last, and a host loading
+/// the wrong build reads as a pass. `scripts/install-plugins` already compares
+/// hashes, which answers the question only when there is something in this worktree
+/// to compare against; these three fields are what let it answer for a bundle
+/// nobody here built. See ADR 0018.
+const Provenance = struct {
+    branch: [:0]const u8,
+    commit: [:0]const u8,
+    dirty: bool,
+
+    /// What every field reads when git cannot answer, which is a supported state
+    /// rather than an error. `build.zig.zon`'s `.paths` publishes this package as a
+    /// tarball of src, shaders, cmake, scripts and three files, none of which is a
+    /// repository, and that tarball must still build.
+    const unknown: Provenance = .{ .branch = "unknown", .commit = "unknown", .dirty = false };
+};
+
+/// Ask git what this build is, at configure time, and degrade rather than fail.
+///
+/// **This does not weaken the hermetic build ADR 0009 protects, and the precedent is
+/// stronger than the one /usr/bin/codesign sets below.** A plain `zig build` already
+/// spawns a process before reaching this line: `b.dependency("objc", ...)` runs
+/// zig-objc's build function at configure time, which calls `appleSDKPath` and so
+/// `std.zig.system.darwin.getSdk`, whose own comment reads "This executes `xcrun` to
+/// get the SDK path". Nothing here can link Cocoa or Metal without the SDK that call
+/// finds, so a working Xcode or Command Line Tools install is already a hard
+/// requirement. `git` is strictly weaker than that: it needs no network, and where
+/// `xcrun` failing is fatal, `git` failing lands on `Provenance.unknown`.
+fn gitProvenance(b: *std.Build) Provenance {
+    const root = b.build_root.path orelse return .unknown;
+
+    // Two calls rather than one, and that is measured rather than stylistic.
+    // `git rev-parse --abbrev-ref HEAD --short HEAD` prints the branch name
+    // **twice**: `--abbrev-ref` is sticky across every ref that follows it, so the
+    // field meant to carry the commit silently carries the branch. A provenance
+    // line that is wrong while still looking well-formed is worse than none.
+    const branch = gitOutput(b, root, &.{ "rev-parse", "--abbrev-ref", "HEAD" }) orelse return .unknown;
+    const commit = gitOutput(b, root, &.{ "rev-parse", "--short", "HEAD" }) orelse return .unknown;
+
+    // `--porcelain` respects .gitignore, so neither zig-out/ nor build/ registers.
+    // A failure here is treated as clean rather than as unknown: the two calls above
+    // have already succeeded, so git is present and this is a repository.
+    const status = gitOutput(b, root, &.{ "status", "--porcelain" }) orelse "";
+
+    return .{
+        // A detached HEAD reports the literal string "HEAD", which is not a branch
+        // name and must not be printed as one. CI is always detached: no checkout in
+        // .github/ sets `fetch-depth`, so actions/checkout gives depth 1 with HEAD
+        // detached, and on a pull_request the commit is the ephemeral merge rather
+        // than the branch head.
+        .branch = if (std.mem.eql(u8, branch, "HEAD")) "detached" else branch,
+        .commit = commit,
+        .dirty = status.len != 0,
+    };
+}
+
+/// One `git` invocation, trimmed, or null if git could not answer.
+fn gitOutput(b: *std.Build, root: []const u8, args: []const []const u8) ?[:0]const u8 {
+    const argv = b.allocator.alloc([]const u8, args.len + 3) catch @panic("OOM");
+
+    // Absolute, on the precedent signClapBundle sets for /usr/bin/codesign: a `git`
+    // earlier in PATH would otherwise decide what a shipped binary claims about
+    // itself. `-C` rather than the build runner's working directory, which is where
+    // `zig build` was invoked from and need not be the build root.
+    argv[0] = "/usr/bin/git";
+    argv[1] = "-C";
+    argv[2] = root;
+    @memcpy(argv[3..], args);
+
+    // `runAllowFail` rather than `b.run`, which calls `process.fatal`: every failure
+    // reachable here is a state this build supports. `.ignore` keeps git's
+    // "fatal: not a git repository" off a terminal where it would read as an error.
+    var code: u8 = undefined;
+    const raw = b.runAllowFail(argv, &code, .ignore) catch return null;
+
+    return b.allocator.dupeZ(u8, std.mem.trim(u8, raw, " \t\r\n")) catch @panic("OOM");
 }
 
 /// Build the Audio Unit, which is a CMake artifact this build system knows nothing
@@ -147,6 +234,10 @@ const Core = struct {
     clap_c: *std.Build.Module,
     objc: *std.Build.Module,
 
+    /// Resolved once in `build` rather than per module, so the four artifacts
+    /// cannot disagree about which commit they came from.
+    provenance: Provenance,
+
     const Options = struct {
         /// The module's root source file, which is also what bounds
         /// `@embedFile` and relative `@import`. Every root here has to sit
@@ -163,6 +254,14 @@ const Core = struct {
         build_options.addOption(bool, "export_entry", options.export_entry);
         // Sentinel-terminated because it crosses the ABI as a C string.
         build_options.addOption([:0]const u8, "version", zon.version);
+
+        // The facts, not the formatting: src/build_info.zig owns every string
+        // composed from these, so no consumer restates one. The values feed the
+        // module's cache key, which is why the first build after a commit is a full
+        // rebuild and why the dirty flag flips at most once per editing session.
+        build_options.addOption([:0]const u8, "git_branch", self.provenance.branch);
+        build_options.addOption([:0]const u8, "git_commit", self.provenance.commit);
+        build_options.addOption(bool, "git_dirty", self.provenance.dirty);
 
         const mod = b.createModule(.{
             .root_source_file = b.path(options.root),
@@ -310,25 +409,30 @@ fn signClapBundle(
     b.getInstallStep().dependOn(&sign.step);
 }
 
-/// The unit tests, and the one import that exists only for them.
+/// The unit tests, and the two imports that exist only for them.
 ///
 /// `scripts/measure-trace` restates four constants this project owns, two from
 /// `src/gpu/iface.zig` and two from `shaders/scope.metal`, with nothing in Python
-/// or MSL linking any of them. The test that checks them reads the script as text,
-/// the way the shader tests read the embedded shader source, so the file has to be
-/// reachable through the import table.
+/// or MSL linking any of them. `scripts/read-provenance` restates one, the marker
+/// prefix `src/build_info.zig` stamps into every binary, with nothing in shell
+/// linking it either. Both tests read the script as text, the way the shader tests
+/// read the embedded shader source, so both files have to be reachable through the
+/// import table.
 ///
 /// **Added to the test module alone, deliberately.** `Core.module` builds the
-/// module every shipping artifact compiles from, and registering this there would
-/// put a Python script within reach of `@embedFile` in a release build. Each call
-/// to `Core.module` is a separate `createModule`, so this import exists in exactly
-/// one of the two and that is structural rather than something to measure
-/// afterwards.
+/// module every shipping artifact compiles from, and registering these there would
+/// put a Python script and a shell script within reach of `@embedFile` in a release
+/// build. Each call to `Core.module` is a separate `createModule`, so these imports
+/// exist in exactly one of the two and that is structural rather than something to
+/// measure afterwards.
 fn addTestStep(core: Core) void {
     const b = core.b;
     const mod = core.module(.{});
     mod.addAnonymousImport("measure-trace", .{
         .root_source_file = b.path("scripts/measure-trace"),
+    });
+    mod.addAnonymousImport("read-provenance", .{
+        .root_source_file = b.path("scripts/read-provenance"),
     });
 
     const tests = b.addTest(.{ .root_module = mod });

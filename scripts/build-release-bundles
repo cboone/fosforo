@@ -145,6 +145,18 @@ function main() {
     return "${E_DATAERR}"
   fi
 
+  # Reported, not gated, and the distinction is deliberate. A release built from a
+  # dirty tree is a genuine defect, but this path is never exercised by CI and can rot
+  # (ADR 0014), so a refusal added here would be untested surface on the one procedure
+  # that must work when it is finally run. Saying what went into the bundles is the
+  # part that costs nothing and is worth having in the transcript of a release.
+  #
+  # `|| true` for the same reason the whole report is advisory: this runs after the
+  # bundles are built and signed, and a reader that took the run down with it would
+  # turn a finished release into a failure over a diagnostic.
+  step "Recording what these bundles were built from"
+  "${SCRIPT_DIR}/read-provenance" "${CLAP_BUNDLE}" "${AUV2_BUNDLE}" || true
+
   step "Ready to package: ${CLAP_BUNDLE} and ${AUV2_BUNDLE}"
 }
 
