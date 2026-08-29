@@ -275,6 +275,25 @@ jobs:
       # a notice in the run summary is how the answer gets read without opening
       # the log of a job that passed.
       #
+      # **The runner image goes out with it, because the evidence that promoted
+      # the AppKit half has exactly one hole and this is what watches it.** All
+      # 65 runs behind #72 ran on `macos-26-arm64` version `20260728.0273.1`, so
+      # nothing here has ever seen this job cross an image refresh. Printing the
+      # image on every run makes the first one after a refresh attributable at a
+      # glance: a red AppKit half beside a version nobody has seen before is a
+      # different event from a red AppKit half on the image 65 runs have already
+      # passed on.
+      #
+      # `ImageOS` and `ImageVersion` come from the GitHub-hosted runner images
+      # rather than from Actions, and are undocumented, so they are exactly the
+      # kind of thing that can go missing under a self-hosted runner or an image
+      # change. The defaults are what keep the reporting step from being the
+      # thing that breaks when they do: a notice reading `unknown` is itself a
+      # finding, and an unset variable taking down the step that reports the leak
+      # figures is not. The `Set up job` log group prints the same two values
+      # unconditionally, so it stays the positive control if these ever read
+      # `unknown`.
+      #
       # **The leak figures go out on green runs too, and that is the point rather
       # than a courtesy.** The byte bound in `scripts/smoke-leak-check` is set
       # against a baseline measured on the development machine, and this runner's
@@ -286,9 +305,11 @@ jobs:
       - name: Report what the smoke halves concluded
         if: always()
         run: |
-          echo "::notice::AppKit smoke half: ${{ steps.appkit.outcome }}; leaks: ${{ steps.leaks.outcome }}"
+          echo "::notice::AppKit smoke half: ${{ steps.appkit.outcome }}; leaks: ${{ steps.leaks.outcome }}; runner image: ${ImageOS:-unknown} ${ImageVersion:-unknown}"
           {
             echo "### Leak check (${{ steps.leaks.outcome }})"
+            echo
+            echo "Runner image: \`${ImageOS:-unknown}\` \`${ImageVersion:-unknown}\`"
             echo
             echo '```'
             grep '^smoke-leak-check:' leaks.log 2>/dev/null || echo "no report; see the step log"
