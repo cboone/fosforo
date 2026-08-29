@@ -145,10 +145,12 @@ jobs:
   # rate. 400 cycles takes 113 s on that machine and would take around twice that
   # here; 40 takes 13 s there and should land near 25 s here.
   #
-  # 58s max over 10 runs, re-measured from the Actions API on 2026-08-28 before
-  # the leak step landed (25, 28, 29, 35, 35, 38, 38, 40, 49, 58). The 38s over 3
-  # runs this comment used to carry was true when it was written and had drifted
-  # by half; re-measure rather than trusting it, which is what #63 did.
+  # 98s max over the 65 runs that completed, re-measured from the Actions API on
+  # 2026-08-29 with the leak step in. The 58s over 10 runs this comment used to
+  # carry was taken the day before that step landed, so it was already a figure
+  # for a job that no longer existed; the 38s over 3 runs before it had drifted
+  # by half. Re-measure rather than trusting it, which is what #63 did and what
+  # #72 did again.
   #
   # **The ceiling deliberately stays at 8 rather than tracking 4x that.** Every
   # other ceiling here is 4x an observed run because its worst case is
@@ -161,8 +163,10 @@ jobs:
   # That margin was 2.7x before the leak step and is 1.5x after it, which is the
   # number to watch: a third gated step in this job, which is what [#69] would be,
   # takes it below 1 and the ceiling has to move. The 75% criterion is the other
-  # one — 360s against 8 minutes — and the leak step is expected to put the job
-  # near 80s rather than near 360. Re-measure before assuming either still holds.
+  # one, 360s against 8 minutes, and the leak step's prediction held: it was
+  # expected to put the job near 80s rather than near 360, and the worst of 65
+  # runs is 98s, or 20% of the ceiling. Re-measure before assuming either still
+  # holds.
   #
   # [#69]: https://github.com/cboone/fosforo/issues/69
   #
