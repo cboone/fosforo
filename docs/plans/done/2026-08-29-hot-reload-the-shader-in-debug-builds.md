@@ -331,3 +331,21 @@ Re-measure the `smoke-leaks` baseline afterwards. The harness now spawns and joi
 ## Out of scope
 
 Hot-reloading Zig, which the issue excludes. Validating a reloaded shader's binding indices at runtime, which is [#51](https://github.com/cboone/fosforo/issues/51)'s territory and needs a readback rather than a text scan. Any release-build reload path, which ADR 0009 rules out.
+
+## Outcome
+
+Landed as planned. Everything above held except where the measurements below moved it, and the two ADR amendments carry the reasoning in full.
+
+**The plan's central assumption was the one thing worth measuring first, and measuring it changed the plan's own framing.** The compile is two numbers rather than one, because Metal caches a compiled library by source hash and the cache survives across processes: a source it has seen returns in 0.14 ms and one it has not takes 34 to 43 ms, or 57 to 68 ms for the first compile in a process. That retires the claim in `Pipelines` that this is "the most expensive thing `init` does", which is true only on a cold cache, and it is what makes the off-tick worker a measurement rather than a preference: 40 ms is five vsyncs, and `Gate.close` spins.
+
+**Four things the plan predicted and got right**, each of which would have been a defect: `Renderer.init` returning by value means the watcher cannot spawn there; the mailbox cannot copy `Pending`'s single swap, and the consumer has to copy before it empties the slot; `buildPipelines` had to be wrapped rather than re-signed so `probe` keeps sharing it; and the poll wait is `std.Io.futexWaitTimeout`, since `std.Thread` in 0.16 has neither a `Futex` nor a `ResetEvent`.
+
+**Three things it did not predict.**
+
+- **`zig build` does not rebuild the smoke harness**, which is deliberate and cost an hour of testing a stale binary that looked like a broken watcher. It is now a gotcha.
+- **A poll interval longer than an editor's life in `oneCycle`.** A cycle there lasts about as long as one 250 ms poll, so a reload arm cannot run inside one and reads as the feature being broken. `hotReloadPhase` holds one editor open instead, which the plan had reached by a different route and which turns out to be forced rather than merely cheaper.
+- **The watcher had a dead window it did not need.** Taking the baseline stamp on the first poll rather than at thread start meant a whole poll interval in which an edit was recorded rather than acted on. Taking it in `run` before the first park removes it.
+
+**Two measurements to carry forward.** `smoke-leaks` at 40 cycles now reports 36 to 54 leaks for 3,648 to 5,472 bytes against the 288 for 18,816 quoted since #63, because the phase's extra two and a half seconds lets AppKit's chatter settle: the count is not a discriminator, demonstrated this time from the flattering direction. And `pthread_create` is referenced by the debug binary and absent from the release one, which is a sharper check on the gating than the string greps.
+
+**Every planted defect in the verification table above was planted and caught**, except the two the table already records as passing, which pass.

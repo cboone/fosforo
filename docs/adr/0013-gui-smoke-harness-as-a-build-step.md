@@ -183,3 +183,52 @@ Its case rested on one measurement this document already carries: a leaked windo
 The short form, and the thing to re-read before proposing it again: **it is a calibrated instrument for a defect an uncalibrated one already catches, and it is blind to the defect nothing else catches.** The byte bound above is the opposite trade and is why it was affordable — 56 times above the observed baseline and 40 times below the smallest leak it is for, so it needs no calibration against the machine it runs on.
 
 The row nothing covers is left uncovered deliberately. Saying so is what stops it being rediscovered as a gap worth a fourth instrument.
+
+## Amended by issue #61: the harness asserts a swap, a refusal, and a recovery
+
+Shader hot-reload ([ADR 0009](./0009-runtime-shader-compilation.md)) is the first feature here whose entire observable effect is the picture, which is the one thing this document has repeatedly recorded that nothing automated can see. The seam therefore grew a ninth operation, `shaderStats`, of the same kind as the two live-resource counters: a question about the backend rather than an instruction to it.
+
+### The split across the two halves is this document's own, not a convenience
+
+**The fallback arms are in the `gpu` half**, which CI requires. They need a device and no window, and what they assert is the invariant that can otherwise ruin a day: *a debug build opens its editor whatever is on disk.* A missing file, a malformed one, and one that compiles without defining what the pipelines ask for are three different failures, and all three must leave the plugin able to start.
+
+**Only the live swap is in the `appkit` half**, which runs under `continue-on-error`, because only it needs a running render loop.
+
+### One phase per process, and the reason is measured
+
+`hotReloadPhase` runs once, before the cycle loop, rather than inside `oneCycle`. Two independent reasons and both had to be measured.
+
+A cycle in `oneCycle` lasts about as long as one 250 ms poll interval, so a watcher started on its first frame is joined before it ever looks twice: the arms simply cannot run inside one. And running it per cycle would cost `smoke-leaks -Dleak-cycles=400` twenty minutes and 1,200 out-of-process compiles for no coverage the single phase does not already give. Sitting before the loop also puts it inside the existing `liveWindowBuffers() == 0` and `liveAccumulationTextures() == 0` assertions for free.
+
+### The arm that is not a repeat of the one before it
+
+| Arm                                          | What only this one catches                                            |
+| -------------------------------------------- | --------------------------------------------------------------------- |
+| An edited shader                             | The watcher never starting at all                                     |
+| **A second edit of exactly the same length** | A change detector comparing size alone, and a watcher that fires once |
+| A shader that does not compile               | A failed compile swapped in, and a reload that stops the loop         |
+| One compiling without the right functions    | That the bytes *on disk* reached the compiler                         |
+| A good shader after a broken one             | Recovery without a restart                                            |
+
+Two of those deserve naming. The same-length second edit is a positive control rather than a repetition, and it is what the two most plausible detector bugs both fail. And the renamed-function arm is the one a counter cannot replace: `reloads` proves a compile happened and cannot distinguish a compile of the new bytes from a recompile of the embedded copy, while only the edited file can produce `buildPipeline`'s "compiled but does not define" diagnostic.
+
+Every arm was verified by planting the defect it names. A size-only detector and a watcher that never starts both fail as `ShaderNeverReloaded`, at the second and first edit respectively; a failed compile counted as a reload fails as `BrokenShaderWasSwappedIn`; `choosePath` preferring the build option over the environment fails the GPU half as `MissingShaderNotRefused`; and removing the fallback to the embedded copy fails it as `ShaderFallbackFailed`.
+
+### Free coverage, for the first time
+
+A swap that leaked its outgoing pipeline states is caught by `smoke-leaks` with **no new instrument**, because this document's own #38 amendment measured that an `MTLRenderPipelineState` *is* visible to `leaks` where a buffer and a texture are not. This is the first time the rule set after #38 has been discharged by a measurement already taken rather than by a new one, and it is why no counter for pipeline states was added.
+
+### Two defects the harness cannot see, again
+
+Consistent with the section under #55, and worth stating rather than glossing:
+
+- **A compile moved onto the render thread passes.** An extra 40 ms in a tick is invisible to a frame counter with a two-second timeout. What rules it out is a measurement and a `Gate` argument, not an assertion.
+- **A reload with a moved `[[buffer(N)]]` passes.** Nothing validates a hot-reloaded shader's bindings; the comptime tests pin the embedded copy. ADR 0009's amendment carries this in full.
+
+### The leak baseline moved, and it moved down
+
+Across three runs at 40 cycles the report now gives **36 to 54 leaks for 3,648 to 5,472 bytes**, against the 288 for 18,816 this project has been quoting since #63. The phase adds roughly 2.5 seconds before the cycle loop, and that is apparently long enough for AppKit's LaunchServices chatter to settle before exit.
+
+That is one more demonstration of the rule already stated above, that **the leak count is not a discriminator**, arriving from the opposite direction: a change that added a thread per editor and five out-of-process compiles made the report look four times cleaner. The 1 MiB byte bound is unaffected and now has around 190x of headroom rather than 56x, which is the property it was chosen for.
+
+`smoke-appkit` measures 4.4 s and `smoke-leaks -Dleak-cycles=40` 15.6 s against a documented 13 s. Both sit far inside ceilings set at roughly 4x the slowest observed run, so no `timeout-minutes` changed.
