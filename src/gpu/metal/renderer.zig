@@ -425,6 +425,41 @@ var live_windows: std.atomic.Value(usize) = .init(0);
 /// this function to release less than it counts.
 var live_textures: std.atomic.Value(usize) = .init(0);
 
+/// What has happened to the shader on disk, process-wide.
+///
+/// Process-wide rather than per-renderer for `live_windows`' reason, and one more
+/// besides: the question a caller wants answered is "did my edit reach the GPU",
+/// and every open editor in the process answers it at once.
+///
+/// Zero and immovable in a release build, where nothing reads a file. A caller
+/// telling that apart from a watcher that never fired reads `watching`.
+var shader_reloads: std.atomic.Value(u64) = .init(0);
+var shader_rejected: std.atomic.Value(u64) = .init(0);
+var shader_fallbacks: std.atomic.Value(u64) = .init(0);
+var shader_watching: std.atomic.Value(bool) = .init(false);
+
+/// Say something once about the shader on disk, on the watcher's own thread.
+///
+/// `std.debug.print`, which is wrong in most of this project and right here for
+/// reasons that do not transfer. This runs on neither the audio thread, nor the
+/// render thread, nor the host's main thread, so ADR 0010's no-lock, no-syscall
+/// rule does not reach it and it may take the stderr lock. It is also already the
+/// channel a developer is told to read, by launching the host from a terminal.
+///
+/// A `clap.log` route would be the alternative and is worse three ways: the log
+/// lives above the seam, the gpu layer importing it is the layering violation
+/// `iface.Diagnostics` exists to avoid, and the message would arrive at the next
+/// once-a-second `Editor.report` rather than when the file was saved.
+///
+/// Gated on `shader.live`, which folds in `builtin.is_test` for the reason
+/// `clap/log.zig` disables its own mirror there: printing from inside a test
+/// binary interleaves with the runner's stream and the build runner reads that as
+/// a failed step.
+fn sayShader(comptime fmt: []const u8, args: anytype) void {
+    if (comptime !shader.live) return;
+    std.debug.print("[fosforo] shader: " ++ fmt ++ "\n", args);
+}
+
 fn signalCompleted(block: *const Completion.Context, buffer: objc.c.id) callconv(.c) void {
     _ = buffer;
     if (block.sema) |sema| _ = dispatch_semaphore_signal(@ptrCast(sema));
@@ -1003,6 +1038,26 @@ pub const Renderer = struct {
         return live_textures.load(.acquire);
     }
 
+    /// [thread-safe] What this process has done about the shader on disk.
+    ///
+    /// The one observable of hot reload, and it exists for the reason ADR 0013
+    /// gives for `framesPresented`: the thing the feature changes is the picture,
+    /// and the picture is precisely what nothing here can see. All zero and
+    /// `watching = false` in a release build, permanently, because nothing there
+    /// reads a file.
+    ///
+    /// **The counters cannot tell a swap that used the new bytes from one that
+    /// recompiled the old ones**, which is why `src/smoke.zig` pairs them with a
+    /// fixture only the new bytes could produce a diagnostic for.
+    pub fn shaderStats() iface.ShaderStats {
+        return .{
+            .watching = shader_watching.load(.acquire),
+            .reloads = shader_reloads.load(.acquire),
+            .rejected = shader_rejected.load(.acquire),
+            .fallbacks = shader_fallbacks.load(.acquire),
+        };
+    }
+
     /// [render-thread] Copy staging into this frame's buffer.
     ///
     /// Split out of `frame` only so the ordering rule has somewhere to be
@@ -1229,10 +1284,83 @@ fn releaseWindows(windows: [max_frames_in_flight]objc.Object) void {
 /// mistake, and losing it would leave a developer with nothing but an editor that
 /// refused to open.
 fn buildPipelines(device: objc.Object, diags: *iface.Diagnostics) iface.Error!Pipelines {
+    // **The editor opens whatever is on disk**, which is the invariant that can
+    // otherwise ruin a day: a debug build whose shader file has a typo in it, or
+    // has been moved away, must still start. So the disk copy is tried and the
+    // embedded one is the answer whenever it does not work, for either reason.
+    //
+    // This lives here, above `init` and `probe` rather than at either call site,
+    // because ADR 0013 rests on `probe` *sharing* this function rather than
+    // paraphrasing it. That is also what makes the fallback testable without a
+    // window, since `zig build smoke-gpu` reaches exactly this path.
+    if (comptime shader.live) {
+        // A stack buffer rather than a field, because this is called from three
+        // threads and none of them may allocate. 64 KiB against an 8 MiB
+        // main-thread stack and a 16 MiB spawned one, for a file currently eight.
+        var buf: shader.Buffer = .{};
+
+        if (readShader(&buf)) |source| {
+            if (buildPipelinesFromSource(device, source, diags)) |pipelines| {
+                _ = shader_reloads.fetchAdd(1, .release);
+                return pipelines;
+            } else |_| {
+                // Counted separately from the read failure above, because they
+                // are different mistakes: one is a path that is wrong, the other
+                // is a shader that is. `diags` already carries the compiler's own
+                // text, naming a line and the error.
+                _ = shader_rejected.fetchAdd(1, .release);
+                sayShader("{s}; using the copy built into this binary", .{diags.message()});
+                _ = shader_fallbacks.fetchAdd(1, .release);
+            }
+        }
+    }
+
+    return buildPipelinesFromSource(device, shader_source, diags);
+}
+
+/// Read the watched file, or null if there is not one this build can use.
+///
+/// **Says so once rather than every time.** Silently would be defensible and is
+/// worse: an editor that opens showing yesterday's shader with no explanation is
+/// the kind of thing that gets blamed on the GPU. Once, because the watcher asks
+/// this four times a second and a missing file is a state that persists.
+fn readShader(buf: *shader.Buffer) ?[:0]const u8 {
+    const path = shader.resolvePath() orelse return null;
+    shader_watching.store(true, .release);
+
+    shader.read(buf, path) catch |err| {
+        if (shader_fallbacks.fetchAdd(1, .release) == 0) {
+            sayShader("cannot read {s} ({t}); using the copy built into this binary", .{ path, err });
+        }
+        return null;
+    };
+
+    return buf.source();
+}
+
+/// The same, from a source this file did not embed.
+///
+/// A separate function rather than a parameter with a default, which Zig does not
+/// have. Everything above still calls `buildPipelines`, so `shader_source` is
+/// named in one place and ADR 0013's "`probe` shares rather than paraphrases"
+/// property holds by construction rather than by two call sites agreeing.
+///
+/// `MTLDevice` is documented safe to message from any thread, which is what lets
+/// the watcher compile off both the main thread and the render thread. Nothing
+/// here touches AppKit, a `Renderer`, or any shared state, so it needs no thread
+/// assertion of its own.
+///
+/// `[:0]const u8` rather than `[*:0]const u8` so the parameter's type is
+/// `shader_source`'s type and the wrapper above is a pass-through.
+fn buildPipelinesFromSource(
+    device: objc.Object,
+    source: [:0]const u8,
+    diags: *iface.Diagnostics,
+) iface.Error!Pipelines {
     var err: ?*anyopaque = null;
 
     const library = device.msgSend(objc.Object, "newLibraryWithSource:options:error:", .{
-        platform.nsString(shader_source),
+        platform.nsString(source.ptr),
         @as(?*anyopaque, null),
         &err,
     });

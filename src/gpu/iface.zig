@@ -222,6 +222,41 @@ pub const Diagnostics = struct {
     }
 };
 
+/// What the backend has done about the shader on disk, for a caller that cannot
+/// see the picture.
+///
+/// One struct rather than four `fn () usize`, because the four numbers are only
+/// ever read together and every assertion about them has the same shape: this one
+/// moved and those did not. Four separate seam operations would also be four
+/// separate `assertSignature` lines pinning nothing the struct does not.
+///
+/// It names nothing Metal owns, which is what lets it sit above this line at all.
+/// `reloads` and `rejected` are the pair that matters: a counter alone cannot
+/// distinguish a swap that used the new bytes from one that recompiled the old
+/// ones, so `src/smoke.zig` pairs them with a fixture whose *content* only the
+/// new bytes could produce a diagnostic for.
+///
+/// Every field is zero in a release build, permanently, because there is no
+/// watcher there to move one. A caller that wants to tell that apart from a
+/// watcher that never fired reads `watching`.
+pub const ShaderStats = struct {
+    /// Whether this build resolved a path and is watching it at all. False in
+    /// every release build, and false in a debug build whose path is missing.
+    watching: bool = false,
+
+    /// Sources read off disk and compiled successfully, including the first.
+    reloads: u64 = 0,
+
+    /// Sources read off disk that did not compile, or compiled without defining
+    /// what the pipelines ask for. The picture keeps whatever last worked.
+    rejected: u64 = 0,
+
+    /// Times the embedded copy was used because the disk one could not be:
+    /// unreadable *or* unusable, so this moves alongside `rejected` as well as on
+    /// its own. The editor opens either way, which is the point of counting it.
+    fallbacks: u64 = 0,
+};
+
 /// The one backend. Aliased rather than dispatched through a vtable, because
 /// paying for indirection with a single implementation would buy nothing that
 /// the comptime check below does not buy for free.
@@ -253,6 +288,13 @@ pub const Diagnostics = struct {
 /// backend would have to answer too, and answering it here is what lets a
 /// runtime shader compilation failure be caught by CI rather than by whoever
 /// next opens the editor.
+///
+/// `shaderStats` is the ninth, and the third of the questions rather than the
+/// instructions. It answers whether a debug build has picked up an edited shader,
+/// which is otherwise observable only in the picture, and the picture is what ADR
+/// 0013 records that nothing here can see. Like the two counters above it, a
+/// second backend would have to answer it: reloading is a property of compiling
+/// shaders at runtime (ADR 0009), not of Metal.
 pub const Renderer = @import("metal/renderer.zig").Renderer;
 
 // ADR 0005 asks a reviewer to treat a Metal type named above this seam as a
@@ -286,6 +328,11 @@ comptime {
     // anything with: naming what is being counted would name a Metal type.
     assertSignature("liveWindowBuffers", @TypeOf(Renderer.liveWindowBuffers), fn () usize);
     assertSignature("liveAccumulationTextures", @TypeOf(Renderer.liveAccumulationTextures), fn () usize);
+    // The ninth, `[thread-safe]`, and the same kind of thing as the two above: a
+    // question about the backend rather than an instruction to it. It exists
+    // because hot reload is otherwise unobservable from outside the picture, and
+    // ADR 0013's whole position is that the picture is what nothing here can see.
+    assertSignature("shaderStats", @TypeOf(Renderer.shaderStats), fn () ShaderStats);
 }
 
 fn assertSignature(comptime name: []const u8, comptime Found: type, comptime Want: type) void {
