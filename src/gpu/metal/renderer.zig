@@ -779,6 +779,24 @@ pub const Renderer = struct {
         const blit = buffer.msgSend(objc.Object, "blitCommandEncoder", .{});
         if (blit.value == null) return error.NoDevice;
 
+        // **`destinationBytesPerRow` is the texture's own row stride, with no
+        // alignment padding, and that was measured rather than assumed.** The
+        // 256-byte rule worth knowing about is real and does not apply here: it
+        // is a macOS-on-Intel and discrete-GPU constraint, and ADR 0001 makes
+        // Apple Silicon the only target. Verified at two widths whose rows are
+        // deliberately not multiples of 256 — 962 pixels at 7696 bytes and 1000
+        // at 8000 — under `MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert`,
+        // which is the instrument that reports exactly this class of error and
+        // the one this project already leans on for texture usage and format
+        // mismatches. Both ran clean and both measured correctly, which the
+        // second half establishes independently: a mishandled stride skews each
+        // row against the last, and `litColumns` and the period counts would not
+        // survive that.
+        //
+        // The harness's own 960 cannot show this either way, since 960 * 8 is
+        // 7680 and exactly 30 * 256. That is why the widths above were chosen and
+        // why a validation-layer run at the default geometry proves nothing about
+        // this line.
         const row_bytes = @as(usize, self.pixels.width) * energy_bytes_per_pixel;
         blit.msgSend(
             void,
@@ -1699,6 +1717,17 @@ const picture_bytes_per_pixel: usize = 4;
 /// accumulation, which the smoke harness asserts is zero after its cycles; this
 /// is a surface, and the layer it stands in for is not counted either. It is
 /// released in `deinit` alongside it.
+///
+/// **`TextureAllocationFailed` rather than `SurfaceCreationFailed`**, though this
+/// is the offscreen renderer's surface and that name would read as the symmetric
+/// choice. What failed decides the name here, not what the thing is for: this is
+/// a texture sized from the caller's geometry, `replaceTarget` reaches it from
+/// `resize`, and "an allocation that scales with the editor and can be provoked
+/// by dragging an edge" is the condition that error was added to describe.
+/// `SurfaceCreationFailed` stays what `attachLayer` reports, where the failure is
+/// CoreAnimation declining to make a layer and no allocation is in question. It
+/// also follows `buildAccumulation`, the only other texture builder here, which
+/// reports the same error for both its descriptor and its allocation.
 fn buildTarget(device: objc.Object, pixels: Pixels, diags: *iface.Diagnostics) iface.Error!objc.Object {
     const descriptor = objc.getClass("MTLTextureDescriptor").?.msgSend(
         objc.Object,
@@ -1707,7 +1736,7 @@ fn buildTarget(device: objc.Object, pixels: Pixels, diags: *iface.Diagnostics) i
     );
     if (descriptor.value == null) {
         diags.set("Metal would not describe an offscreen render target");
-        return error.SurfaceCreationFailed;
+        return error.TextureAllocationFailed;
     }
 
     descriptor.msgSend(void, "setUsage:", .{mtl.texture_usage_render_target | mtl.texture_usage_shader_read});
@@ -1716,7 +1745,7 @@ fn buildTarget(device: objc.Object, pixels: Pixels, diags: *iface.Diagnostics) i
     const texture = device.msgSend(objc.Object, "newTextureWithDescriptor:", .{descriptor});
     if (texture.value == null) {
         diags.set("the Metal device would not allocate an offscreen render target");
-        return error.SurfaceCreationFailed;
+        return error.TextureAllocationFailed;
     }
     return texture;
 }

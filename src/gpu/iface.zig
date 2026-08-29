@@ -141,6 +141,14 @@ pub const Error = error{
     /// with the editor's geometry, at several megabytes for an ordinary window
     /// and considerably more for a large one, so this is the first failure here
     /// that someone can provoke by dragging a window edge.
+    ///
+    /// The offscreen colour target `initOffscreen` builds answers to this too,
+    /// and it is worth saying why it is not `SurfaceCreationFailed`, which would
+    /// read as the symmetric choice since that target *is* that renderer's
+    /// surface. What failed decides the name rather than what the thing is for:
+    /// it is a texture sized from the caller's geometry, reached from `resize`
+    /// on that path as well, which is this member's own description.
+    /// `SurfaceCreationFailed` stays the layer's, where nothing is allocated.
     TextureAllocationFailed,
     /// `readback` was asked for the pixels of a renderer attached to a view.
     ///
@@ -277,10 +285,17 @@ pub const Readback = struct {
 /// paying for indirection with a single implementation would buy nothing that
 /// the comptime check below does not buy for free.
 ///
-/// Six operations, five of which the editor drives: `init`, `deinit`, `resize`,
-/// `upload`, and `frame`. This sentence undercounted by one before `upload`
-/// arrived, having missed `resize`; the comptime block below is the list that
-/// cannot drift, and this one is prose that has to be kept beside it by hand.
+/// **Ten operations.** Five of them the editor drives: `init`, `deinit`,
+/// `resize`, `upload`, and `frame`. The rest are described below in the order
+/// they arrived, which is what the ordinals are for.
+///
+/// This opening count has now been wrong twice, in the same direction and for the
+/// same reason. It undercounted by one before `upload` arrived, having missed
+/// `resize`; it then said "six" while the paragraphs under it went on to a tenth,
+/// because each new operation was appended without anyone re-reading the first
+/// line. The comptime block below is the list that cannot drift; this is prose
+/// that has to be kept beside it by hand, and the failure mode is not that it
+/// looks stale but that it stays internally consistent while being wrong.
 ///
 /// `liveWindowBuffers` and `liveAccumulationTextures` are the seventh and
 /// eighth, and are the same kind of thing as `probe`: questions about the
