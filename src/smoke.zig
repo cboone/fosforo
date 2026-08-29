@@ -45,8 +45,21 @@ const io = @import("platform/io.zig");
 const platform = @import("platform/objc.zig");
 const plugin = @import("clap/plugin.zig");
 const root = @import("main.zig");
+const shader = @import("gpu/metal/shader.zig");
 
 const c = clap.c;
+
+/// The one thing these arms need that Zig 0.16's std does not declare.
+///
+/// `std.c` has `getenv` and no `setenv` at all, and `std.process.Environ` can
+/// read the block this process started with without being able to write it. It
+/// lives here rather than in `platform/` because the plugin only ever *reads* the
+/// environment; nothing shipped writes one.
+///
+/// POSIX.1-2001, and present in macOS's `stdlib.h` with no availability guard, so
+/// unlike the externs in `platform/` this one costs the 11.0 deployment target
+/// nothing (ADR 0015).
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
 /// Open and close cycles the AppKit half runs when the caller does not say.
 ///
@@ -194,6 +207,178 @@ fn gpuHalf() !void {
     // `probe` fills the buffer in on success too. Naming the device is the
     // difference between "something ran" and a result someone can check.
     say("  device: {s}", .{diags.message()});
+
+    try reloadFallbackArms();
+}
+
+// ---------------------------------------------------------------------------
+// The shader-reload fixtures, shared by both halves
+// ---------------------------------------------------------------------------
+
+/// A shader file this process owns, in `$TMPDIR`, deleted on the way out.
+///
+/// **Never in the worktree.** These arms have to edit the file the plugin
+/// compiles, and `shaders/scope.metal` is tracked: a harness that wrote to it
+/// would leave the tree dirty, race a concurrent `zig build`, and on a crash
+/// leave a broken shader committed by whoever ran `git add -A` next.
+///
+/// Named for the process, so two harnesses cannot collide and a crashed run
+/// leaves a file the OS reaps rather than one anybody has to find. `$TMPDIR`
+/// rather than a hardcoded `/tmp`, on `scripts/smoke-leak-check`'s precedent,
+/// falling back to the `/tmp` POSIX guarantees and macOS supplies.
+const Fixture = struct {
+    path_buf: [512]u8 = undefined,
+    path: [:0]const u8 = "",
+
+    fn create(self: *Fixture, tag: []const u8) !void {
+        const dir: []const u8 = if (std.c.getenv("TMPDIR")) |raw| std.mem.span(raw) else "/tmp";
+        const trimmed = std.mem.trimEnd(u8, dir, "/");
+
+        self.path = std.fmt.bufPrintZ(&self.path_buf, "{s}/fosforo-smoke-{d}-{s}.metal", .{
+            trimmed,
+            std.Thread.getCurrentId(),
+            tag,
+        }) catch return error.FixturePathTooLong;
+
+        try self.write(shader.embedded);
+    }
+
+    /// Written, then stat'd. **An arm whose fixture never landed has to fail as
+    /// itself**, not as a reload that did not happen, which is the same rule
+    /// `scripts/smoke-leak-check` follows when it refuses to read anything into
+    /// an absence until it knows the instrument ran.
+    fn write(self: *Fixture, contents: []const u8) !void {
+        try std.Io.Dir.cwd().writeFile(io.get(), .{ .sub_path = self.path, .data = contents });
+
+        const stamp = shader.stamp(self.path) catch return error.FixtureNotWritten;
+        if (stamp.size != contents.len) return error.FixtureNotWritten;
+    }
+
+    /// Point the plugin at this file. Read back through `std.c.getenv` on the
+    /// plugin's side, which reads the live block rather than the snapshot this
+    /// process started with.
+    fn use(self: *const Fixture) !void {
+        if (setenv(shader.path_env, self.path.ptr, 1) != 0) return error.CannotSetShaderPath;
+    }
+
+    fn destroy(self: *Fixture) void {
+        std.Io.Dir.cwd().deleteFile(io.get(), self.path) catch {};
+        _ = setenv(shader.path_env, "", 1);
+    }
+};
+
+/// A copy of the embedded shader with one edit applied, as a fixture body.
+///
+/// Appending a comment is enough to change the file and not the picture, which is
+/// what the arms below want: they are about the swap happening, not about what it
+/// draws. `renameResolve` is the exception and is the one that proves the *disk*
+/// bytes reached the compiler.
+fn editedShader(buf: []u8, note: []const u8) ![]const u8 {
+    return std.fmt.bufPrint(buf, "{s}\n// {s}\n", .{ shader.embedded, note }) catch
+        error.FixtureTooLarge;
+}
+
+/// The embedded shader with `resolve_fragment` renamed out from under the
+/// pipeline that asks for it.
+///
+/// **This is the arm a counter cannot replace.** A reload counter proves a
+/// compile happened; it cannot tell a compile of the new bytes from a recompile
+/// of the embedded copy. Only the edited file can produce `buildPipeline`'s
+/// "compiled but does not define" diagnostic, so this is what closes that gap.
+fn renameResolve(buf: []u8) ![]const u8 {
+    var len: usize = 0;
+    var rest: []const u8 = shader.embedded;
+
+    while (std.mem.indexOf(u8, rest, "resolve_fragment")) |at| {
+        const replacement = "resolve_fragment_renamed";
+        if (len + at + replacement.len > buf.len) return error.FixtureTooLarge;
+
+        @memcpy(buf[len..][0..at], rest[0..at]);
+        len += at;
+        @memcpy(buf[len..][0..replacement.len], replacement);
+        len += replacement.len;
+        rest = rest[at + "resolve_fragment".len ..];
+    }
+
+    if (len + rest.len > buf.len) return error.FixtureTooLarge;
+    @memcpy(buf[len..][0..rest.len], rest);
+    return buf[0 .. len + rest.len];
+}
+
+/// The invariant that can otherwise ruin a day: **a debug build opens its editor
+/// whatever is on disk.**
+///
+/// In the GPU half rather than the AppKit one, deliberately, and that split is
+/// ADR 0013's own: this needs a device and no window, so it runs in the half CI
+/// *requires* rather than the half that runs under `continue-on-error`. The live
+/// swap needs a running loop and stays next door.
+///
+/// Every arm asserts `probe` **succeeds**. A shader file that is missing, or
+/// malformed, or compiles without defining what the pipelines ask for, must all
+/// leave the plugin able to start; the fallback to the embedded copy is what
+/// makes that true and `fallbacks` is what proves it was the fallback rather than
+/// a coincidence.
+fn reloadFallbackArms() !void {
+    if (comptime !shader.live) {
+        // **Never silently.** `zig build smoke --release=fast` is legal and there
+        // is no reload path in it, so an arm that quietly passed would be exactly
+        // the instrument-that-did-not-run ADR 0013 keeps insisting on telling
+        // apart from an absence.
+        say("  skipping the shader-reload arms: this build has no reload path", .{});
+        return;
+    }
+
+    var fixture: Fixture = .{};
+    try fixture.create("gpu");
+    defer fixture.destroy();
+
+    var buf: [shader.max_bytes]u8 = undefined;
+
+    // A byte-identical copy somewhere else. Proves the plugin reads the file it
+    // was pointed at, before anything is concluded from a failure to.
+    try fixture.use();
+    const start = gpu.Renderer.shaderStats();
+    try probeSucceeds("an identical copy on disk");
+    if (!gpu.Renderer.shaderStats().watching) return error.ShaderPathNotWatched;
+    if (gpu.Renderer.shaderStats().reloads == start.reloads) return error.ShaderNotReadFromDisk;
+    if (gpu.Renderer.shaderStats().fallbacks != start.fallbacks) return error.UnexpectedShaderFallback;
+
+    // A path that does not exist. The editor still opens.
+    const missing = gpu.Renderer.shaderStats();
+    if (setenv(shader.path_env, "/nonexistent/fosforo-smoke.metal", 1) != 0) {
+        return error.CannotSetShaderPath;
+    }
+    try probeSucceeds("a shader path that does not exist");
+    if (gpu.Renderer.shaderStats().fallbacks != missing.fallbacks + 1) return error.MissingShaderNotRefused;
+
+    // Something that is not MSL at all.
+    try fixture.use();
+    try fixture.write("this is not metal\n");
+    const malformed = gpu.Renderer.shaderStats();
+    try probeSucceeds("a shader that does not compile");
+    if (gpu.Renderer.shaderStats().rejected != malformed.rejected + 1) return error.MalformedShaderNotRefused;
+
+    // Compiles cleanly and defines the wrong things, which is the arm that proves
+    // the bytes on disk reached the compiler rather than the embedded copy.
+    try fixture.write(try renameResolve(&buf));
+    const renamed = gpu.Renderer.shaderStats();
+    try probeSucceeds("a shader missing the functions the pipelines ask for");
+    if (gpu.Renderer.shaderStats().rejected != renamed.rejected + 1) return error.RenamedShaderNotRefused;
+
+    // And back to something good, so a later arm in the same process starts from
+    // a state this one understands.
+    try fixture.write(try editedShader(&buf, "smoke: recovered"));
+    try probeSucceeds("a good shader again");
+
+    say("  the editor starts against a missing, malformed and mismatched shader", .{});
+}
+
+fn probeSucceeds(what: []const u8) !void {
+    var diags: gpu.Diagnostics = .{};
+    gpu.Renderer.probe(&diags) catch {
+        say("  probe refused to start against {s}: {s}", .{ what, diags.message() });
+        return error.ShaderFallbackFailed;
+    };
 }
 
 // ---------------------------------------------------------------------------
