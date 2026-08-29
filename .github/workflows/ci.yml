@@ -133,9 +133,15 @@ jobs:
   # window-server connection those 65 runs settled, and both of those are facts
   # about this repository. `smoke-leaks` additionally judges the runner's own
   # AppKit chatter, against the class prefixes in `scripts/smoke-leak-check`,
-  # three of which name classes the frameworks allocate on their own account. An
-  # `IOSurface` or an `NSView` leaked for reasons that have nothing to do with
-  # this project fails that step, and nothing here would be wrong.
+  # several of which name classes the frameworks allocate on their own account.
+  # An `IOSurface` or an `NSView` leaked for reasons that have nothing to do
+  # with this project fails that step, and nothing here would be wrong.
+  #
+  # "Several" rather than a count, deliberately. Which of those seven prefixes
+  # the frameworks allocate under on their own account was never measured, so a
+  # number here would be the one unmeasured figure in a comment block whose
+  # every other figure is quoted from the Actions API. ADR 0013 says "several"
+  # for the same list and this now matches it.
   #
   # So this is still the one check in the project that can go red for reasons
   # unrelated to the code, which is the cost of being the only one that runs
