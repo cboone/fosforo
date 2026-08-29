@@ -349,3 +349,17 @@ Landed as planned. Everything above held except where the measurements below mov
 **Two measurements to carry forward.** `smoke-leaks` at 40 cycles now reports 36 to 54 leaks for 3,648 to 5,472 bytes against the 288 for 18,816 quoted since #63, because the phase's extra two and a half seconds lets AppKit's chatter settle: the count is not a discriminator, demonstrated this time from the flattering direction. And `pthread_create` is referenced by the debug binary and absent from the release one, which is a sharper check on the gating than the string greps.
 
 **Every planted defect in the verification table above was planted and caught**, except the two the table already records as passing, which pass.
+
+### The host result, measured rather than judged by eye
+
+`clap-host` takes an explicit plugin path, so it needs no install, no project and no DAW, and it turns out to make this the rare rendering change whose *picture* can be verified automatically. The editor was captured by window id, the watched shader's background literal was edited from `float3(0.02, 0.02, 0.03)` to `float3(0.80, 0.05, 0.05)`, and the capture was repeated.
+
+| Capture                       | Background pixels | Strong-red pixels |
+| ----------------------------- | ----------------- | ----------------- |
+| Before the edit               | 518,298           | 17                |
+| After the edit                | 0                 | 518,323           |
+| After reverting the file      | 518,298           | 17                |
+
+The whole drawable changed and changed back, with no restart, in a real host, and the log carries one `recompiled` line per edit. **Both edits were byte-identical in length**, since the two literals are the same width, so this is also an independent confirmation in a host of what the same-length smoke arm asserts: the change detector does not rely on size.
+
+This is worth noting beyond its own result. ADR 0013 records that nothing automated here has ever answered what the pixels became, and #55 proved the cost of that the expensive way. A window-id capture plus a pixel count against a deliberately unmissable edit is not a general answer to that, and it is not a golden-image comparison, which [#51](https://github.com/cboone/fosforo/issues/51) still owns. It is a usable one for *this* kind of change, where the question is whether a swap reached the screen at all rather than whether the picture is right.
