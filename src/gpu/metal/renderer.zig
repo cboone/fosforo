@@ -12,6 +12,7 @@
 //! how it looks rather than on whether the signal path works at all.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const objc = @import("objc");
 const iface = @import("../iface.zig");
 const platform = @import("../../platform/objc.zig");
@@ -459,6 +460,47 @@ var shader_watching: std.atomic.Value(bool) = .init(false);
 fn sayShader(comptime fmt: []const u8, args: anytype) void {
     if (comptime !shader.live) return;
     std.debug.print("[fosforo] shader: " ++ fmt ++ "\n", args);
+}
+
+/// Whether this thread has ever been inside the render path.
+///
+/// **A threadlocal rather than an atomic, and that is the whole design.** Several
+/// open editors mean several display-link threads, so a single process-wide slot
+/// would hold whichever one marked itself last and would miss the others. A
+/// threadlocal marks each one independently and costs a store per tick.
+///
+/// Set and never cleared, so it reads as "this thread draws frames" rather than
+/// "this thread is drawing one right now". That is the stronger claim and the one
+/// worth having: it catches work added to `resize` or `upload` just as well as
+/// work added to `frame`.
+threadlocal var on_render_thread: bool = false;
+
+/// [render-thread] Claim this thread as one that draws.
+///
+/// Called beside `platform.assertNotMainThread` at all three render-path entry
+/// points rather than folded into it, because the two say different things and
+/// hiding either inside the other would cost a reader the reason for it.
+fn markRenderThread() void {
+    if (builtin.mode != .Debug) return;
+    on_render_thread = true;
+}
+
+/// The other half of the rule ADR 0010 states, from the side nothing guarded.
+///
+/// `platform.assertNotMainThread` exists so the render path is *unreachable* from
+/// the main thread. Nothing said the inverse, and #61 made the inverse matter: a
+/// cache-missing shader compile takes about 40 ms, and `Editor.tick` holds its
+/// `Gate` across its whole body, so a compile that reached a display-link thread
+/// would busy-spin the host's main thread for that long whenever an editor closed
+/// during one. The whole watcher exists to keep it off that thread, and until this
+/// nothing would have noticed it drifting back: the harness cannot see 40 ms in a
+/// tick against a two-second frame timeout, which ADR 0013 records.
+///
+/// Debug builds only, on `assertMainThread`'s reasoning. It costs a release build
+/// nothing and it fires on the machine of whoever introduced the problem.
+fn assertNotRenderThread() void {
+    if (builtin.mode != .Debug) return;
+    std.debug.assert(!on_render_thread);
 }
 
 fn signalCompleted(block: *const Completion.Context, buffer: objc.c.id) callconv(.c) void {
@@ -1014,6 +1056,7 @@ pub const Renderer = struct {
     /// layer work is a separate function rather than this function's body.
     pub fn resize(self: *Renderer, size: iface.Size, scale: f64) void {
         platform.assertNotMainThread();
+        markRenderThread();
 
         const pool = objc.AutoreleasePool.init();
         defer pool.deinit();
@@ -1104,6 +1147,7 @@ pub const Renderer = struct {
     /// direction where being wrong would be a buffer overrun.
     pub fn upload(self: *Renderer, window: []const f32) void {
         platform.assertNotMainThread();
+        markRenderThread();
 
         const n = @min(window.len, iface.max_window_samples);
         @memcpy(self.window[0..n], window[0..n]);
@@ -1124,6 +1168,7 @@ pub const Renderer = struct {
     /// closes it.
     pub fn frame(self: *Renderer) iface.Outcome {
         platform.assertNotMainThread();
+        markRenderThread();
 
         const pool = objc.AutoreleasePool.init();
         defer pool.deinit();
@@ -1699,6 +1744,12 @@ fn buildPipelinesFromSource(
     source: [:0]const u8,
     diags: *iface.Diagnostics,
 ) iface.Error!Pipelines {
+    // The one place this is enforced, because it is the one call that is slow.
+    // `init` and `probe` reach it from the main thread and the watcher from its
+    // own; a display-link thread reaching it is the defect the watcher exists to
+    // prevent, and nothing else here can see it.
+    assertNotRenderThread();
+
     var err: ?*anyopaque = null;
 
     const library = device.msgSend(objc.Object, "newLibraryWithSource:options:error:", .{
