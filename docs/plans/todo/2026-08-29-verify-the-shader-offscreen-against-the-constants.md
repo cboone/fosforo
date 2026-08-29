@@ -57,12 +57,14 @@ Both slices are copied into with `@min(needed, out.len)` on `upload`'s stated pr
 
 `src/gpu/metal/renderer.zig`:
 
-- Replace the `layer: objc.Object` field with `surface: Surface`, a two-case union of `layer: objc.Object` and `offscreen: objc.Object` (an owned `BGRA8Unorm` texture with `MTLStorageModeShared`, so `getBytes` needs no blit).
-- `initOffscreen` reuses `init`'s body wholesale: same `MTLCreateSystemDefaultDevice`, `newCommandQueue`, `buildPipelines`, `dispatch_semaphore_create`, `buildWindows`, `buildAccumulation`, same `errdefer` ladder. It differs in its last acquisition only, building the target texture where `init` calls `attachLayer`. Factor the shared prefix so the two cannot drift.
-- `frame` changes at **three points and nowhere else**: acquiring the target texture (`nextDrawable`, which may yield `.no_drawable`, versus the owned texture, which cannot), the `setTexture:` on the resolve attachment, and `presentDrawable:` becoming conditional. Everything under test — pipelines, bindings, uniforms, draw calls, attachment formats, ping-pong, semaphore, slot discipline — is untouched and shared.
-- `resize` switches: `applyLayerGeometry` for the layer case, rebuilding the offscreen texture for the other, then the existing accumulation reallocation for both.
+- Replace the `layer: objc.Object` field with `surface: Surface`, a two-case union of `layer: objc.Object` and `target: objc.Object` (an owned `BGRA8Unorm` texture with `MTLStorageModeShared`, so `getBytes` needs no blit).
+- Both constructors share one `acquire`, which takes the device, queue, pipelines, semaphore, window buffers and accumulation in the order `init` has always taken them, and hands them back as an `Acquired` the caller assembles. A separate struct rather than a partly-filled `Renderer`, because a union has no placeholder and inventing one would put a state in the type that no renderer is ever in. `init` then attaches a layer; `initOffscreen` builds a texture. That is the whole difference.
+- `frame` changes at **three points and nowhere else**: acquiring the colour attachment (`nextDrawable`, which may yield `.no_drawable`, versus the owned texture, which cannot), the `setTexture:` on the resolve attachment, and `presentDrawable:` becoming conditional. Everything under test — pipelines, bindings, uniforms, draw calls, attachment formats, ping-pong, semaphore, slot discipline — is untouched and shared.
+- `resize` switches: `applyLayerGeometry` for the layer case, `replaceTarget` for the other, then the existing accumulation reallocation for both. `replaceTarget` takes the new texture before releasing the old and abandons the resize if that fails, which is the opposite of `replaceAccumulation`'s order and deliberately so: `frame` has an outcome for an absent accumulation and none for an absent surface, and a target out of step with the accumulation is a fragment reading past the end of a texture rather than a dropped frame.
 - `deinit` releases whichever the union holds.
-- `readback` builds a shared `RGBA16Float` staging texture, blits `accum[accum_source]` into it (the half the last committed frame wrote), commits, and `waitUntilCompleted`. Because one queue completes in order, that wait is also what guarantees every earlier frame finished. Then `getBytes` from the staging texture into `energy`, widening `f16` to `f32`, and from the offscreen target into `picture`, swizzling BGRA to RGBA.
+- `readback` blits `accum[accum_source]` (the half the last committed frame wrote) into a shared `MTLBuffer`, commits, and `waitUntilCompleted`. Because one queue completes its buffers in order, that wait is also what guarantees every earlier frame finished. Then the buffer's `contents` is read directly as `f16` and widened into `energy`, and `getBytes` copies the offscreen target into `picture`, swizzled to RGBA.
+
+**A buffer rather than a second texture**, which is what keeps the read allocation-free on this side: `contents` is a mapped pointer, so the half-floats widen straight into the caller's slice. Blitting texture-to-texture would leave `getBytes` needing a destination this file has no allocator to provide.
 
 The blit is a readback mechanism, not a rendering path: it changes nothing about what was drawn, and it is why the accumulation keeps `MTLStorageModePrivate` in both cases rather than the offscreen renderer quietly allocating a different resource from the shipping one.
 
@@ -70,16 +72,16 @@ The blit is a readback mechanism, not a rendering path: it changes nothing about
 
 New `src/gpu/measure.zig`, importing only `std` and `iface.zig`. No Metal, no GPU, no I/O. It holds the window generators, the feature extraction and the expected-value arithmetic:
 
-| Function                        | What it answers                                                     |
-| ------------------------------- | ------------------------------------------------------------------- |
-| `litRows(image, threshold)`     | topmost and bottommost lit row per column, or none                  |
-| `impliedSample(row, height)`    | the sample a row implies, inverting the documented mapping          |
-| `expectedRow(sample, height)`   | the row a sample should land on, from `trace_full_scale` and `trace_rail` |
-| `pixelTolerance(height)`        | one backing pixel expressed as a sample value                       |
-| `railRow(height)`               | where `trace_rail` puts the clamp                                   |
-| `peakCount(image, threshold)`   | local maxima in the top-row series, counted under strict equality   |
-| `plateauWidth(image)`           | columns sharing the extreme row                                     |
-| `constant`, `ramp`, `sine`      | the windows the cases feed in                                       |
+| Function                      | What it answers                                                           |
+| ----------------------------- | ------------------------------------------------------------------------- |
+| `litRows(image, threshold)`   | topmost and bottommost lit row per column, or none                        |
+| `impliedSample(row, height)`  | the sample a row implies, inverting the documented mapping                |
+| `expectedRow(sample, height)` | the row a sample should land on, from `trace_full_scale` and `trace_rail` |
+| `pixelTolerance(height)`      | one backing pixel expressed as a sample value                             |
+| `railRow(height)`             | where `trace_rail` puts the clamp                                         |
+| `peakCount(image, threshold)` | local maxima in the top-row series, counted under strict equality         |
+| `plateauWidth(image)`         | columns sharing the extreme row                                           |
+| `constant`, `ramp`, `sine`    | the windows the cases feed in                                             |
 
 **This module is where #38's one methodological finding gets a permanent guard.** That issue's first period counter counted upward zero crossings against the centre row using the topmost lit pixel per column; a steep segment crossing the centre lights every row it spans, so every tone came back exactly one period low, and a ±1 tolerance called all six "ok". `measure.zig`'s unit tests synthesize images in plain Zig, including the steep-crossing case, and assert `peakCount` exactly. The analyser being untested is how the analysis was wrong last time.
 
@@ -118,18 +120,18 @@ That job deliberately has no Metal toolchain, which is what keeps runtime compil
 
 Every tolerance below is stated with the error it must not absorb, because "a tolerance wide enough to absorb a systematic error is a tolerance that hides one." One backing pixel at H=540 is a sample value of `1 / (0.9 * 270)`, or 0.0041; the errors being hunted are one to three orders of magnitude larger.
 
-| # | Case                                   | Assertion                                                                  | Tolerance      |
-| - | -------------------------------------- | -------------------------------------------------------------------------- | -------------- |
-| 1 | Silence, 960 zeros                     | every column lit, one row per column, implied sample is zero                 | 1 px           |
-| 2 | Levels 0.5, 1.0, 1.05 and the negatives | implied sample matches `clamp(v * full_scale, ±rail) / full_scale`           | 1 px           |
-| 3 | Levels 1.089, 1.111, 2.0, 8.0          | **identical row**, equal to `railRow`                                        | none, exact    |
-| 4 | ±0.5 compared                          | equal distance from the centre row, opposite sides                           | 1 px           |
-| 5 | 3 samples, `[-1, 0, +1]`               | lit columns span the full width; column 0 is the bottom, column 959 the top  | none, exact    |
-| 6 | Sines of 1, 2, 4, 5, 8, 20 cycles      | `peakCount` equals the cycle count, and 2 → 4 → 8 as a ratio                 | none, exact    |
-| 7 | Any lit accumulation pixel             | `(r, b)` are `(0.30, 0.45)` times `g`, the colour ray `measure-trace` assumes | 1e-3 relative  |
-| 8 | Every pixel, both readbacks            | `picture == round(255 * min(1, background + energy))`                        | ±1 byte level  |
-| 9 | Any unlit pixel                        | `picture` is exactly `RGBA(5, 5, 8, 255)`                                    | none, exact    |
-| 10 | 1 deposit frame then k=1..4 quiet ones | peak energy is `decay_per_frame ^ k`                                         | 1% relative    |
+| #   | Case                                    | Assertion                                                                     | Tolerance     |
+| --- | --------------------------------------- | ----------------------------------------------------------------------------- | ------------- |
+| 1   | Silence, 960 zeros                      | every column lit, one row per column, implied sample is zero                  | 1 px          |
+| 2   | Levels 0.5, 1.0, 1.05 and the negatives | implied sample matches `clamp(v * full_scale, ±rail) / full_scale`            | 1 px          |
+| 3   | Levels 1.089, 1.111, 2.0, 8.0           | **identical row**, equal to `railRow`                                         | none, exact   |
+| 4   | ±0.5 compared                           | equal distance from the centre row, opposite sides                            | 1 px          |
+| 5   | 3 samples, `[-1, 0, +1]`                | lit columns span the full width; column 0 is the bottom, column 959 the top   | none, exact   |
+| 6   | Sines of 1, 2, 4, 5, 8, 20 cycles       | `peakCount` equals the cycle count, and 2 → 4 → 8 as a ratio                  | none, exact   |
+| 7   | Any lit accumulation pixel              | `(r, b)` are `(0.30, 0.45)` times `g`, the colour ray `measure-trace` assumes | 1e-3 relative |
+| 8   | Every pixel, both readbacks             | `picture == round(255 * min(1, background + energy))`                         | ±1 byte level |
+| 9   | Any unlit pixel                         | `picture` is exactly `RGBA(5, 5, 8, 255)`                                     | none, exact   |
+| 10  | 1 deposit frame then k=1..4 quiet ones  | peak energy is `decay_per_frame ^ k`                                          | 1% relative   |
 
 Case 3 is ADR 0017's saturation claim, and it needs no rasterization model at all: four different inputs must produce one output. Case 5 is the sharp probe for the horizontal mapping, because with `sample_count` as the divisor instead of `sample_count - 1` a three-sample window ends at column 640 and leaves 320 columns dark. Case 8 compares the two readbacks against each other, so it assumes nothing about how many segments covered a pixel, and it is what would have caught #55.
 
@@ -157,20 +159,20 @@ The beam's ray measured red/green 0.2998 and blue/green 0.4500 against literals 
 
 The harness's own correctness is established by planting defects and confirming each fails a *named* assertion. **All ten were planted and all ten were caught**, measured rather than predicted:
 
-| Planted defect                                            | Error returned              | What the harness printed                     |
-| --------------------------------------------------------- | --------------------------- | -------------------------------------------- |
-| Swap `full_scale` and `rail` in `trace_vertex`             | `LevelMisplaced`            | 0.250 read as 0.27366, off by 0.02366        |
-| Apply `full_scale` twice                                   | `LevelMisplaced`            | 0.250 read as 0.22428, off by 0.02572        |
-| Divide x by `sample_count` rather than `sample_count - 1`  | `TraceNotDrawn`             | silence lit 959 of 960 columns               |
-| The same, with the silence check relaxed by one column     | `TraceEndsEarly`            | three samples span columns 0 to 639 of 959   |
-| Negate y                                                   | `LevelMisplaced`            | 0.250 read as -0.24897, off by 0.49897       |
-| The same, with the level and rail checks skipped           | `TraceInverted`             | +0.5 sits -121.5 above centre                |
-| Drop the `clamp`                                           | `RailMisplaced`             | rail on row 0, expected 4.9                  |
-| A beam colour that varies across the fragment              | `BeamNotOneColour`          | worst ray deviation 0.28152                  |
-| Reorder the background literal's channels                  | `BackgroundNotNeutral`      | background RGBA(8, 5, 5, 255)                |
-| Reinstate #55's `1 - decay` resolve gain                   | `ResolveNotAnAdd`           | worst channel off by -224                    |
-| `decay_per_frame` of 1.0                                   | `DecayWrong`                | 1.0000 of the deposit, expected 0.9000       |
-| Bind `target` rather than `source` to the decay pass       | `DecayWrong`                | 0.0000 of the deposit, expected 0.9000       |
+| Planted defect                                            | Error returned         | What the harness printed                   |
+| --------------------------------------------------------- | ---------------------- | ------------------------------------------ |
+| Swap `full_scale` and `rail` in `trace_vertex`            | `LevelMisplaced`       | 0.250 read as 0.27366, off by 0.02366      |
+| Apply `full_scale` twice                                  | `LevelMisplaced`       | 0.250 read as 0.22428, off by 0.02572      |
+| Divide x by `sample_count` rather than `sample_count - 1` | `TraceNotDrawn`        | silence lit 959 of 960 columns             |
+| The same, with the silence check relaxed by one column    | `TraceEndsEarly`       | three samples span columns 0 to 639 of 959 |
+| Negate y                                                  | `LevelMisplaced`       | 0.250 read as -0.24897, off by 0.49897     |
+| The same, with the level and rail checks skipped          | `TraceInverted`        | +0.5 sits -121.5 above centre              |
+| Drop the `clamp`                                          | `RailMisplaced`        | rail on row 0, expected 4.9                |
+| A beam colour that varies across the fragment             | `BeamNotOneColour`     | worst ray deviation 0.28152                |
+| Reorder the background literal's channels                 | `BackgroundNotNeutral` | background RGBA(8, 5, 5, 255)              |
+| Reinstate #55's `1 - decay` resolve gain                  | `ResolveNotAnAdd`      | worst channel off by -224                  |
+| `decay_per_frame` of 1.0                                  | `DecayWrong`           | 1.0000 of the deposit, expected 0.9000     |
+| Bind `target` rather than `source` to the decay pass      | `DecayWrong`           | 0.0000 of the deposit, expected 0.9000     |
 
 Three things fell out of doing this rather than predicting it.
 
@@ -200,17 +202,17 @@ Two negative controls, since an absence has to be told apart from an instrument 
 
 ## Files
 
-| File                                                          | Change                                                              |
-| ------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `src/gpu/iface.zig`                                            | `Readback`, `Error.SurfaceNotReadable`, two `assertSignature` lines, the prose op count |
-| `src/gpu/metal/renderer.zig`                                   | `Surface` union, `initOffscreen`, `readback`, three branches in `frame`, `resize` and `deinit` |
-| `src/gpu/measure.zig`                                          | new; pure analysis and window generators, with its own tests        |
-| `src/smoke.zig`                                                | the `trace` half, its case table, `usage`                           |
-| `build.zig`                                                    | `smoke-trace` through the existing `addSmokeHalf`                   |
-| `.github/workflows/ci.yml`                                     | the fourth `smoke` step, and a re-measured `timeout-minutes` comment |
-| `docs/adr/0013-gui-smoke-harness-as-a-build-step.md`           | a #51 amendment: what was built, and why it is not the refused readback |
-| `AGENTS.md`, `CONTRIBUTING.md`, `README.md`                    | the command block, the smoke bullet, the CI gating paragraph        |
-| `docs/plans/todo/2026-07-25-repo-foundation-and-phased-build-plan.md` | #51 recorded as landed, and the verification table's GUI row |
+| File                                                                  | Change                                                                                         |
+| --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `src/gpu/iface.zig`                                                   | `Readback`, `Error.SurfaceNotReadable`, two `assertSignature` lines, the prose op count        |
+| `src/gpu/metal/renderer.zig`                                          | `Surface` union, `initOffscreen`, `readback`, three branches in `frame`, `resize` and `deinit` |
+| `src/gpu/measure.zig`                                                 | new; pure analysis and window generators, with its own tests                                   |
+| `src/smoke.zig`                                                       | the `trace` half, its case table, `usage`                                                      |
+| `build.zig`                                                           | `smoke-trace` through the existing `addSmokeHalf`                                              |
+| `.github/workflows/ci.yml`                                            | the fourth `smoke` step, and a re-measured `timeout-minutes` comment                           |
+| `docs/adr/0013-gui-smoke-harness-as-a-build-step.md`                  | a #51 amendment: what was built, and why it is not the refused readback                        |
+| `AGENTS.md`, `CONTRIBUTING.md`, `README.md`                           | the command block, the smoke bullet, the CI gating paragraph                                   |
+| `docs/plans/todo/2026-07-25-repo-foundation-and-phased-build-plan.md` | #51 recorded as landed, and the verification table's GUI row                                   |
 
 Commits follow the boundaries above: the seam and backend first, then `measure.zig` with its tests, then the harness half, then build and CI, then docs. Conventional Commits, each referencing `(#51)`.
 

@@ -85,16 +85,24 @@ run them.
 
 ```bash
 zig build smoke        # runs Metal and AppKit for real; needs a GPU and a window server
+zig build smoke-trace  # renders into a texture and measures it; needs a GPU, no window
 zig build smoke-leaks  # 400 editor cycles under `leaks --atExit`
 zig build ring-race    # the history buffer under Thread Sanitizer; needs a Linux host
 ```
 
-**CI runs all three now.** The `smoke` job runs each half as its own step,
-requiring `smoke-gpu` and letting `smoke-appkit` fail without failing the job,
-and `smoke-leaks` runs beside them at `-Dleak-cycles=40`, also under
-`continue-on-error`. The `ring-race` job runs on Linux, where it is required.
+**CI runs all of them now.** The `smoke` job runs each half as its own step,
+requiring `smoke-gpu` and `smoke-trace`, which need a device and no window, and
+letting `smoke-appkit` fail without failing the job. `smoke-leaks` runs beside
+them at `-Dleak-cycles=40`, also under `continue-on-error`. The `ring-race` job
+runs on Linux, where it is required.
 
-So two of those four steps observe without being able to stop anything, and
+`smoke-trace` is the one that answers what the shader drew, as opposed to whether
+it compiled or whether a frame was presented. It renders through the shipping
+pipeline into a texture the backend owns and asserts the vertical mapping, the
+rail, the horizontal mapping, period counts, the resolve and the decay against
+values computed from the constants in `src/gpu/iface.zig`.
+
+So two of those five steps observe without being able to stop anything, and
 [#72](https://github.com/cboone/fosforo/issues/72) is where the `smoke-appkit`
 half of that gets decided. Running them locally is what has teeth in the
 meantime. The leak check's criteria do not vary with the cycle count while its

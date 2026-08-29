@@ -23,14 +23,15 @@ Keep the harness, as `src/smoke.zig`, behind its own build steps, and never wire
 
 **An executable, not a test artifact.** A test binary gets `std.testing`'s assertions but must stay silent: `std.debug.print` from inside one interleaves with the test runner's stream, which the build runner reads as a failed step despite a zero exit code. `src/clap/log.zig` already documents that hazard, and its `mirror` is disabled under `builtin.is_test` for the same reason. A smoke test that cannot say what it was doing when it died is worth much less than one that can, so this reports through stderr and its own exit codes: 0 for a pass, 1 for a half that ran and failed, 2 for being invoked wrong.
 
-**Two halves, gated differently**, because their environmental requirements differ and so do their odds of running unattended:
+**Halves, gated differently**, because their environmental requirements differ and so do their odds of running unattended. Two when this was written; the third arrived with #51 and is recorded in the amendment at the foot of this document, corrected here in place rather than left stale:
 
 | Half     | Needs                        | Covers                                                               |
 | -------- | ---------------------------- | -------------------------------------------------------------------- |
 | `gpu`    | A Metal device, no window    | Runtime shader compilation, pipeline assembly, wrong Metal selectors |
+| `trace`  | A Metal device, no window    | What the shader drew: the mapping, the rail, the resolve, the decay  |
 | `appkit` | A window server and a device | View embedding, teardown order, the CLAP GUI lifecycle               |
 
-The GPU half is required in CI. The AppKit half runs there under `continue-on-error` until an actual run settles whether a hosted runner grants an unbundled process a window-server connection.
+The GPU and trace halves are required in CI. The AppKit half runs there under `continue-on-error` until an actual run settles whether a hosted runner grants an unbundled process a window-server connection.
 
 **The GPU half reaches the device through the seam**, as `Renderer.probe`, one of the operations declared beside `init`, `deinit`, `resize`, `upload`, `frame`, and `liveWindowBuffers` in `src/gpu/iface.zig`. `Renderer.init` cannot run without a window, because its last step attaches a `CAMetalLayer` to an `NSView`. `probe` is everything before that step, sharing `buildPipelines` with `init` rather than paraphrasing it, so a pass means the shipping path compiled the shader. It names no Metal type above the seam, which [ADR 0005](./0005-metal-behind-a-renderer-seam.md) requires and the comptime block in that file enforces.
 
@@ -148,6 +149,8 @@ That is a class this document did not previously account for: not a resource lea
 
 None of the above sees whether the picture is bright enough to look at. #55 shipped a resolve gain that rendered a sine as a black display, and it passed 160 unit tests, both smoke halves, `smoke-leaks`, `clap-validator` and the validation layer. It was found by eye in under a minute. The harness answers whether frames are presented and whether resources balance; it has never answered what the pixels became, and #51 remains the issue that would change that.
 
+**Superseded by the #51 amendment below, which closed it.** Left standing rather than edited away, because the paragraph is the argument that issue was built against, and because the defect it describes is now the worked example of what the new half catches.
+
 ## Amended by issue #63: the leak check enters CI, and a fourth instrument is refused
 
 `zig build smoke-leaks` had never run anywhere but a keyboard. It now runs in the `smoke` job on every push, at 40 cycles rather than 400, under `continue-on-error` on the same reasoning as the AppKit half: it *is* the AppKit half with an instrument wrapped around it, so it inherits the dependency on a hosted runner granting an unbundled process a window-server connection. Promoting it, like promoting `smoke-appkit`, stays a separate decision about what may block a merge.
@@ -183,3 +186,29 @@ Its case rested on one measurement this document already carries: a leaked windo
 The short form, and the thing to re-read before proposing it again: **it is a calibrated instrument for a defect an uncalibrated one already catches, and it is blind to the defect nothing else catches.** The byte bound above is the opposite trade and is why it was affordable — 56 times above the observed baseline and 40 times below the smallest leak it is for, so it needs no calibration against the machine it runs on.
 
 The row nothing covers is left uncovered deliberately. Saying so is what stops it being rediscovered as a gap worth a fourth instrument.
+
+## Amended by issue #51: the readback this document refused, and the one it got
+
+The limit restated above is closed. `zig build smoke-trace` is a third half, needing a Metal device and no window, required in CI beside `smoke-gpu`. It renders through the shipping pipeline into a texture and asserts what the pixels became.
+
+**It is not the readback refused above, and the distinction is the whole design rather than a technicality.** That refusal had two halves. Reading the *drawable* back would mean dropping `setFramebufferOnly:`, changing the shipping renderer's storage mode in every host on every frame so a check could run; nothing here touches the layer, the drawable or that flag, and `init` is byte-for-byte the constructor it was. A *harness-only path* was called worse, on the grounds that "a path the shipping renderer never takes is a paraphrase"; the answer is that the offscreen path is not a second path but the same one against a different surface. `Renderer` gained a `Surface` union, `init` and `initOffscreen` share every acquisition through one function, and `frame` reads that union at exactly three points: where it takes a colour attachment, where it binds one to the resolve pass, and whether it presents. The pipelines, uniforms, bindings, draw calls, attachment formats, ping-pong and slot discipline are the shipping ones. That is `probe`'s discipline of sharing rather than paraphrasing, applied to a frame instead of a pipeline.
+
+**No golden image was built, and the criterion this document set is why.** It asked for a picture "expensive enough to justify a golden and stable enough that the golden does not churn". The picture is not stable — #57 replaces the primitive, #58 changes what brightness means, #60 replaces the resolve outright — so what landed instead asserts extracted features against values computed from `iface.trace_full_scale` and `iface.trace_rail`. Those survive the rest of phase 3 with changed expected numbers rather than a rewritten instrument, and the geometry assertions read the *accumulation* rather than the picture precisely because #60 rewrites only the latter.
+
+### What it can fail on
+
+Ten defects were planted and all ten were caught, each by a named assertion. The one that matters most is #55's `1 - decay` resolve gain, the failure the paragraph above was written about: replanted, it fails with a channel 224 levels out. The full table is in `docs/plans/todo/2026-08-29-verify-the-shader-offscreen-against-the-constants.md`.
+
+**Where the assertions can be exact they are exact**, and three are: every level from 1.111 upward lands on one row, the period counts are compared under strict equality, and a three-sample window must reach both edges. The vertical tolerances are one backing pixel expressed as a sample value, which is the display's own quantum and therefore cannot absorb an error the display could show. That is #38's rule applied rather than restated: a tolerance wide enough to absorb a systematic error is a tolerance that hides one, and the ±1 period tolerance that once called six wrong counts "ok" is the thing being guarded against.
+
+### The analysis is tested too, which is the part that had been going wrong
+
+`src/gpu/measure.zig` holds the feature extraction and imports nothing but `std` and the seam, so `zig build test` covers it on a runner with no graphics support. That is not tidiness. #38's defect was in the *analysis* and not in the shader: its first period counter read the topmost lit pixel against the centre row, a steep segment crossing the centre lights every row it spans, and every tone came back exactly one period low. An analysis that runs only against a GPU is an analysis nothing tests, so this one has its own tests and a rasterizer that deliberately reproduces the spanning behaviour that broke the original.
+
+### Three findings from building it
+
+**A line strip deposits once per pixel here.** One depositing frame peaks at exactly 1.0000, which is the beam's green, so shared vertices do not double under Metal's diamond-exit rule at this geometry. That was an open question the plan declined to prejudge, and it is why the resolve check compares the two readbacks against each other rather than against the beam's literal: a check that assumed single coverage would have been resting on it.
+
+**Offscreen frames stop at three without a wait**, because that is the semaphore's depth and there is no display link pacing the loop. A `spinLoopHint` retry measured out at roughly the length of the frame it was waiting for and failed on the fourth frame of every case, which reads exactly like a completion handler that never fires and was not one. The harness yields instead.
+
+**Binding the wrong accumulation texture does not compile.** Planting it makes `source` an unused local, which Zig rejects. A better outcome than a caught defect, and worth recording as the reason that row had to be silenced before it could be exercised at all.
