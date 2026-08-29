@@ -8,6 +8,13 @@ const zon = @import("build.zig.zon");
 /// Metal layer, CoreVideo for the display link.
 const frameworks = [_][]const u8{ "Foundation", "Cocoa", "Metal", "QuartzCore", "CoreVideo" };
 
+/// The one shader, named once.
+///
+/// Three call sites reach it and a fourth spelling would be a fourth chance for
+/// them to disagree: the anonymous import `@embedFile` resolves through, the
+/// syntax check, and the absolute path a debug build reloads from.
+const shader_source_path = "shaders/scope.metal";
+
 pub fn build(b: *std.Build) void {
     // Pin the minimum macOS version rather than inheriting the build machine's.
     // Without this, Zig stamps the host version onto the object and the linker
@@ -44,6 +51,9 @@ pub fn build(b: *std.Build) void {
         // Deliberately below the early return above, so the one step that builds
         // off macOS never spawns a process it has no use for.
         .provenance = gitProvenance(b),
+
+        // Resolved once here rather than per module, on `provenance`'s reasoning.
+        .shader_path = debugShaderPath(b, optimize),
     };
 
     // Zig's own step, re-described. Its default text is "Copy build artifacts to
@@ -151,6 +161,41 @@ fn gitProvenance(b: *std.Build) Provenance {
     };
 }
 
+/// Where a debug build should look for the shader it was built from, or the empty
+/// string for nowhere.
+///
+/// [ADR 0009](docs/adr/0009-runtime-shader-compilation.md) promises that "debug
+/// builds reload from disk; release builds use the embedded source", and this is the
+/// only thing that can tell a debug build *which* disk. `@embedFile` bakes the bytes
+/// in and keeps no path, and a bundle loaded out of ~/Library/Audio/Plug-Ins has no
+/// way back to the worktree that built it. See #61.
+///
+/// **Empty outside a debug build, and that is structural rather than a convention.**
+/// A shipped binary must not carry the absolute path of somebody else's source tree,
+/// and gating here rather than in Zig means those bytes are never handed to the
+/// compiler at all. Relying on the optimizer to strip an unreferenced string would be
+/// a claim rather than a proof, which is the standard `src/build_info.zig` already
+/// refuses for `marker`.
+///
+/// **Absolute or nothing**, which is the half that is easy to get wrong two ways.
+/// `Cache.Directory.path` is null for "the build root *is* the working directory"
+/// rather than for "there is no build root", so the `orelse` below is not the tarball
+/// case that `gitProvenance`'s looks like; that one is handled by `runAllowFail`
+/// failing. And `std.fs.path.resolve` does not prepend the working directory to a
+/// relative input, so `b.pathResolve` yields an absolute path only if the root is one.
+/// A relative path handed to a plugin would resolve against whatever the *host's*
+/// working directory happens to be, which is right only when REAPER was launched from
+/// a worktree and meaningless everywhere else. `b.pathFromRoot` hides both facts
+/// behind an `orelse "."` and its own docstring calls calling it a code smell.
+fn debugShaderPath(b: *std.Build, optimize: std.builtin.OptimizeMode) []const u8 {
+    if (optimize != .Debug) return "";
+
+    const root = b.build_root.path orelse return "";
+    if (!std.fs.path.isAbsolute(root)) return "";
+
+    return b.pathResolve(&.{ root, shader_source_path });
+}
+
 /// One `git` invocation, trimmed, or null if git could not answer.
 fn gitOutput(b: *std.Build, root: []const u8, args: []const []const u8) ?[:0]const u8 {
     const argv = b.allocator.alloc([]const u8, args.len + 3) catch @panic("OOM");
@@ -238,6 +283,11 @@ const Core = struct {
     /// cannot disagree about which commit they came from.
     provenance: Provenance,
 
+    /// The file a debug build reloads the shader from, absolute, or "" for the
+    /// embedded copy alone. Resolved once for `provenance`'s reason. See
+    /// `debugShaderPath`.
+    shader_path: []const u8,
+
     const Options = struct {
         /// The module's root source file, which is also what bounds
         /// `@embedFile` and relative `@import`. Every root here has to sit
@@ -263,6 +313,17 @@ const Core = struct {
         build_options.addOption([:0]const u8, "git_commit", self.provenance.commit);
         build_options.addOption(bool, "git_dirty", self.provenance.dirty);
 
+        // Not sentinel-terminated, unlike the three above: this one never crosses the
+        // ABI as a C string, it is compared and opened. `""` says "there is no file",
+        // which is every release build and any build whose root could not be named
+        // absolutely.
+        //
+        // Cheap on the cache key the comment above warns about. Branch, commit and
+        // dirty change per commit and per edit; this changes only when a worktree
+        // moves, so it costs one full rebuild after a `git worktree move`. What it
+        // does add is that two worktrees on the same commit stop sharing an entry.
+        build_options.addOption([]const u8, "shader_path", self.shader_path);
+
         const mod = b.createModule(.{
             .root_source_file = b.path(options.root),
             .target = self.target,
@@ -279,7 +340,7 @@ const Core = struct {
         // through the import table instead. Keeping shaders/ outside src/ is what
         // lets `zig build validate-shaders` treat it as a directory of shaders
         // rather than of Zig.
-        mod.addAnonymousImport("scope.metal", .{ .root_source_file = b.path("shaders/scope.metal") });
+        mod.addAnonymousImport("scope.metal", .{ .root_source_file = b.path(shader_source_path) });
         for (frameworks) |fw| mod.linkFramework(fw, .{});
         return mod;
     }
@@ -452,7 +513,7 @@ fn addShaderValidationStep(b: *std.Build) void {
     const check = b.addSystemCommand(&.{
         "xcrun", "-sdk", "macosx", "metal", "-x", "metal", "-fsyntax-only",
     });
-    check.addFileArg(b.path("shaders/scope.metal"));
+    check.addFileArg(b.path(shader_source_path));
     step.dependOn(&check.step);
 }
 
