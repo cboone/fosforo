@@ -119,9 +119,18 @@ pub const Error = error{
     PipelineCreationFailed,
     /// A drawable surface could not be created or attached to the view.
     SurfaceCreationFailed,
-    /// The per-frame window buffers could not be allocated. Memory pressure
-    /// rather than anything about this machine's GPU, and the only member here
-    /// that a second run might not reproduce.
+    /// A buffer could not be allocated. Memory pressure rather than anything
+    /// about this machine's GPU, and the only member here that a second run
+    /// might not reproduce.
+    ///
+    /// Two buffers now answer to this and they are not the same shape. The
+    /// per-frame window buffers are a fixed 32 KiB each, sized from
+    /// `max_window_samples`, and nothing a user does makes them larger. The
+    /// readback staging buffer `readback` blits into scales with the geometry
+    /// `initOffscreen` was given, so it fails the way `TextureAllocationFailed`
+    /// does; it is here rather than there because what failed is a buffer, and
+    /// keeping the two sets sorted by resource kind is what makes either name
+    /// useful when one turns up in a log.
     BufferAllocationFailed,
     /// The accumulation textures could not be allocated.
     ///
@@ -133,6 +142,18 @@ pub const Error = error{
     /// and considerably more for a large one, so this is the first failure here
     /// that someone can provoke by dragging a window edge.
     TextureAllocationFailed,
+    /// `readback` was asked for the pixels of a renderer attached to a view.
+    ///
+    /// A real condition rather than a programming error, and the distinction is
+    /// the whole reason this member exists rather than an assertion. A renderer
+    /// built by `init` presents into a drawable the backend deliberately makes
+    /// write-only, and ADR 0013 refuses to relax that so a check can run: the
+    /// storage mode of the shipping surface is not something a test may change.
+    /// So there is genuinely nothing to read here, and saying so is the seam
+    /// declining rather than the renderer being reconfigured.
+    ///
+    /// `initOffscreen` is the constructor whose renderers answer this.
+    SurfaceNotReadable,
 };
 
 /// What became of one tick.
@@ -222,6 +243,36 @@ pub const Diagnostics = struct {
     }
 };
 
+/// Where an offscreen render's pixels land.
+///
+/// Two buffers rather than one, because they answer different questions and one
+/// cannot be derived from the other. `energy` is what the beam deposited, linear
+/// and unclipped, which is the only form in which the geometry can be measured
+/// once #58 makes brightness a function of segment length. `picture` is what a
+/// viewer would see, quantized and clipped, which is the only form in which the
+/// resolve's own arithmetic can be checked at all. #55 shipped a resolve that
+/// divided every moving trace by ten; a check reading `energy` alone would have
+/// passed it, since the accumulation was correct and only the read of it was not.
+///
+/// Both are plain scalars in this file's own vocabulary. Nothing here names a
+/// texture, a pixel format, or a component order: the backend swizzles out of
+/// whatever its drawable uses, so a caller counts from red.
+///
+/// Sized `width * height * 4` by the caller, from the `Size` it handed
+/// `initOffscreen`. Short buffers are filled as far as they go rather than
+/// refused, on `upload`'s precedent and for its reason: this is the boundary
+/// declining to trust a length, in the one direction where being wrong would be
+/// an overrun.
+pub const Readback = struct {
+    /// Linear RGBA from the accumulation, four floats per pixel, row-major from
+    /// the top-left. Not clipped: where the beam crosses its own path this runs
+    /// past 1.0, which is what the accumulation is floating point for.
+    energy: []f32,
+    /// The resolved picture, four bytes per pixel, RGBA, row-major from the
+    /// top-left. Alpha is whatever the resolve wrote.
+    picture: []u8,
+};
+
 /// The one backend. Aliased rather than dispatched through a vtable, because
 /// paying for indirection with a single implementation would buy nothing that
 /// the comptime check below does not buy for free.
@@ -253,6 +304,30 @@ pub const Diagnostics = struct {
 /// backend would have to answer too, and answering it here is what lets a
 /// runtime shader compilation failure be caught by CI rather than by whoever
 /// next opens the editor.
+///
+/// `initOffscreen` and `readback` are the ninth and tenth, and they are a pair:
+/// the first is a second constructor, the second is only answerable by what it
+/// builds. Together they say "render into a surface you own, and hand the pixels
+/// back", which is `probe`'s kind of thing rather than a hook — a second backend
+/// would have to answer it, and neither names anything Metal owns.
+///
+/// The distinction they turn on is worth stating here, because it is the one
+/// ADR 0013 refused to blur. A renderer built by `init` presents into a
+/// drawable, and that drawable is write-only by choice; relaxing it so a check
+/// could read a frame would change the shipping renderer in every host on every
+/// frame. A renderer built by `initOffscreen` presents into nothing and draws
+/// into a texture it allocated itself, which is a different surface rather than
+/// the same surface reconfigured. What the two share is everything in between:
+/// the same pipelines, the same uniforms, the same bindings, the same `upload`,
+/// and the same `frame`, which branches only where it acquires a colour
+/// attachment and whether it presents one. That is `probe`'s discipline of
+/// sharing rather than paraphrasing, applied to a frame instead of a pipeline,
+/// and it is what makes a result here a statement about the shipping path.
+///
+/// The one honest difference is the `Size`. `init` takes logical points and a
+/// scale factor because a view has one; `initOffscreen` takes whole backing
+/// pixels, because there is no view to read a scale from and inventing one would
+/// put a rounding between a caller and the geometry it is measuring.
 pub const Renderer = @import("metal/renderer.zig").Renderer;
 
 // ADR 0005 asks a reviewer to treat a Metal type named above this seam as a
@@ -282,6 +357,16 @@ comptime {
     assertSignature("upload", @TypeOf(Renderer.upload), fn (*Renderer, []const f32) void);
     assertSignature("frame", @TypeOf(Renderer.frame), fn (*Renderer) Outcome);
     assertSignature("probe", @TypeOf(Renderer.probe), fn (*Diagnostics) Error!void);
+    // `[main-thread]`, and its `Size` is in whole backing pixels rather than the
+    // points `init` takes. There is no view here whose scale factor could be
+    // read, and a nominal one would make every measurement taken through this
+    // constructor a measurement of `backingPixels`' rounding as much as of the
+    // shader. That arithmetic is tested where it lives.
+    assertSignature("initOffscreen", @TypeOf(Renderer.initOffscreen), fn (Size, *Diagnostics) Error!Renderer);
+    // `[main-thread]`. Takes the buffers rather than returning them, so the seam
+    // allocates nothing and the caller owns the lifetime, and takes them as
+    // scalars so nothing about a texture or a pixel format crosses.
+    assertSignature("readback", @TypeOf(Renderer.readback), fn (*Renderer, Readback) Error!void);
     // `[thread-safe]`, and a plain count because that is all a caller can do
     // anything with: naming what is being counted would name a Metal type.
     assertSignature("liveWindowBuffers", @TypeOf(Renderer.liveWindowBuffers), fn () usize);
