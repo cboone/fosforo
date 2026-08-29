@@ -381,6 +381,149 @@ fn probeSucceeds(what: []const u8) !void {
     };
 }
 
+/// How long an arm below will wait for the watcher to notice an edit.
+///
+/// Generously above the 250 ms poll plus the ~40 ms a cache-missing compile
+/// costs, on `frame_timeout_us`' reasoning: the margin is for a loaded CI runner,
+/// not for a watcher that is working. Anything approaching this ceiling is the
+/// defect rather than the timeout.
+const reload_timeout_us: u64 = 6 * std.time.us_per_s;
+
+/// One editor, held open while the shader underneath it is edited.
+///
+/// **The arms need a long-lived editor and `oneCycle` cannot give them one.** A
+/// cycle there lasts about as long as a single poll interval, so a watcher
+/// started on its first frame is joined before it ever looks twice; measured, and
+/// it is why this is a phase of its own rather than four more lines in `oneCycle`.
+///
+/// What it asserts, in order: an edit is picked up, a *second* edit of the same
+/// length is picked up too, a broken shader is refused without stopping the loop,
+/// a shader that compiles but defines the wrong things is refused the same way,
+/// and the next good edit recovers with no restart.
+fn hotReloadPhase(factory: *const c.clap_plugin_factory_t, parent: *anyopaque) !void {
+    if (comptime !shader.live) {
+        say("  skipping the live shader swap: this build has no reload path", .{});
+        return;
+    }
+
+    const pool = objc.AutoreleasePool.init();
+    defer pool.deinit();
+
+    var fixture: Fixture = .{};
+    try fixture.create("appkit");
+    defer fixture.destroy();
+    try fixture.use();
+
+    var buf: [shader.max_bytes]u8 = undefined;
+
+    const p = factory.create_plugin.?(factory, &smoke_host, plugin.id);
+    if (p == null) return error.CreatePluginFailed;
+    if (!p.*.init.?(p)) {
+        p.*.destroy.?(p);
+        return error.PluginInitFailed;
+    }
+    defer p.*.destroy.?(p);
+
+    if (!p.*.activate.?(p, smoke_sample_rate, 1, smoke_block_frames)) return error.ActivateFailed;
+    var active = true;
+    defer if (active) p.*.deactivate.?(p);
+
+    const raw = p.*.get_extension.?(p, &c.CLAP_EXT_GUI) orelse return error.NoGuiExtension;
+    const editor: *const c.clap_plugin_gui_t = @ptrCast(@alignCast(raw));
+
+    if (!editor.create.?(p, &c.CLAP_WINDOW_API_COCOA, false)) return error.GuiCreateFailed;
+
+    var window = std.mem.zeroes(c.clap_window_t);
+    window.api = &c.CLAP_WINDOW_API_COCOA;
+    clap.setCocoaView(&window, parent);
+    if (!editor.set_parent.?(p, &window)) return error.SetParentFailed;
+    if (!editor.show.?(p)) return error.ShowFailed;
+
+    const instance = plugin.editorOf(p);
+
+    // The watcher starts on the first frame, so nothing below can be edited into
+    // existence until one has been drawn.
+    try waitForFrames(instance, 1);
+
+    // An ordinary edit.
+    try fixture.write(try editedShader(&buf, "smoke reload one"));
+    try waitForReload(.{ .reloads = gpu.Renderer.shaderStats().reloads + 1 }, "an edited shader");
+
+    // **A second edit of exactly the same length**, which is the positive control
+    // for the change detector rather than a repeat of the arm above. A detector
+    // comparing size alone passes the first and fails here, and one that fired
+    // once and stopped fails here too.
+    const before_second = gpu.Renderer.shaderStats();
+    try fixture.write(try editedShader(&buf, "smoke reload two"));
+    try waitForReload(.{ .reloads = before_second.reloads + 1 }, "a second edit of the same length");
+
+    // Broken. The loop has to survive it, keep drawing, and keep the shader it
+    // already had, which is the whole reason the swap is fail-soft.
+    const before_broken = gpu.Renderer.shaderStats();
+    const frames_before_broken = instance.framesPresented();
+    try fixture.write("this is not metal\n");
+    try waitForReload(.{ .rejected = before_broken.rejected + 1 }, "a shader that does not compile");
+
+    if (gpu.Renderer.shaderStats().reloads != before_broken.reloads) return error.BrokenShaderWasSwappedIn;
+    if (instance.framesPresented() <= frames_before_broken) return error.ShaderReloadStoppedTheLoop;
+
+    // Compiles and defines the wrong things, refused the same way. This is the
+    // arm that proves the bytes on disk reached the compiler.
+    const before_renamed = gpu.Renderer.shaderStats();
+    try fixture.write(try renameResolve(&buf));
+    try waitForReload(.{ .rejected = before_renamed.rejected + 1 }, "a shader missing what the pipelines ask for");
+
+    if (gpu.Renderer.shaderStats().reloads != before_renamed.reloads) return error.BrokenShaderWasSwappedIn;
+
+    // And recovery, with no restart, which is the property that makes any of this
+    // usable: a typo must cost a save rather than a relaunch.
+    const before_recovery = gpu.Renderer.shaderStats();
+    try fixture.write(try editedShader(&buf, "smoke reload after a broken one"));
+    try waitForReload(.{ .reloads = before_recovery.reloads + 1 }, "a good shader after a broken one");
+
+    try waitForFrames(instance, instance.framesPresented() + 2);
+    if (instance.windowsUploaded() == 0) return error.NoWindowUploaded;
+
+    if (!editor.hide.?(p)) return error.HideFailed;
+    editor.destroy.?(p);
+
+    p.*.deactivate.?(p);
+    active = false;
+
+    say("  the shader swapped live, refused two bad ones, and recovered", .{});
+}
+
+/// Block until the backend reports the counter an arm is waiting on.
+///
+/// Polls, on `waitForFrames`' reasoning: the counters are written by a thread
+/// this one does not coordinate with, and a second synchronisation primitive is
+/// one more thing that can be the reason a run hangs.
+fn waitForReload(want: struct { reloads: ?u64 = null, rejected: ?u64 = null }, what: []const u8) !void {
+    var waited_us: u64 = 0;
+    while (true) {
+        const now = gpu.Renderer.shaderStats();
+        if (want.reloads) |target| if (now.reloads >= target) return;
+        if (want.rejected) |target| if (now.rejected >= target) return;
+
+        if (waited_us >= reload_timeout_us) {
+            say("  waited {d}ms for the watcher to pick up {s}", .{
+                reload_timeout_us / std.time.us_per_ms,
+                what,
+            });
+            say("  reloads={d} rejected={d} fallbacks={d} watching={}", .{
+                now.reloads,
+                now.rejected,
+                now.fallbacks,
+                now.watching,
+            });
+            return error.ShaderNeverReloaded;
+        }
+
+        try sleepFor(.fromMicroseconds(frame_poll_us));
+        waited_us += frame_poll_us;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The AppKit half
 // ---------------------------------------------------------------------------
@@ -471,6 +614,13 @@ fn appkitHalf(cycles: u32) !void {
     const raw = root.entry.get_factory.?(&c.CLAP_PLUGIN_FACTORY_ID) orelse return error.NoFactory;
     const factory: *const c.clap_plugin_factory_t = @ptrCast(@alignCast(raw));
     say("  factory resolved through clap_entry", .{});
+
+    // Before the cycle loop and exactly once, not inside it. Every arm below
+    // waits out at least one 250 ms poll and pays a ~40 ms compile, so folding
+    // this into `oneCycle` would cost `smoke-leaks -Dleak-cycles=400` twenty
+    // minutes and 1,200 out-of-process compiles for no extra coverage. Running it
+    // here also puts it inside the zero-live-resource assertions below.
+    try hotReloadPhase(factory, parent);
 
     var i: u32 = 0;
     while (i < cycles) : (i += 1) {
