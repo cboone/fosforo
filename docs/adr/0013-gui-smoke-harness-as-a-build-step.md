@@ -197,7 +197,7 @@ The limit restated above is closed. `zig build smoke-trace` is a third half, nee
 
 ### What it can fail on
 
-Ten defects were planted and all ten were caught, each by a named assertion. The one that matters most is #55's `1 - decay` resolve gain, the failure the paragraph above was written about: replanted, it fails with a channel 224 levels out. The full table is in `docs/plans/todo/2026-08-29-verify-the-shader-offscreen-against-the-constants.md`.
+Ten defects were planted and all ten were caught, each by a named assertion. The one that matters most is #55's `1 - decay` resolve gain, the failure the paragraph above was written about: replanted, it fails with a channel 224 levels out. The full table is in [`docs/plans/done/2026-08-29-verify-the-shader-offscreen-against-the-constants.md`](../plans/done/2026-08-29-verify-the-shader-offscreen-against-the-constants.md).
 
 **Where the assertions can be exact they are exact**, and three are: every level from 1.111 upward lands on one row, the period counts are compared under strict equality, and a three-sample window must reach both edges. The vertical tolerances are one backing pixel expressed as a sample value, which is the display's own quantum and therefore cannot absorb an error the display could show. That is #38's rule applied rather than restated: a tolerance wide enough to absorb a systematic error is a tolerance that hides one, and the ±1 period tolerance that once called six wrong counts "ok" is the thing being guarded against.
 

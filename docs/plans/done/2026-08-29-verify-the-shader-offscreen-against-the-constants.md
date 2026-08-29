@@ -1,6 +1,6 @@
 # Verify the shader offscreen against the constants
 
-Issue [#51](https://github.com/cboone/fosforo/issues/51). Branch `test/verify-shaders`.
+Issue: [#51](https://github.com/cboone/fosforo/issues/51). Branch: `test/verify-shaders`.
 
 ## Context
 
