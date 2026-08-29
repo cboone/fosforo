@@ -370,6 +370,16 @@ The planted-defect table above ends with two rows marked **Passes**, and reviewi
 
 **The binding-index row was deliberately left open** and filed as [#77](https://github.com/cboone/fosforo/issues/77) instead. A runtime text scan would need a warn-versus-refuse decision, and it is blind to the sharper failure anyway: `TraceUniforms` layout drift, where MSL computes its own offsets and reading the text cannot see it. That is [#51](https://github.com/cboone/fosforo/issues/51)'s territory, and the exposure becomes real at [#57](https://github.com/cboone/fosforo/issues/57), which is the first issue to restructure the shader's signatures.
 
+### Review caught two comments that promised what the code did not do
+
+Both findings on the pull request were of one kind, which is worth naming because this project's docstrings carry load: a comment asserting a property nobody had implemented.
+
+`resolvePath`'s said the `getenv` slice "must be copied before anything else calls into libc" and that it was "called once, early, on the main thread, and copied". It was called four times, from the watcher thread, four times a second, and nothing copied anything, while `Watcher.poll` held the slice across a `statFile`, a `readFile` and a log call. The fix copies into a caller-owned `PathBuffer`, split into a `copyInto` helper so the copy is testable: `live` is false in a test build by design, so a test of `resolvePath` would assert nothing about it.
+
+`ShaderStats.watching` claimed to be false "in a debug build whose path is missing", while the code set it true as soon as an absolute path resolved. The name was the real defect, since `probe` sets it without starting a watcher; it is now `path_resolved` and documents the two things it does not mean.
+
+**The lesson to carry is about where to look, not about either bug.** Both were in text this branch added *to explain* the design, which is exactly the material that gets read closely once and then trusted. Neither would have been caught by any check here, because no check reads a docstring.
+
 ### The host result is worth noting beyond itself
 
 This is worth noting beyond its own result. ADR 0013 records that nothing automated here has ever answered what the pixels became, and #55 proved the cost of that the expensive way. A window-id capture plus a pixel count against a deliberately unmissable edit is not a general answer to that, and it is not a golden-image comparison, which [#51](https://github.com/cboone/fosforo/issues/51) still owns. It is a usable one for *this* kind of change, where the question is whether a swap reached the screen at all rather than whether the picture is right.
