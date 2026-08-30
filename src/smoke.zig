@@ -54,6 +54,7 @@ const gpu = @import("gpu/iface.zig");
 const gui = @import("clap/gui.zig");
 const io = @import("platform/io.zig");
 const measure = @import("gpu/measure.zig");
+const palette = @import("gpu/palette.zig");
 const platform = @import("platform/objc.zig");
 const plugin = @import("clap/plugin.zig");
 const root = @import("main.zig");
@@ -750,8 +751,9 @@ fn traceHalf() !void {
     try checkSymmetry(energy, picture, window);
     try checkHorizontalMapping(energy, picture);
     try checkPeriods(energy, picture, window);
-    try checkBeamIsOneColour(energy, picture, window);
+    try checkDepositIsScalar(energy, picture, window);
     try checkResolve(energy, picture, window);
+    try checkHotCore(energy, picture, window);
     try checkDecay(energy, picture, window);
 }
 
@@ -955,8 +957,20 @@ fn checkPeriods(energy: []f32, picture: []u8, window: []f32) !void {
     }
 }
 
-/// Every deposit is the same colour, so accumulated energy lies on one ray.
-fn checkBeamIsOneColour(energy: []f32, picture: []u8, window: []f32) !void {
+/// Every deposit is a scalar, so the accumulation's four channels move together.
+///
+/// **The assertion that keeps `measure.Image.green` honest**, and the only thing
+/// anywhere that does. Since #60 the deposit carries no colour: `trace_fragment`
+/// returns `float4(1.0)` and the palette owns the look, so green is the energy
+/// only because every other channel is the same number. `resolve_fragment` reads
+/// green and so does the analyser; if a later weighting made one channel differ,
+/// every green-channel measurement in this project would change meaning at once
+/// and nothing else would fail.
+///
+/// It replaces `checkBeamIsOneColour`, which asserted a *ray* through colour
+/// space and was right until the deposit stopped being a colour. The loop is the
+/// same loop; what it compares is not.
+fn checkDepositIsScalar(energy: []f32, picture: []u8, window: []f32) !void {
     var probe = try Probe.init(energy, picture);
     defer probe.deinit();
 
@@ -965,18 +979,10 @@ fn checkBeamIsOneColour(energy: []f32, picture: []u8, window: []f32) !void {
 
     const image = probe.image();
 
-    // The premise `scripts/measure-trace`'s guard rests on and which nothing has
-    // ever checked: every deposit is one colour and the decay multiplies the
-    // whole vector, so a lit pixel is `c * beam` for some scalar `c` and green
-    // predicts red and blue exactly. Taken from the brightest pixel rather than
-    // from a restated literal, because the colour is a look constant #60 deletes
-    // and a fourth copy of it here would have nothing tying it back.
     const peak_green = measure.maxChannel(image, 1);
     if (peak_green <= trace_threshold) return error.TraceNotDrawn;
 
-    var reference: ?[2]f32 = null;
     var worst: f32 = 0;
-
     var y: usize = 0;
     while (y < trace_height) : (y += 1) {
         var x: usize = 0;
@@ -984,33 +990,23 @@ fn checkBeamIsOneColour(energy: []f32, picture: []u8, window: []f32) !void {
             const g = image.channel(x, y, 1);
             if (g <= trace_threshold) continue;
 
-            const ratio = [2]f32{ image.channel(x, y, 0) / g, image.channel(x, y, 2) / g };
-            if (reference) |want| {
-                worst = @max(worst, @abs(ratio[0] - want[0]));
-                worst = @max(worst, @abs(ratio[1] - want[1]));
-            } else {
-                reference = ratio;
-            }
+            // Alpha included. It accumulates and decays exactly like the other
+            // three, which is what `mtl.blend_factor_one`'s docstring left open
+            // and #60 answered; leaving it out would be leaving the one channel
+            // nothing else reads unchecked.
+            for (0..4) |channel| worst = @max(worst, @abs(image.channel(x, y, channel) - g));
         }
     }
 
-    const want = reference orelse return error.TraceNotDrawn;
-    say("  beam ray: red/green {d:.4}, blue/green {d:.4}, worst deviation {d:.5}", .{
-        want[0],
-        want[1],
-        worst,
-    });
+    say("  deposit: {d} channels agree to {d:.5} at every lit pixel", .{ 4, worst });
 
-    // Half-float precision, not a rendering tolerance: `RGBA16Float` holds about
-    // three decimal digits, and both channels are compared after a division.
-    if (worst > 1e-3) return error.BeamNotOneColour;
-
-    // Green-dominant, which is what makes the green channel the trace's readout
-    // and what `measure-trace` isolates on. #60 ends this along with the colour.
-    if (want[0] >= 1.0 or want[1] >= 1.0) return error.BeamNotGreenDominant;
+    // Half-float precision rather than a rendering tolerance: `RGBA16Float` holds
+    // about three decimal digits, and these are sums of identical values through
+    // identical blend arithmetic, so anything above that is a real difference.
+    if (worst > 1e-3) return error.DepositNotScalar;
 }
 
-/// The resolve adds energy to a background at unit gain, and nothing else.
+/// The resolve is the curve and the palette, and nothing else.
 fn checkResolve(energy: []f32, picture: []u8, window: []f32) !void {
     var probe = try Probe.init(energy, picture);
     defer probe.deinit();
@@ -1019,6 +1015,13 @@ fn checkResolve(energy: []f32, picture: []u8, window: []f32) !void {
     try probe.run(window, 1, 1);
 
     const image = probe.image();
+
+    // The same table the shader is reading, built by the same function that
+    // filled the texture. That is what makes this comparison exact rather than
+    // close: the model and the GPU share the table and differ only in the
+    // arithmetic around it, which is the part being checked.
+    var table: [palette.palette_floats]f32 = undefined;
+    palette.buildPalette(&table);
 
     // The background, read off the picture rather than restated from the shader.
     // Any pixel the beam missed carries it; the top-left corner is the safest,
@@ -1042,6 +1045,18 @@ fn checkResolve(energy: []f32, picture: []u8, window: []f32) !void {
     if (background[0] >= 16) return error.BackgroundNotDark;
     if (background[3] != 255) return error.BackgroundNotOpaque;
 
+    // **#60's own open question, answered as an assertion rather than as prose.**
+    // The issue asked whether the background stays a literal beside the palette
+    // or becomes the palette's value at zero energy. It is the latter, and this
+    // is what makes that a fact about the running shader rather than a claim
+    // about how the table was built: there is no background term in
+    // `resolve_fragment` at all, so if these disagree the gradient's first entry
+    // is not what reaches an unlit pixel.
+    const at_zero = palette.resolved(&table, palette.shipped_palette, palette.decay_per_frame, 0.0);
+    for (0..3) |channel| {
+        if (background[channel] != at_zero[channel]) return error.BackgroundNotThePaletteAtZero;
+    }
+
     var worst: i32 = 0;
     var lit: usize = 0;
 
@@ -1052,9 +1067,19 @@ fn checkResolve(energy: []f32, picture: []u8, window: []f32) !void {
             const got = probe.pixel(x, y);
             if (image.channel(x, y, 1) > trace_threshold) lit += 1;
 
+            // **Every channel predicted from one number**, which is stronger
+            // than comparing each against its own energy: it asserts the
+            // picture's chroma follows from the intensity alone, which is the
+            // palette's whole claim and the thing a per-channel comparison could
+            // not see.
+            const want = palette.resolved(
+                &table,
+                palette.shipped_palette,
+                palette.decay_per_frame,
+                image.channel(x, y, 1),
+            );
             for (0..3) |channel| {
-                const want = resolved(channel, image.channel(x, y, channel));
-                const off = @as(i32, got[channel]) - @as(i32, want);
+                const off = @as(i32, got[channel]) - @as(i32, want[channel]);
                 if (@abs(off) > @abs(worst)) worst = off;
             }
         }
@@ -1082,24 +1107,85 @@ fn checkResolve(energy: []f32, picture: []u8, window: []f32) !void {
     // 12.92 x 255, which puts one level at 3.0e-4 of linear energy. Widening this
     // pre-emptively would be widening the one assertion that would have caught
     // #55. Read the printed number first.
-    if (@abs(worst) > 1) return error.ResolveNotAnAdd;
+    if (@abs(worst) > 1) return error.ResolveNotTheTonemap;
 }
 
-/// What the resolve should make of one channel: the background plus the energy,
-/// clipped, and put through the drawable's transfer function.
+/// Both ends of the ten-to-one range the accumulation produces are legible.
 ///
-/// **The encode is the hardware's, not this shader's.** `drawable_pixel_format`
-/// is `BGRA8Unorm_sRGB`, so the fragment writes linear light and the render-output
-/// stage converts on write. `measure.srgbByte` is the model's independently
-/// derived copy of that conversion, which is the whole reason it lives in a file
-/// `zig build test` can reach without a GPU.
+/// **The claim #60 exists to make, and the one nothing else here can see.** A
+/// moving trace never lights a pixel twice, so it gets one deposit and stays at an
+/// energy of one; a stationary one re-deposits every frame and converges on
+/// `1 / (1 - decay)`. #55 measured both ways of getting that wrong: a unit gain
+/// clips a dwelt trace to white and loses the colour, and a gain of `1 - decay`
+/// renders a moving one at green 53 of 255, which reads as a black display.
 ///
-/// The background comes from `measure` rather than from the byte read off the
-/// picture, because a byte cannot say which linear value produced it: 5 is any
-/// linear value in a range 0.0003 wide, and adding energy to the wrong end of
-/// that range moves the prediction by a level exactly where the toe is steepest.
-fn resolved(channel: usize, energy: f32) u8 {
-    return measure.srgbByte(measure.backgroundLinear(channel) + energy);
+/// Nothing else in this half drives enough frames for the accumulation to reach
+/// the white point — every other case runs one depositing frame — so without this
+/// the hot core is never rendered on a GPU at all and the headline feature ships
+/// unexecuted.
+fn checkHotCore(energy: []f32, picture: []u8, window: []f32) !void {
+    const tint = palette.tints_srgb[@intFromEnum(palette.shipped_palette)];
+    const lead = palette.shipped_palette.dominant();
+
+    // The moving end: one deposit, read off the picture rather than modelled, so
+    // this is the one assertion here that a model wrong in the same way as the
+    // shader could not satisfy.
+    {
+        var probe = try Probe.init(energy, picture);
+        defer probe.deinit();
+
+        measure.sine(window, 3.0, 0.8);
+        try probe.run(window, 1, 1);
+
+        const at = measure.peakPixel(probe.image(), 1) orelse return error.TraceNotDrawn;
+        const got = probe.pixel(at.x, at.y);
+        say("  hot core: one deposit reads RGB({d}, {d}, {d})", .{ got[0], got[1], got[2] });
+
+        // Half of full range, as a bound rather than a tune: the shipped curve
+        // gives 189 here, and stating 128 is what lets the curve be retuned
+        // without rewriting the assertion. It names #55's measured 53, which is
+        // the number this refuses to ship again.
+        if (got[lead] < 128) return error.MovingTraceTooDim;
+
+        // And tinted rather than white, which is the other half of the claim: at
+        // one deposit the gradient has barely begun running toward white.
+        for (0..3) |channel| {
+            if (channel == lead) continue;
+            if (got[channel] >= got[lead]) return error.MovingTraceNotTinted;
+            if (tint[channel] < 1.0 and got[channel] + 24 > got[lead]) {
+                return error.MovingTraceNotTinted;
+            }
+        }
+    }
+
+    // The dwelt end: the same window deposited every frame, which is what a
+    // stopped transport does. Thirty frames because the energy reaches
+    // `1 - 0.9^n` of the asymptote, so at the shipped decay it is past the white
+    // point of eight by frame sixteen and comfortably clear of it by thirty.
+    {
+        var probe = try Probe.init(energy, picture);
+        defer probe.deinit();
+
+        measure.sine(window, 3.0, 0.8);
+        try probe.run(window, 30, 30);
+
+        const image = probe.image();
+        const peak = measure.maxChannel(image, 1);
+        const white = palette.whitePoint(palette.decay_per_frame);
+        say("  hot core: thirty deposits peak at {d:.3}, white point {d:.3}", .{ peak, white });
+        if (peak < white) return error.DwellNeverReachesWhite;
+
+        const at = measure.peakPixel(image, 1) orelse return error.TraceNotDrawn;
+        const got = probe.pixel(at.x, at.y);
+        say("  hot core: the dwelt pixel reads RGB({d}, {d}, {d})", .{ got[0], got[1], got[2] });
+
+        // White, and exactly white rather than nearly: the gradient's last entry
+        // is 1.0 in every channel by construction, so anything short of 255 means
+        // the curve did not reach the top of it.
+        for (0..3) |channel| {
+            if (got[channel] != 255) return error.CoreNotWhite;
+        }
+    }
 }
 
 /// The phosphor dims by the decay factor once per frame.
@@ -1132,7 +1218,7 @@ fn checkDecay(energy: []f32, picture: []u8, window: []f32) !void {
 
         const quiet = frames - 1;
         const ratio = peak / first;
-        const want = std.math.pow(f32, 0.90, @floatFromInt(quiet));
+        const want = std.math.pow(f32, palette.decay_per_frame, @floatFromInt(quiet));
         say("  decay: after {d} quiet frames, {d:.4} of the deposit, expected {d:.4}", .{
             quiet,
             ratio,
@@ -1204,7 +1290,7 @@ fn hostLog(
 /// Needs a window server as well as a device, which is the part a headless
 /// runner may refuse. CI gates on it anyway, since #72: 65 runs settled that a
 /// hosted runner grants one, and this half carries the only assertion anywhere
-/// on `liveAccumulationTextures`.
+/// on `liveTextures`.
 fn appkitHalf(cycles: u32) !void {
     platform.assertMainThread();
 
@@ -1291,10 +1377,16 @@ fn appkitHalf(cycles: u32) !void {
     // reallocated on every resize that changes the pixel count and `oneCycle`
     // performs one, so a resize path that allocated without releasing would
     // show up here rather than only a teardown that forgot.
-    const textures = gpu.Renderer.liveAccumulationTextures();
+    //
+    // **Named for textures rather than for the accumulation since #60**, which
+    // added a second kind, and the rename is not cosmetic: with the old wording a
+    // leaked palette lookup reported "7 accumulation textures were never
+    // released", which is a message that sends the reader to the wrong file. A
+    // counter that cannot say which kind leaked must at least not claim to.
+    const textures = gpu.Renderer.liveTextures();
     if (textures != 0) {
-        say("  {d} accumulation textures were never released across {d} cycles", .{ textures, cycles });
-        return error.AccumulationTexturesLeaked;
+        say("  {d} textures were never released across {d} cycles", .{ textures, cycles });
+        return error.TexturesLeaked;
     }
 
     say("  {d} open and close cycles clean", .{cycles});

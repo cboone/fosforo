@@ -7,9 +7,10 @@
 //! persistence is phase 3's step 2 (#55); what is still crude is deliberate and
 //! is the rest of that phase. The decay factor is a per-frame constant until #56
 //! measures elapsed time, the beam stays a line strip until #57 makes it
-//! geometry, and the resolve is an add until #60 puts a tonemap and a palette
-//! there. Drawing something ugly first is what lets each of those be judged on
-//! how it looks rather than on whether the signal path works at all.
+//! geometry. The resolve is done: #60 put a curve and a palette lookup there, and
+//! the drawable became `BGRA8Unorm_sRGB` so that arithmetic runs in linear light.
+//! Drawing something ugly first is what lets each of those be judged on how it
+//! looks rather than on whether the signal path works at all.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -18,6 +19,7 @@ const iface = @import("../iface.zig");
 const platform = @import("../../platform/objc.zig");
 const io = @import("../../platform/io.zig");
 const shader = @import("shader.zig");
+const palette = @import("../palette.zig");
 
 const CGRect = platform.CGRect;
 const CGSize = platform.CGSize;
@@ -78,6 +80,15 @@ const mtl = struct {
     /// would draw a background 7.8 times too bright and a paler beam. The
     /// background assertions in `src/smoke.zig` are what refuse that.
     const pixel_format_bgra8_unorm_srgb: u64 = 81;
+
+    /// `MTLPixelFormatRGBA32Float`, the palette lookup's format.
+    ///
+    /// Full precision for sixteen kilobytes, which buys the one thing that makes
+    /// the resolve checkable: the table the GPU reads and the table
+    /// `src/gpu/measure.zig` interpolates hold bit-identical values, so the model
+    /// is exact rather than close. Half would put a rounding between them that
+    /// nothing could distinguish from a defect in the shader.
+    const pixel_format_rgba32_float: u64 = 125;
 
     /// `MTLPixelFormatRGBA16Float`, the accumulation's format.
     ///
@@ -297,6 +308,15 @@ const uniform_buffer_index: u64 = 1;
 /// `buffer(0)` appears in this shader whatever these constants say.
 const accumulation_texture_index: u64 = 0;
 const accum_uniform_index: u64 = 0;
+
+/// Where `resolve_fragment` finds the gradients it looks a colour up in.
+///
+/// One rather than zero because it shares an index space with the accumulation,
+/// which is the fragment-texture space; the three zeroes above are three
+/// different spaces and this is the first thing here that actually collides with
+/// one of them. Checked at the foot of this file by reading the index out of the
+/// parameter that carries it, like the rest.
+const palette_texture_index: u64 = 1;
 
 /// What the trace's vertex function needs beyond the samples themselves.
 ///
@@ -885,6 +905,7 @@ const Acquired = struct {
     in_flight: objc.Object,
     windows: [max_frames_in_flight]objc.Object,
     accum: [2]objc.Object,
+    palette: objc.Object,
 
     /// Hands ownership to the caller, which then owes `release` on any later
     /// failure of its own.
@@ -898,6 +919,7 @@ const Acquired = struct {
             .windows = self.windows,
             .pixels = pixels,
             .accum = self.accum,
+            .palette = self.palette,
         };
     }
 
@@ -906,11 +928,12 @@ const Acquired = struct {
     /// In reverse order, matching the `errdefer` ladder this replaced, and
     /// through `releaseWindows` and `releaseAccumulation` rather than bare loops
     /// because both are counted: releasing them any other way would leave
-    /// `liveWindowBuffers` or `liveAccumulationTextures` permanently high after a
+    /// `liveWindowBuffers` or `liveTextures` permanently high after a
     /// failed construction, which is worse than the leak they exist to catch,
     /// since the count would never return to zero and would then either report a
     /// leak on every later run or hide a real one behind the offset.
     fn release(self: Acquired) void {
+        releasePalette(self.palette);
         releaseAccumulation(self.accum);
         releaseWindows(self.windows);
         self.in_flight.release();
@@ -949,6 +972,10 @@ fn acquire(pixels: Pixels, diags: *iface.Diagnostics) iface.Error!Acquired {
     errdefer releaseWindows(windows);
 
     const accum = try buildAccumulation(device, queue, pixels, diags);
+    errdefer releaseAccumulation(accum);
+
+    const lookup = try buildPaletteTexture(device, diags);
+    _ = live_textures.fetchAdd(1, .release);
 
     return .{
         .device = device,
@@ -957,6 +984,7 @@ fn acquire(pixels: Pixels, diags: *iface.Diagnostics) iface.Error!Acquired {
         .in_flight = in_flight,
         .windows = windows,
         .accum = accum,
+        .palette = lookup,
     };
 }
 
@@ -1032,6 +1060,14 @@ pub const Renderer = struct {
     /// no-op returning nil, so the encoding calls would quietly do nothing and
     /// the frame would go on to present a drawable that was never written.
     accum: ?[2]objc.Object = null,
+
+    /// The gradients `resolve_fragment` looks a colour up in.
+    ///
+    /// Not optional, unlike `accum`: it is sixteen kilobytes that depend on
+    /// nothing the editor can change, so it either exists for the renderer's whole
+    /// life or construction failed. It survives a resize untouched for the same
+    /// reason, which is why `replaceAccumulation` has no counterpart here.
+    palette: objc.Object,
 
     /// Which half of the pair holds this frame's starting energy.
     ///
@@ -1320,6 +1356,7 @@ pub const Renderer = struct {
         self.watcher.stop();
 
         if (self.accum) |pair| releaseAccumulation(pair);
+        releasePalette(self.palette);
         releaseWindows(self.windows);
         self.in_flight.release();
         switch (self.surface) {
@@ -1745,6 +1782,21 @@ pub const Renderer = struct {
 
         resolver.msgSend(void, "setRenderPipelineState:", .{pipelines.resolve});
         resolver.msgSend(void, "setFragmentTexture:atIndex:", .{ target, accumulation_texture_index });
+        resolver.msgSend(void, "setFragmentTexture:atIndex:", .{ self.palette, palette_texture_index });
+
+        // The same `AccumUniforms` the decay draw was handed, on the same index,
+        // which is what `accum_uniform_index`'s docstring has always said the two
+        // fullscreen passes would do. The resolve wants it for one thing: the
+        // white point is `white_headroom / (1 - decay)`, because white is where a
+        // beam that never moves ends up, and deriving it here rather than fixing
+        // it is what keeps the look the same at every refresh rate once #56 makes
+        // the decay a function of elapsed time.
+        resolver.msgSend(void, "setFragmentBytes:length:atIndex:", .{
+            @as(*const anyopaque, @ptrCast(&accum_uniforms)),
+            @as(u64, @sizeOf(AccumUniforms)),
+            accum_uniform_index,
+        });
+
         resolver.msgSend(void, "drawPrimitives:vertexStart:vertexCount:", .{
             mtl.primitive_type_triangle,
             @as(u64, 0),
@@ -1787,15 +1839,24 @@ pub const Renderer = struct {
         return live_windows.load(.acquire);
     }
 
-    /// [thread-safe] Accumulation textures this process has taken and not given
-    /// back.
+    /// [thread-safe] Textures this process has taken and not given back.
     ///
     /// Zero whenever no editor is open, and the **only** check in this project
     /// that can see a leaked one at all. `leaks` cannot, and unlike the window
     /// buffers neither can peak RSS: see `live_textures` for both measurements.
     /// A second backend would have to answer this question too, which is what
     /// keeps it a seam operation rather than a hook shaped to this one's tests.
-    pub fn liveAccumulationTextures() usize {
+    ///
+    /// **It was `liveAccumulationTextures` and now counts the palette lookup as
+    /// well, which is a rename rather than a twelfth operation.** ADR 0013's rule
+    /// is that a resource which is not a buffer gets its own planted leak before
+    /// anything is assumed about it, and the palette got one: forty cycles leaking
+    /// sixteen kilobytes apiece moved the `leaks` byte total not at all, from
+    /// 12,544 to 12,544, against the 640 KiB a visible leak would have added. Same
+    /// instrument, same answer as the accumulation's, so one counter answers for
+    /// both and the name stops naming half of what it counts. What is lost is
+    /// telling the two apart, and nothing asserts anything but zero.
+    pub fn liveTextures() usize {
         return live_textures.load(.acquire);
     }
 
@@ -2297,6 +2358,84 @@ const MTLRegion = extern struct { origin: MTLOrigin = .{}, size: MTLSize };
 const energy_bytes_per_pixel: usize = 8;
 const picture_bytes_per_pixel: usize = 4;
 
+/// Build the gradients `resolve_fragment` looks a colour up in.
+///
+/// One row per palette, `palette.palette_entries` wide, uploaded once and never
+/// touched again: it depends on nothing the editor can change, so unlike the
+/// accumulation it survives a resize untouched and is built here rather than in
+/// `resize`.
+///
+/// **The contents come from `src/gpu/palette.zig`, which is the point.** A
+/// closed-form palette in MSL would have to be written twice, in two languages,
+/// agreeing by inspection; a table written once in Zig and read by both the GPU
+/// and the model that checks it agrees by construction. That is the same argument
+/// `probe` makes about sharing `buildPipelines` rather than paraphrasing it.
+///
+/// Sixteen kilobytes, shared storage, written with one `replaceRegion:`. Shared
+/// rather than private because the CPU writes it exactly once and a blit would be
+/// a command buffer and a wait for no benefit; on Apple Silicon there is one
+/// physical pool behind either.
+fn buildPaletteTexture(device: objc.Object, diags: *iface.Diagnostics) iface.Error!objc.Object {
+    const descriptor = objc.getClass("MTLTextureDescriptor").?.msgSend(
+        objc.Object,
+        "texture2DDescriptorWithPixelFormat:width:height:mipmapped:",
+        .{
+            mtl.pixel_format_rgba32_float,
+            @as(u64, palette.palette_entries),
+            @as(u64, palette.palette_count),
+            false,
+        },
+    );
+    if (descriptor.value == null) {
+        diags.set("Metal would not describe the palette lookup");
+        return error.TextureAllocationFailed;
+    }
+
+    // No render-target bit: nothing ever draws into this. That is the opposite of
+    // the trap `texture_usage_render_target`'s comment names, and it is worth
+    // saying out loud so the two are not made uniform by someone tidying.
+    descriptor.msgSend(void, "setUsage:", .{mtl.texture_usage_shader_read});
+    descriptor.msgSend(void, "setStorageMode:", .{mtl.storage_mode_shared});
+
+    const texture = device.msgSend(objc.Object, "newTextureWithDescriptor:", .{descriptor});
+    if (texture.value == null) {
+        diags.set("the Metal device would not allocate the palette lookup");
+        return error.TextureAllocationFailed;
+    }
+    errdefer texture.release();
+
+    var table: [palette.palette_floats]f32 = undefined;
+    palette.buildPalette(&table);
+
+    const region: MTLRegion = .{
+        .origin = .{ .x = 0, .y = 0, .z = 0 },
+        .size = .{
+            .width = palette.palette_entries,
+            .height = palette.palette_count,
+            .depth = 1,
+        },
+    };
+    texture.msgSend(void, "replaceRegion:mipmapLevel:withBytes:bytesPerRow:", .{
+        region,
+        @as(u64, 0),
+        @as(*const anyopaque, @ptrCast(&table)),
+        @as(u64, palette.palette_entries * 4 * @sizeOf(f32)),
+    });
+
+    return texture;
+}
+
+/// Give the palette lookup back, through the counter that answers for it.
+///
+/// A function rather than a bare `release` for `releaseAccumulation`'s reason:
+/// counted resources have exactly one release site, so the failure the counter
+/// cannot see — releasing less than was counted — stays a single edit rather than
+/// something spread across `deinit` and the unwind path.
+fn releasePalette(texture: objc.Object) void {
+    texture.release();
+    _ = live_textures.fetchSub(1, .release);
+}
+
 /// Build the colour target an offscreen renderer resolves into.
 ///
 /// The same format as the drawable, because the resolve pipeline is compiled
@@ -2585,9 +2724,18 @@ test "every binding the encoder sets is read at the same index in the shader" {
         @as(?u64, uniform_buffer_index),
         bindingIndexAfter("TraceUniforms &", "buffer"),
     );
+    // **Both fullscreen passes read `AccumUniforms` since #60, so the parameter
+    // names carry these rather than the type does.** `indexOf` takes the first
+    // match, so anchoring on `AccumUniforms &` alone would test the decay's
+    // binding twice and the resolve's never — with the resolve's the one that is
+    // new and therefore the one worth checking.
     try testing.expectEqual(
         @as(?u64, accum_uniform_index),
-        bindingIndexAfter("AccumUniforms &", "buffer"),
+        bindingIndexAfter("AccumUniforms &uniforms", "buffer"),
+    );
+    try testing.expectEqual(
+        @as(?u64, accum_uniform_index),
+        bindingIndexAfter("AccumUniforms &phosphor", "buffer"),
     );
 
     // Both fragments that read the accumulation, named separately because each
@@ -2600,6 +2748,13 @@ test "every binding the encoder sets is read at the same index in the shader" {
         @as(?u64, accumulation_texture_index),
         bindingIndexAfter("access::read> energy", "texture"),
     );
+
+    // The palette lookup, which is the first binding here that shares an index
+    // space with another and therefore the first whose number is not zero.
+    try testing.expectEqual(
+        @as(?u64, palette_texture_index),
+        bindingIndexAfter("access::read> palette", "texture"),
+    );
 }
 
 test "the binding reader finds nothing rather than guessing" {
@@ -2607,6 +2762,15 @@ test "the binding reader finds nothing rather than guessing" {
     // moved and having that read as a pass. `expectEqual` against an optional
     // covers it, and this pins the two ways `null` is reached.
     try testing.expectEqual(@as(?u64, null), bindingIndexAfter("no such parameter", "buffer"));
+
+    // **This one is now load-bearing beyond being a negative control.** It scans
+    // to end of file, so it asserts there is no `sampler` anywhere in the shader
+    // at all, which is exactly the property #60's palette lookup was built to
+    // keep: it indexes the gradient with `access::read` and interpolates by hand
+    // rather than letting a linear-filtered sampler do it. That is what puts no
+    // half-texel convention between the shader and the model in
+    // `src/gpu/palette.zig`. Switching the lookup to a sampler would fail here,
+    // with a message about the accumulation's uniforms.
     try testing.expectEqual(@as(?u64, null), bindingIndexAfter("AccumUniforms &", "sampler"));
 }
 
@@ -2687,50 +2851,82 @@ test "the screenshot tool still holds this project's numbers" {
         "FULL_SCALE = ",
         "RAIL = ",
         "BACKGROUND_BYTES = ",
-        "BEAM_LINEAR = ",
+        "CORE_EXPONENT = ",
+        "WHITE_HEADROOM = ",
+        "DECAY = ",
     }) |needle| {
         try testing.expectEqual(@as(usize, 1), std.mem.count(u8, script, needle));
     }
 
-    // The shader's two. Both sides spell these the same way, so the parsed f64s
-    // are bit-identical and no narrowing is needed.
-    //
-    // The script's crop depends on the first: it locates this plugin's surface
-    // inside a window capture by looking for exactly the background, and the
-    // guard that refuses a recompressed capture depends on both, because it
-    // predicts red and blue from green along the ray they define.
-    //
-    // **Both were renamed by #60 and the rename is the point.** The drawable is
-    // `BGRA8Unorm_sRGB` now, so the shader writes linear light and the hardware
-    // encodes on write: the background is stated as the bytes it must show
-    // divided by the transfer function's slope, and the deposit is the sRGB
-    // decode of the colour phase 2 wrote. Both changed meaning without changing
-    // role, which is the one case a textual comparison cannot catch — it would
-    // have gone on comparing two agreeing numbers that no longer mean the same
-    // thing. A stale script now fails `NotFound` instead.
+    // **The colour half now comes from `src/gpu/palette.zig` rather than from the
+    // shader, because #60 moved it there.** The gradients are Zig data uploaded
+    // into a texture the shader indexes, so there is no colour literal left in
+    // MSL to compare against; what the script restates is the table's inputs. That
+    // is one restatement fewer than the analytic alternative would have needed,
+    // and it is why this test changed shape rather than only changing anchors.
     const background = scalarsAfter(script, "BACKGROUND_BYTES = ", "(", 3) orelse return error.NotFound;
-    const beam = scalarsAfter(script, "BEAM_LINEAR = ", "(", 3) orelse return error.NotFound;
+    for (background, palette.background_bytes) |written, want| {
+        try testing.expectEqual(@as(f64, @floatFromInt(want)), written);
+    }
 
-    const written = scalarsAfter(
-        shader_source,
-        "fragment float4 " ++ resolve_pass.fragment,
-        "float3(",
-        3,
-    ) orelse return error.NotFound;
+    const exponent = scalarAfter(script, "CORE_EXPONENT = ") orelse return error.NotFound;
+    try testing.expectEqual(@as(f64, @floatFromInt(palette.core_exponent)), exponent);
+
+    const headroom = scalarAfter(script, "WHITE_HEADROOM = ") orelse return error.NotFound;
+    try testing.expectEqual(palette.white_headroom, @as(f32, @floatCast(headroom)));
+
+    const decay = scalarAfter(script, "DECAY = ") orelse return error.NotFound;
+    try testing.expectEqual(palette.decay_per_frame, @as(f32, @floatCast(decay)));
+
+    // The four gradients, in the order `palette_row` selects them, each anchored
+    // on its own name. The script declares them one per line for this reason: a
+    // nested tuple would hand `scalarsAfter` the outer parenthesis and it would
+    // parse nothing, which is a `NotFound` rather than a wrong answer but is still
+    // a needle pointing at the wrong thing.
+    inline for (.{ "TINT_GREEN = ", "TINT_AMBER = ", "TINT_BLUE = ", "TINT_NEUTRAL = " }, 0..) |needle, row| {
+        try testing.expectEqual(@as(usize, 1), std.mem.count(u8, script, needle));
+        const tint = scalarsAfter(script, needle, "(", 3) orelse return error.NotFound;
+        for (tint, palette.tints_srgb[row]) |written, want| {
+            try testing.expectEqual(want, @as(f32, @floatCast(written)));
+        }
+    }
+
+    // The deposit carries no colour any more, and that is asserted rather than
+    // assumed: a `trace_fragment` that went back to depositing a tint would make
+    // every gradient a tint over a tint, and nothing else here would notice.
     const deposited = scalarsAfter(
         shader_source,
         "fragment float4 " ++ trace_pass.fragment,
         "float4(",
-        4,
+        1,
     ) orelse return error.NotFound;
+    try testing.expectEqual(@as(f64, 1.0), deposited[0]);
+}
 
-    try testing.expectEqualSlices(f64, &written, &background);
-    try testing.expectEqualSlices(f64, deposited[0..3], &beam);
+test "the shader's look constants and the model's are the same numbers" {
+    // The two literals #60 left in MSL, so they stay editable while a host is
+    // running (#61) rather than needing a rebuild. Everything else about the look
+    // is a table `src/gpu/palette.zig` builds and this file uploads, which is one
+    // definition rather than two; these are the residue, and the residue is what
+    // needs a test.
+    //
+    // A reloaded shader gets neither of these checked, which is #77's row and is
+    // the price of editing a look live. The rule that makes it survivable: rerun
+    // `zig build test` after the last save, before quoting any number.
+    const headroom = scalarAfter(shader_source, "white_headroom = ") orelse return error.NotFound;
+    try testing.expectEqual(palette.white_headroom, @as(f32, @floatCast(headroom)));
 
-    // The deposit's alpha, which the script has no copy of and does not need: it
-    // is here so the four-component read above cannot silently start matching a
-    // three-component one that happens to sit where a `float4(` was.
-    try testing.expectEqual(@as(f64, 1.0), deposited[3]);
+    const row = scalarAfter(shader_source, "palette_row = ") orelse return error.NotFound;
+    try testing.expectEqual(
+        @as(f64, @floatFromInt(@intFromEnum(palette.shipped_palette))),
+        row,
+    );
+
+    // The decay reaches the shader as a uniform rather than as a literal, so this
+    // is the one look constant with no MSL side. The model needs it anyway,
+    // because the white point is derived from it, and a second copy of a number
+    // is a second copy however good the reason.
+    try testing.expectEqual(decay_per_frame, palette.decay_per_frame);
 }
 
 test "the script reader finds nothing rather than guessing" {
@@ -2751,8 +2947,8 @@ test "the script reader finds nothing rather than guessing" {
     // not-found assertion above — green, with its comment still claiming to test
     // arity. Re-pointed at a constant that exists, and the assertion below is what
     // says so.
-    try testing.expect(scalarsAfter(script, "BEAM_LINEAR = ", "(", 3) != null);
-    try testing.expectEqual(@as(?[4]f64, null), scalarsAfter(script, "BEAM_LINEAR = ", "(", 4));
+    try testing.expect(scalarsAfter(script, "BACKGROUND_BYTES = ", "(", 3) != null);
+    try testing.expectEqual(@as(?[4]f64, null), scalarsAfter(script, "BACKGROUND_BYTES = ", "(", 4));
 }
 
 test "the accumulation's uniforms are laid out the way the shader reads them" {
