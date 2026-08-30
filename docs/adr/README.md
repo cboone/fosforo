@@ -4,7 +4,7 @@ Each file records one decision, the context that forced it, and its consequences
 
 Background for all of these lives in [the design brainstorm](../design/scope-plugin-handoff.md); sequencing lives in [the build plan](../plans/todo/2026-07-25-repo-foundation-and-phased-build-plan.md).
 
-0001 through 0012 were locked in the planning pass, before any code; 0013 through 0018 record decisions a phase forced once it was under way. The distinction has no bearing on their standing — every one of them is settled — but it is why the build plan's own table of locked decisions carries the first twelve as its original set.
+0001 through 0012 were locked in the planning pass, before any code; 0013 through 0019 record decisions a phase forced once it was under way. The distinction has no bearing on their standing — every one of them is settled — but it is why the build plan's own table of locked decisions carries the first twelve as its original set.
 
 | ADR                                                             | Decision                                                   | Status   |
 | --------------------------------------------------------------- | ---------------------------------------------------------- | -------- |
@@ -26,3 +26,4 @@ Background for all of these lives in [the design brainstorm](../design/scope-plu
 | [0016](./0016-verify-the-ring-ordering-with-tsan.md)            | Verify the ring's memory ordering with Thread Sanitizer    | Accepted |
 | [0017](./0017-absolute-vertical-axis.md)                        | The vertical axis is absolute and never rescales itself    | Accepted |
 | [0018](./0018-stamp-provenance-without-namespacing-identity.md) | Stamp build provenance, and leave plugin identity alone    | Accepted |
+| [0019](./0019-brightness-is-a-fixed-transfer-function.md)       | Brightness is a fixed transfer function, white is its rail | Accepted |

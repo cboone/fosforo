@@ -48,20 +48,20 @@ Both values are inside the transfer function's linear segment, whose ceiling is 
 
 The attainable energy domain today is `(0, 10]`. A line strip's x is monotone in `vertex_id`, so one frame cannot deposit twice on a pixel; the only source of energy past 1.0 is accumulation, whose asymptote is `1 / (1 - decay)`.
 
-| curve | at e = 1 | at e = 10 | first white | verdict |
-| --- | --- | --- | --- | --- |
-| `e / (1 + e)` | green 188 | green 245, spread 26 | e ≈ 20 | **never arrives.** Needs e = 167 for byte 255, 17x anything reachable |
-| `1 - exp(-e)` | green 208 | green 255 | e ≈ 6 | burns half its range below e = 3 and resolves nothing above 10 |
-| `min(e(1 + e/w²)/(1 + e), 1)` | green 189 | white | **exactly at e = w** | monotone, unbounded domain, saturates where told |
+| curve                         | at e = 1  | at e = 10            | first white          | verdict                                                               |
+| ----------------------------- | --------- | -------------------- | -------------------- | --------------------------------------------------------------------- |
+| `e / (1 + e)`                 | green 188 | green 245, spread 26 | e ≈ 20               | **never arrives.** Needs e = 167 for byte 255, 17x anything reachable |
+| `1 - exp(-e)`                 | green 208 | green 255            | e ≈ 6                | burns half its range below e = 3 and resolves nothing above 10        |
+| `min(e(1 + e/w²)/(1 + e), 1)` | green 189 | white                | **exactly at e = w** | monotone, unbounded domain, saturates where told                      |
 
 Extended Reinhard, and `w` is not a free constant. Once #56 makes decay `exp(-dt / tau)`, the steady state `1/(1 - decay) ≈ tau/dt` tracks the refresh rate, so a **fixed** white point makes the display twice as hot at 120 Hz as at 60. Deriving it from the same decay the accumulation already uses removes that exactly:
 
-| Hz | decay | steady state | `w = 0.8 / (1 - decay)` | green at e = 1 | green at steady state |
-| --- | --- | --- | --- | --- | --- |
-| 48 | 0.876603 | 8.10 | 6.48 | 190 | 255 |
-| 60 | 0.900000 | 10.00 | 8.00 | 189 | 255 |
-| 120 | 0.948683 | 19.49 | 15.59 | 188 | 255 |
-| 240 | 0.974004 | 38.47 | 30.77 | 188 | 255 |
+| Hz  | decay    | steady state | `w = 0.8 / (1 - decay)` | green at e = 1 | green at steady state |
+| --- | -------- | ------------ | ----------------------- | -------------- | --------------------- |
+| 48  | 0.876603 | 8.10         | 6.48                    | 190            | 255                   |
+| 60  | 0.900000 | 10.00        | 8.00                    | 189            | 255                   |
+| 120 | 0.948683 | 19.49        | 15.59                   | 188            | 255                   |
+| 240 | 0.974004 | 38.47        | 30.77                   | 188            | 255                   |
 
 Frame-rate invariant to within one byte at both ends, for free, and it pre-empts a defect #56 would otherwise inherit. The headroom of 0.8 is why white is *reached* rather than approached: Reinhard equals 1 at `e = w` and the steady state is only asymptotic, so a white point set at the asymptote itself would never arrive.
 
@@ -71,12 +71,12 @@ Frame-rate invariant to within one byte at both ends, for free, and it pre-empts
 
 A gradient lookup read with nearest-neighbour indexing is **6.4 bytes wrong** at 256 entries, because green is affine in `t` while the sRGB toe has a slope of `12.92 x 255 = 3294.6` bytes per unit linear: a step of 1/255 in `t` is thirteen bytes at the dark end. Interpolating between adjacent entries in the fragment — explicitly, with a `mix`, not with a sampler — drops it to **0.004 bytes**, three orders of magnitude inside the check's tolerance.
 
-| entries | nearest | interpolated |
-| --- | --- | --- |
-| 64 | 19.47 bytes | 0.065 |
-| 128 | 11.55 | 0.016 |
-| **256** | **6.36** | **0.004** |
-| 1024 | 1.57 | 0.0002 |
+| entries | nearest     | interpolated |
+| ------- | ----------- | ------------ |
+| 64      | 19.47 bytes | 0.065        |
+| 128     | 11.55       | 0.016        |
+| **256** | **6.36**    | **0.004**    |
+| 1024    | 1.57        | 0.0002       |
 
 Doing the interpolation by hand rather than with a linear-filtered sampler is what makes the Zig-side model **exact**: no half-texel convention to get wrong, and no `sampler` in the shader. That last matters concretely — `renderer.zig:2573` asserts `bindingIndexAfter("AccumUniforms &", "sampler")` is null, and `bindingIndexAfter` scans the whole file after its needle, so a sampler anywhere below line 72 would fail a negative test whose message is about the accumulation uniforms.
 
@@ -137,14 +137,14 @@ This is the consequence of choosing a lookup over a closed form, and it lands be
 
 One generator, four tints, each authored in sRGB and decoded once:
 
-| palette | authored | bytes | linear tint | exact channel |
-| --- | --- | --- | --- | --- |
-| green (P31, phase 2's own) | `(0.30, 1.00, 0.45)` | 76, 255, 115 | `(0.073239, 1.0, 0.170645)` | green |
-| amber (P3) | `(1.00, 0.69, 0.00)` | 255, 176, 0 | `(1.0, 0.433880, 0.0)` | red |
-| storage-tube blue (P11) | `(0.35, 0.60, 1.00)` | 89, 153, 255 | `(0.100482, 0.318547, 1.0)` | blue |
-| neutral white (measurement) | `(1.00, 1.00, 1.00)` | 255, 255, 255 | `(1.0, 1.0, 1.0)` | all three |
+| palette                     | authored             | bytes         | linear tint                 | exact channel |
+| --------------------------- | -------------------- | ------------- | --------------------------- | ------------- |
+| green (P31, phase 2's own)  | `(0.30, 1.00, 0.45)` | 76, 255, 115  | `(0.073239, 1.0, 0.170645)` | green         |
+| amber (P3)                  | `(1.00, 0.69, 0.00)` | 255, 176, 0   | `(1.0, 0.433880, 0.0)`      | red           |
+| storage-tube blue (P11)     | `(0.35, 0.60, 1.00)` | 89, 153, 255  | `(0.100482, 0.318547, 1.0)` | blue          |
+| neutral white (measurement) | `(1.00, 1.00, 1.00)` | 255, 255, 255 | `(1.0, 1.0, 1.0)`           | all three     |
 
-```
+```text
 entry(tint, t) = background + (1 - background) * mix(tint, 1, t^4) * t
 ```
 
@@ -158,15 +158,15 @@ The core exponent of 4 confines the whitening to the top fifth: the white weight
 
 Green palette, `w = 8`, which is `0.8 / (1 - 0.90)`:
 
-| energy | t | R | G | B | spread | reads as |
-| --- | --- | --- | --- | --- | --- | --- |
-| 0.10 | 0.0911 | 22 | 86 | 36 | 64 | green |
-| 0.50 | 0.3359 | 48 | 157 | 71 | 109 | green |
-| **1.00** (a moving trace) | 0.5078 | **75** | **189** | **96** | 114 | green |
-| 3.00 | 0.7852 | 157 | 229 | 166 | 72 | green |
-| 5.00 | 0.8984 | 205 | 243 | 209 | 38 | pale |
-| 7.00 | 0.9707 | 240 | 252 | 241 | 12 | near white |
-| **8.00** and above | 1.0000 | **255** | **255** | **255** | 0 | **WHITE** |
+| energy                    | t      | R       | G       | B       | spread | reads as   |
+| ------------------------- | ------ | ------- | ------- | ------- | ------ | ---------- |
+| 0.10                      | 0.0911 | 22      | 86      | 36      | 64     | green      |
+| 0.50                      | 0.3359 | 48      | 157     | 71      | 109    | green      |
+| **1.00** (a moving trace) | 0.5078 | **75**  | **189** | **96**  | 114    | green      |
+| 3.00                      | 0.7852 | 157     | 229     | 166     | 72     | green      |
+| 5.00                      | 0.8984 | 205     | 243     | 209     | 38     | pale       |
+| 7.00                      | 0.9707 | 240     | 252     | 241     | 12     | near white |
+| **8.00** and above        | 1.0000 | **255** | **255** | **255** | 0      | **WHITE**  |
 
 A moving trace peaks at green 189 against #55's failing 53. A dwelt pixel reaches `e ≥ 8` after 16 frames of continuous deposit — 267 ms at 60 Hz, 133 ms at 120 Hz, that difference being #56's defect rather than this one's.
 
@@ -229,14 +229,14 @@ Also: `SATURATED = 250` stops excluding anything, because the dominant channel n
 
 Written down in advance, because at the keyboard every one of these reads as "the change is wrong".
 
-| Symptom | Response |
-| --- | --- |
-| The trace reads dim | Retune the exposure live under `FOSFORO_SHADER_PATH`. Revert only if no value makes both ends work, which would mean the curve family is wrong |
-| The picture is muddy at 1 kHz | Lower `decay_per_frame`. The curve decouples persistence from brightness, so this costs nothing, and the value goes to #56 as its initial `tau` |
-| A white core where material should not produce one | The premise "a moving trace does not accumulate" would be wrong. Re-derive the curve from measured energies rather than from this plan's |
-| The screenshot does not show `RGB(5, 5, 8)` | Revert **the format flip only** and encode in the shader. Keep everything else |
-| `checkResolve` cannot fit within ±2 bytes | The hardware's encode diverges from the reference formula by more than a level, which makes the one assertion that would have caught #55 unusable. Decisive for the shader-side encode |
-| Brightness tracks signal level in the sweep | Stop. Something made the transfer function depend on the frame's contents, and ADR 0017 forbids that without a superseding ADR |
+| Symptom                                            | Response                                                                                                                                                                               |
+| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The trace reads dim                                | Retune the exposure live under `FOSFORO_SHADER_PATH`. Revert only if no value makes both ends work, which would mean the curve family is wrong                                         |
+| The picture is muddy at 1 kHz                      | Lower `decay_per_frame`. The curve decouples persistence from brightness, so this costs nothing, and the value goes to #56 as its initial `tau`                                        |
+| A white core where material should not produce one | The premise "a moving trace does not accumulate" would be wrong. Re-derive the curve from measured energies rather than from this plan's                                               |
+| The screenshot does not show `RGB(5, 5, 8)`        | Revert **the format flip only** and encode in the shader. Keep everything else                                                                                                         |
+| `checkResolve` cannot fit within ±2 bytes          | The hardware's encode diverges from the reference formula by more than a level, which makes the one assertion that would have caught #55 unusable. Decisive for the shader-side encode |
+| Brightness tracks signal level in the sweep        | Stop. Something made the transfer function depend on the frame's contents, and ADR 0017 forbids that without a superseding ADR                                                         |
 
 **Pre-refuse, in the plan and in the constant's docstring, the improvement someone will propose:** deriving the exposure or the white point from the frame's *measured peak energy*. That is auto-gain on the brightness axis, refused by exactly the reasoning ADR 0017 uses on the vertical one. The white point deriving from `decay` is not that — decay is a property of the simulated phosphor and of the refresh rate, never of the audio.
 
@@ -244,21 +244,21 @@ Written down in advance, because at the keyboard every one of these reads as "th
 
 Each is planted on top of a passing run, because an absence has to be told apart from an instrument that never ran. Commit before planting, and make each plant's trigger unconditional.
 
-| Plant | Must be caught by |
-| --- | --- |
-| Revert `drawable_pixel_format` to 80, leave the literal | `checkResolve` → `error.BackgroundNotDark` (background reads 0, 0, 1) |
-| Move the format to 81, leave `float3(0.02, 0.02, 0.03)` | `checkResolve` → `error.BackgroundNotDark` (background reads 39, 39, 48) |
-| Use the display-encoded tint `(0.30, 1.0, 0.45)` as linear | `measure.zig` → the tint-encodes-back-to-(76, 255, 115) test |
-| Plain Reinhard, `w` removed | `checkHotCore` → the dwelt end never reaches 255 |
-| Swap `t` and `1 - t` in the LUT index | `measure.zig` monotonicity test, and `checkResolve` |
-| Nearest-neighbour LUT lookup instead of `mix` | `checkResolve` → worst off by 6, not 1 |
-| Re-tint so the dominant channel is 0.95 | `measure.zig` → the exact-affine-channel test |
-| `trace_fragment` returns `float4(1.0, 0.9, 1.0, 1.0)` | `checkDepositIsScalar` |
-| Move `palette_row` past the last row | shader clamp; assert the clamp by planting a row of `NaN` past the end |
+| Plant                                                          | Must be caught by                                                                              |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Revert `drawable_pixel_format` to 80, leave the literal        | `checkResolve` → `error.BackgroundNotDark` (background reads 0, 0, 1)                          |
+| Move the format to 81, leave `float3(0.02, 0.02, 0.03)`        | `checkResolve` → `error.BackgroundNotDark` (background reads 39, 39, 48)                       |
+| Use the display-encoded tint `(0.30, 1.0, 0.45)` as linear     | `measure.zig` → the tint-encodes-back-to-(76, 255, 115) test                                   |
+| Plain Reinhard, `w` removed                                    | `checkHotCore` → the dwelt end never reaches 255                                               |
+| Swap `t` and `1 - t` in the LUT index                          | `measure.zig` monotonicity test, and `checkResolve`                                            |
+| Nearest-neighbour LUT lookup instead of `mix`                  | `checkResolve` → worst off by 6, not 1                                                         |
+| Re-tint so the dominant channel is 0.95                        | `measure.zig` → the exact-affine-channel test                                                  |
+| `trace_fragment` returns `float4(1.0, 0.9, 1.0, 1.0)`          | `checkDepositIsScalar`                                                                         |
+| Move `palette_row` past the last row                           | shader clamp; assert the clamp by planting a row of `NaN` past the end                         |
 | Drop the reciprocal's guard and bind no uniform to the resolve | `checkResolve`, loudly — the point of the plant is that it fails as white rather than as `NaN` |
-| Drop the palette texture's release in `deinit` | step 5 above decides which instrument, and that is the measurement |
-| Change `white_headroom` in MSL only | the constants test |
-| Rename a Python constant so it ends with another's | the occurrence-count assertion added to the constants test |
+| Drop the palette texture's release in `deinit`                 | step 5 above decides which instrument, and that is the measurement                             |
+| Change `white_headroom` in MSL only                            | the constants test                                                                             |
+| Rename a Python constant so it ends with another's             | the occurrence-count assertion added to the constants test                                     |
 
 **Two things nothing automated can catch, stated so they are not assumed away.** A badly chosen constant is arithmetically correct and passes a model-versus-picture comparison, because both sides use it: a white point wrong by a factor of ten looks wrong and fails nothing. And #55's gain passed 160 unit tests, every smoke half, `clap-validator` and the validation layer, and was found by eye in under a minute. **Budget a REAPER session with the level sweep before calling this done.**
 
@@ -268,19 +268,19 @@ While iterating with `FOSFORO_SHADER_PATH` set, the running picture comes from a
 
 ## Files
 
-| File | Change |
-| --- | --- |
-| `shaders/scope.metal` | Two literals, the tonemap, the LUT lookup, a scalar deposit, the header's three-pass note |
-| `src/gpu/metal/shader.zig` | The read buffer's headroom factor, 8x to 4x, with the measurement |
-| `src/gpu/metal/renderer.zig` | Format 81 and the repoint; the palette texture and its index; the resolve's two new bindings; five docstrings; the reworked constants test and four new assertions |
-| `src/gpu/measure.zig` | The palette generator, the four tints, the sRGB transfer function, the resolve model, the inverse, `peakPixel`, and their tests |
-| `src/smoke.zig` | `checkResolve`'s model, `checkDepositIsScalar`, `checkHotCore`, the decay constant, comment repairs |
-| `scripts/measure-trace` | Six restated constants, the curved-manifold guard, the derived threshold, `--palette`, the messages |
-| `docs/adr/0019-…` | New: the brightness axis is a fixed transfer function |
-| `docs/adr/0007`, `0013`, `0017` | Amendments: the consequence is built; the #51 prediction is discharged; the tension was asked about and there is none |
-| `AGENTS.md` | Six gotcha bullets and the Current state section |
-| `.github/workflows/ci.yml` | The `smoke` job's measured-figures comment, whose beam-ray numbers die with `checkBeamIsOneColour` |
-| `README.md`, `CHANGELOG.md`, the phase plan | Step 7 done; an `[Unreleased] / Added` entry; `README.md:65` survives untouched, which is itself a check |
+| File                                        | Change                                                                                                                                                             |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `shaders/scope.metal`                       | Two literals, the tonemap, the LUT lookup, a scalar deposit, the header's three-pass note                                                                          |
+| `src/gpu/metal/shader.zig`                  | The read buffer's headroom factor, 8x to 4x, with the measurement                                                                                                  |
+| `src/gpu/metal/renderer.zig`                | Format 81 and the repoint; the palette texture and its index; the resolve's two new bindings; five docstrings; the reworked constants test and four new assertions |
+| `src/gpu/measure.zig`                       | The palette generator, the four tints, the sRGB transfer function, the resolve model, the inverse, `peakPixel`, and their tests                                    |
+| `src/smoke.zig`                             | `checkResolve`'s model, `checkDepositIsScalar`, `checkHotCore`, the decay constant, comment repairs                                                                |
+| `scripts/measure-trace`                     | Six restated constants, the curved-manifold guard, the derived threshold, `--palette`, the messages                                                                |
+| `docs/adr/0019-…`                           | New: the brightness axis is a fixed transfer function                                                                                                              |
+| `docs/adr/0007`, `0013`, `0017`             | Amendments: the consequence is built; the #51 prediction is discharged; the tension was asked about and there is none                                              |
+| `AGENTS.md`                                 | Six gotcha bullets and the Current state section                                                                                                                   |
+| `.github/workflows/ci.yml`                  | The `smoke` job's measured-figures comment, whose beam-ray numbers die with `checkBeamIsOneColour`                                                                 |
+| `README.md`, `CHANGELOG.md`, the phase plan | Step 7 done; an `[Unreleased] / Added` entry; `README.md:65` survives untouched, which is itself a check                                                           |
 
 ## Commits
 
@@ -316,3 +316,27 @@ An eighth, `fix:`, for whatever the host session turns up, should be expected ra
 8. **Do not widen `checkResolve`'s tolerance pre-emptively.** One 8-bit level is `3.0e-4` of linear signal in the sRGB toe. Run it, read the number the harness prints, then decide.
 9. **The longer trail will read as a defect and is not one.** 31 frames to 54 is a consequence of the toe, and the response is to move `decay_per_frame`, which this curve makes free. Do not reach for the exposure or the white point to fix a persistence problem.
 10. **A hue excursion on the way up is the one symptom that means the design is wrong** rather than mistuned. Watch a resize: green through to white, with no cyan and no yellow.
+
+## What landed differently
+
+**The gradient lookup was chosen over the analytic palette, and it came out better than the recommendation it overrode.** The plan argued for a closed form on four grounds; two of them dissolved once the lookup was indexed with `access::read` and interpolated by hand instead of sampled, which removes the filter the model would have had to reproduce and keeps a `sampler` out of the shader. And the remaining trade inverted: a formula in MSL would have needed the *same arithmetic written twice*, in two languages, agreeing by inspection, whereas a table built in Zig and read by both the GPU and the model agrees by construction. The count of restatements went **down**, not up. Nearest-neighbour indexing would have been 6.4 bytes wrong at 256 entries and interpolating is 0.004, so the interpolation is not a refinement but the thing that makes the size viable.
+
+**The colour contract became its own file.** `src/gpu/palette.zig` holds the transfer function, the gradients, the curve and the resolve's model. It was going to live in `src/gpu/measure.zig`, but the backend has to read the table, and a shipping renderer importing a module whose docstring says it exists for reading rendered traces back would have made that docstring false. Two callers, one definition.
+
+**`liveAccumulationTextures` was renamed rather than a twelfth seam operation being added.** The plan budgeted for `liveLookupTextures` if the planted leak showed nothing saw the palette, and nothing did — forty cycles leaking sixteen kilobytes apiece moved the `leaks` byte total from 12,544 to 12,544. But ADR 0013's rule turns out to be about *measuring* separately rather than *counting* separately, and one number answers the only question anything asks. The rename was independently worth it: with the old wording a leaked palette reported "7 accumulation textures were never released".
+
+**There is no background literal in the shader at all**, which is further than the plan went. It said the background becomes the palette's value at zero energy; with a lookup it *is* the lookup's first entry, so `resolve_fragment` contains no colour of any kind and the constants test compares the Python script against `palette.zig` rather than against MSL. The format commit still carried the literal, which is what let that commit hold the picture constant.
+
+**`checkResolve`'s tolerance did not need widening.** The plan budgeted for ±2 and prepared the arithmetic; the measured answer is **worst channel off by 0** across 518,400 pixels, through the curve, the interpolation and the hardware's encode. Metal's sRGB encode matches the reference formula exactly at every value this picture contains.
+
+**Three findings from writing the code, none of them anticipated.** Zig's `@min` narrows its result type, so `@min(n, palette_entries - 1)` against a comptime 255 infers `u8` and the successor overflows at exactly `t = 1` — the white end every test checks. `srgbEncode(1.0)` is 0.99999994 rather than 1.0, because `1.055 - 0.055` is not exact in f32, so the tests assert the byte. And the neutral gradient is neutral only *above* the background: blue leads red by `(bg_b - bg_r)(1 - t)`, which is not an imperfection but the lead `find_drawable` locates the drawable by, so it has to survive at zero in every gradient.
+
+## What is not done
+
+**Commit 6 and host verification steps 6 to 8 are outstanding, and both need a display this session could not reach.** `screencapture` from this terminal returns a 100% black frame: Screen Recording is not granted to it, so a capture shows no windows at all. That is an instrument failure and not a result — the "no Fosforo background found" it produced says nothing whatever about the compositor, and reading it as evidence would be exactly the trap this project keeps a rule about.
+
+What that leaves unmeasured, precisely:
+
+- **Whether a `_sRGB` layer with a nil colorspace composites the way format 80 did.** `readback` calls `getBytes:` and never involves CoreAnimation, so no automated check here can see it. The argument that it holds is strong — the stored bytes are byte-identical to what was on screen before, Apple documents nil as "already display-ready", and the offscreen half confirmed the hardware half of the chain by reading `RGBA(5, 5, 8, 255)` — but it is an argument. The check is one screenshot of a running host: the background must still read `RGB(5, 5, 8)`. The fallback if it does not is in the findings above and costs one `pow`.
+- **`RAY_TOLERANCE`, `MAX_OFF_RAY` and `SATURATED`**, which were measured against the straight ray and still carry those numbers. The guard was verified structurally on a synthetic pair at 0.00% against 27.6%, which is the same shape of margin as before, but the tables must be *replaced* from a real capture rather than edited.
+- **The look**, which is the thing no automated check can judge. A badly chosen constant is arithmetically correct and passes a model-versus-picture comparison because both sides use it.

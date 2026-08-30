@@ -8,7 +8,7 @@ Early development, and not yet worth installing unless you are working on it. No
 
 What works: the plugin loads in REAPER and in Logic Pro, through the Audio Unit that [clap-wrapper](https://github.com/free-audio/clap-wrapper) projects it into. It passes stereo audio through unchanged, saves and restores its state, and taps one channel into a lock-free history buffer the render thread reads a trailing window from. It opens a resizable editor backed by a `CAMetalLayer` and renders into it at vsync, driven by a `CVDisplayLink`. **It draws the signal**, as a beam depositing energy into a persistent floating-point accumulation texture that decays between frames, so the trace glows and fades rather than being redrawn from nothing.
 
-What does not work yet: the beam is still a one-pixel line strip rather than geometry, its brightness does not vary with how fast it sweeps, the persistence is measured in frames rather than in seconds, and nothing tonemaps the accumulated energy, so a dwelling trace saturates to white. Those are the rest of [phase 3](https://github.com/cboone/fosforo/milestone/3), and each is an issue.
+What does not work yet: the beam is still a one-pixel line strip rather than geometry, its brightness does not vary with how fast it sweeps, and the persistence is measured in frames rather than in seconds. Those are the rest of [phase 3](https://github.com/cboone/fosforo/milestone/3), and each is an issue.
 
 ## Roadmap
 
@@ -19,7 +19,7 @@ Six phases. [The build plan](./docs/plans/todo/2026-07-25-repo-foundation-and-ph
 | 0     | Repository foundation, build skeleton, ADRs                                 | Complete    |
 | 1     | Walking skeleton: loads in a host and renders a cleared drawable            | Complete    |
 | 2     | Signal path: history buffer, audio tap, trailing-window read, a crude trace | Complete    |
-| 3     | The phosphor renderer: accumulation, decay, beam geometry, tonemap          | In progress |
+| 3     | The phosphor renderer: accumulation, tonemap, decay, beam geometry          | In progress |
 | 4     | Triggering, including host-transport-locked and pitch-locked sweeps         | Planned     |
 | 5     | Measurement and interaction: cursors, musically literate readouts           | Planned     |
 | 6     | Ship v0.1.0                                                                 | Planned     |
