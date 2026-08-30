@@ -287,6 +287,73 @@ pub fn plateauWidth(image: Image, threshold: f32) usize {
 }
 
 // ---------------------------------------------------------------------------
+// The drawable's transfer function
+// ---------------------------------------------------------------------------
+
+/// Where sRGB's linear segment ends, on the linear side.
+///
+/// Below this the encode is a plain multiply by `srgb_slope` and nothing is
+/// raised to a power. That matters here beyond tidiness: the background sits deep
+/// inside this segment, so the value the shader writes for it is an exact
+/// division rather than an inverted power, and the round trip lands on an integer
+/// instead of near one.
+const srgb_knee_linear: f32 = 0.0031308;
+
+/// The same knee from the encoded side. `12.92 * 0.0031308` is `0.04044994`, so
+/// the two are the same point stated in the two directions; both are written out
+/// because rederiving either from the other invites a rounding argument.
+const srgb_knee_encoded: f32 = 0.04045;
+
+/// The linear segment's slope, and the number the background literal is divided
+/// by in `shaders/scope.metal`.
+const srgb_slope: f32 = 12.92;
+
+const srgb_gamma: f32 = 2.4;
+const srgb_scale: f32 = 1.055;
+const srgb_offset: f32 = 0.055;
+
+/// Linear light to what an sRGB drawable stores, per IEC 61966-2-1.
+///
+/// **Restated here rather than applied here.** The shipping path does not call
+/// this: `drawable_pixel_format` is `BGRA8Unorm_sRGB`, so the render-output stage
+/// applies the encode in hardware and the shader writes linear values. This is
+/// the model's copy, and the whole point of the model is that it was derived
+/// independently of the thing it checks.
+///
+/// The consequence for every assertion downstream, worth stating where the
+/// arithmetic is rather than where it bites: the slope at the bottom is
+/// `srgb_slope * 255`, which is 3294.6 bytes per unit of linear signal, so **one
+/// 8-bit level is 3.0e-4 of linear energy near black**. That is why the resolve's
+/// byte comparison is stated to a level or two and not to a fraction, and why
+/// `checkResolve`'s tolerance is a measurement rather than a preference.
+pub fn srgbEncode(linear: f32) f32 {
+    const c = std.math.clamp(linear, 0.0, 1.0);
+    if (c <= srgb_knee_linear) return srgb_slope * c;
+    return srgb_scale * std.math.pow(f32, c, 1.0 / srgb_gamma) - srgb_offset;
+}
+
+/// The inverse, for reading a stored byte back as the linear value that produced
+/// it. `scripts/measure-trace` does the same thing to a screenshot, which is why
+/// this exists on both sides.
+pub fn srgbDecode(encoded: f32) f32 {
+    const s = std.math.clamp(encoded, 0.0, 1.0);
+    if (s <= srgb_knee_encoded) return s / srgb_slope;
+    return std.math.pow(f32, (s + srgb_offset) / srgb_scale, srgb_gamma);
+}
+
+/// A linear value as the byte an 8-bit sRGB drawable stores for it.
+///
+/// Rounds to nearest, which is what the hardware does. **Do not build an exact
+/// assertion on a linear value that lands near a `.5` boundary**: Apple's
+/// float-to-unorm conversion is documented to bias low by 1/127500 of full scale,
+/// and the hardware evaluates the power through an approximation rather than
+/// through `std.math.pow`. Linear 0.5 encodes to 187.516, one sixtieth of a byte
+/// above the boundary, and is exactly the kind of probe that would flake.
+pub fn srgbByte(linear: f32) u8 {
+    return @intFromFloat(@round(std.math.clamp(srgbEncode(linear), 0.0, 1.0) * 255.0));
+}
+
+// ---------------------------------------------------------------------------
 // Windows
 // ---------------------------------------------------------------------------
 
@@ -631,4 +698,79 @@ test "a plateau is measured but says nothing about level" {
     try testing.expect(at_full > 0);
     try testing.expect(at_rail > 0);
     try testing.expect(at_rail < at_full);
+}
+
+test "the sRGB transfer function round-trips across the whole byte range" {
+    // Both directions, over every byte a drawable can store, because the encode
+    // is what the model predicts and the decode is what `scripts/measure-trace`
+    // undoes on a capture. An error in either is an error in a published number.
+    var byte: u16 = 0;
+    while (byte <= 255) : (byte += 1) {
+        const encoded = @as(f32, @floatFromInt(byte)) / 255.0;
+        const linear = srgbDecode(encoded);
+        try testing.expectApproxEqAbs(encoded, srgbEncode(linear), 1e-5);
+        try testing.expectEqual(@as(u8, @intCast(byte)), srgbByte(linear));
+    }
+}
+
+test "the two segments meet at the knee" {
+    // The piecewise definition is only a function if the halves agree there, and
+    // the two constants are written out separately rather than derived from each
+    // other, so this is the one thing keeping them consistent.
+    try testing.expectApproxEqAbs(srgb_knee_encoded, srgbEncode(srgb_knee_linear), 1e-6);
+    try testing.expectApproxEqAbs(srgb_knee_linear, srgbDecode(srgb_knee_encoded), 1e-6);
+
+    // Approached from below it is a plain multiply, and from above a power.
+    try testing.expectApproxEqAbs(
+        srgbEncode(srgb_knee_linear - 1e-7),
+        srgbEncode(srgb_knee_linear + 1e-7),
+        1e-5,
+    );
+}
+
+test "the ends land on the right bytes and the function is monotone" {
+    try testing.expectEqual(@as(f32, 0.0), srgbEncode(0.0));
+
+    // **Not exactly 1.0, and the byte is what is asserted instead.** At full
+    // scale the power is 1, so the formula reduces to `srgb_scale -
+    // srgb_offset`, and `1.055 - 0.055` in f32 is 0.99999994 rather than one.
+    // That is six parts in a hundred million, or 0.000015 of a byte, and it
+    // rounds to 255 with half a byte to spare. Asserting the float would be
+    // asserting a property of binary32 rather than of the transfer function,
+    // which is the same trap the plan's note about linear 0.5 describes from the
+    // other end.
+    try testing.expectApproxEqAbs(@as(f32, 1.0), srgbEncode(1.0), 1e-6);
+
+    try testing.expectEqual(@as(u8, 0), srgbByte(0.0));
+    try testing.expectEqual(@as(u8, 255), srgbByte(1.0));
+
+    // Out of range clamps rather than extrapolating, because the accumulation is
+    // unclipped and the resolve's own clamp is what this models.
+    try testing.expectEqual(@as(u8, 255), srgbByte(4.0));
+    try testing.expectEqual(@as(u8, 0), srgbByte(-1.0));
+
+    var previous: f32 = -1.0;
+    var i: usize = 0;
+    while (i <= 4096) : (i += 1) {
+        const encoded = srgbEncode(@as(f32, @floatFromInt(i)) / 4096.0);
+        try testing.expect(encoded >= previous);
+        previous = encoded;
+    }
+}
+
+test "the background's linear value is the byte it has to show" {
+    // The spelling `float3(5.0, 5.0, 8.0) / (255.0 * 12.92)` in the shader, in
+    // arithmetic. Both components are inside the linear segment, whose ceiling is
+    // byte 10, so this is an exact division and the round trip lands on the
+    // integer rather than near it. `scripts/measure-trace` finds the drawable
+    // inside a window capture by looking for exactly RGB(5, 5, 8), which is why
+    // the byte is the thing stated and the linear value is the derivation.
+    try testing.expectEqual(@as(u8, 5), srgbByte(5.0 / (255.0 * srgb_slope)));
+    try testing.expectEqual(@as(u8, 8), srgbByte(8.0 / (255.0 * srgb_slope)));
+
+    // What the phase 2 literal would have stored had it been left alone, which is
+    // the failure this replaces: 7.8 times brighter, and `find_drawable` looking
+    // for a background that is no longer there.
+    try testing.expectEqual(@as(u8, 39), srgbByte(0.02));
+    try testing.expectEqual(@as(u8, 48), srgbByte(0.03));
 }
