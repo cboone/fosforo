@@ -45,23 +45,71 @@ from PIL import Image, ImageCms, UnidentifiedImageError
 # the Zig side reading this script and asserting all four still agree. Without
 # that test a constant that moved would leave everything below reporting
 # confident numbers against the old mapping.
+#
+# **No name here may end with another's.** The Zig side finds each by substring
+# and takes the first match, so a `TRACE_FULL_SCALE` declared above `FULL_SCALE`
+# would silently repoint that assertion at the wrong number. The test counts
+# occurrences for exactly that reason.
+#
+# **Two of the four were renamed by #60, deliberately.** The drawable moved to
+# `BGRA8Unorm_sRGB`, so the shader writes linear light and the hardware encodes on
+# write; both of these numbers changed meaning without changing role. A rename is
+# what makes a stale copy of this file fail the constants test loudly instead of
+# comparing two agreeing numbers that now mean different things.
 FULL_SCALE = 0.9  # iface.trace_full_scale
 RAIL = 0.98  # iface.trace_rail
-BACKGROUND = (0.02, 0.02, 0.03)  # resolve_fragment's literal
-BEAM = (0.30, 1.0, 0.45)  # trace_fragment's literal
+BACKGROUND_BYTES = (5.0, 5.0, 8.0)  # resolve_fragment's literal, as its numerator
+BEAM_LINEAR = (0.073239, 1.0, 0.170645)  # trace_fragment's literal
 
-# The two colours as the drawable stores them. `BGRA8Unorm` is not sRGB, so the
-# 8-bit values are linear in the shader's floats and this is the whole of the
-# conversion. Kept unrounded, because the ray prediction wants 5.1 and 7.65
-# rather than the 5 and 8 an eye reads off a screenshot.
-BG8 = tuple(c * 255.0 for c in BACKGROUND)
-BEAM8 = tuple(c * 255.0 for c in BEAM)
+# sRGB, IEC 61966-2-1. The drawable's transfer function, applied by the
+# render-output stage on write and undone here to get back to what the shader
+# computed. `src/gpu/measure.zig` holds the same arithmetic on the Zig side; the
+# constants test ties the literals, and nothing ties these two implementations
+# beyond both being the published formula.
+SRGB_KNEE_LINEAR = 0.0031308
+SRGB_KNEE_ENCODED = 0.04045
+SRGB_SLOPE = 12.92
+SRGB_GAMMA = 2.4
+SRGB_SCALE = 1.055
+SRGB_OFFSET = 0.055
+
+
+def srgb_encode(linear):
+    """Linear light to the 0-1 value an sRGB drawable stores."""
+    c = np.clip(np.asarray(linear, dtype=np.float64), 0.0, 1.0)
+    return np.where(
+        c <= SRGB_KNEE_LINEAR,
+        SRGB_SLOPE * c,
+        SRGB_SCALE * np.power(c, 1.0 / SRGB_GAMMA) - SRGB_OFFSET,
+    )
+
+
+def srgb_decode(encoded):
+    """The inverse, for reading a capture back as the light the shader wrote."""
+    s = np.clip(np.asarray(encoded, dtype=np.float64), 0.0, 1.0)
+    return np.where(
+        s <= SRGB_KNEE_ENCODED,
+        s / SRGB_SLOPE,
+        np.power((s + SRGB_OFFSET) / SRGB_SCALE, SRGB_GAMMA),
+    )
+
+
+# The background in the two forms the rest of this file needs it in.
+#
+# **The bytes are what is stated and the linear value is the derivation**, which
+# is the opposite of how this file used to hold it and is not a style choice. The
+# crop looks for exact bytes; deriving them through the transfer function would
+# put a conversion between the constants test and the thing that actually
+# depends on the number, and a mistake there would crop a black region and report
+# rows for it rather than failing.
+BG8 = BACKGROUND_BYTES
+BG_LINEAR = tuple(c / (255.0 * SRGB_SLOPE) for c in BACKGROUND_BYTES)
 
 # How far a capture may stray from the exact background before a pixel stops
 # counting as background, and how far the blue lead may stray from its nominal 3.
 # Both are empirical: they describe what the screen-capture path does to a value,
 # not what the shader writes, which is why they are numbers here rather than
-# derived from BACKGROUND the way the centres are.
+# derived from BACKGROUND_BYTES the way the centres are.
 BG_WINDOW = 2
 LEAD_WINDOW = 1
 
@@ -203,9 +251,9 @@ def find_drawable(rgb):
     # their declarations say so. Do not tighten them to zero on the strength of
     # the word "exactly" anywhere else in this file.
     #
-    # The centres come from BACKGROUND rather than being written out, so the one
-    # place this file states the background is the one the constants test checks.
-    # Only the windows either side are this function's own.
+    # The centres come from BACKGROUND_BYTES rather than being written out, so the
+    # one place this file states the background is the one the constants test
+    # checks. Only the windows either side are this function's own.
     want = [round(c) for c in BG8]
     lead = want[2] - want[0]
     bg = (
@@ -231,6 +279,16 @@ def ray_deviation(rgb):
     gives the best-conditioned estimate of `c`, and red and blue then follow
     exactly rather than approximately.
 
+    **The ray is straight in linear light and curved in the bytes a capture
+    holds**, which is what #60 changed here. The drawable is `BGRA8Unorm_sRGB`, so
+    the shader writes the ray and the hardware encodes it; a capture therefore
+    holds the ray's image under a non-linear map. Decoding first is what keeps the
+    arithmetic below the same arithmetic it always was, and encoding the
+    prediction back is what keeps the deviation in the 8-bit levels the tolerance
+    is stated in. Comparing decoded values directly would put the tolerance in
+    linear units, where one level is 3.0e-4 near black and 0.009 near white, and a
+    single number could not mean anything in both places.
+
     **This replaces a count of distinct green levels, whose premise #55 ended.**
     That guard refused any capture holding more than 32 shades, on the stated
     ground that a lossless one holds two: true of a trace with no persistence and
@@ -250,7 +308,7 @@ def ray_deviation(rgb):
     ray when either channel is, and the count separately because a fraction of
     nothing has to be reported as such rather than as zero.
     """
-    r, g, b = (rgb[:, :, i].astype(np.float32) for i in range(3))
+    r, g, b = (rgb[:, :, i].astype(np.float64) for i in range(3))
 
     # Green clips first, at c = 0.98, and a clipped pixel carries no usable c:
     # red and blue keep climbing behind a green that cannot. Excluded rather than
@@ -259,11 +317,16 @@ def ray_deviation(rgb):
     usable = g < SATURATED
     examined = int(usable.sum())
     if examined == 0:
-        return np.empty(0, dtype=np.float32), 0
+        return np.empty(0, dtype=np.float64), 0
 
-    energy = (g - BG8[1]) / BEAM8[1]
-    from_red = np.abs(r - (BG8[0] + BEAM8[0] * energy))
-    from_blue = np.abs(b - (BG8[2] + BEAM8[2] * energy))
+    # Back to the light the shader wrote, invert the ray on green, predict the
+    # other two, and re-encode so the comparison is in levels.
+    energy = (srgb_decode(g / 255.0) - BG_LINEAR[1]) / BEAM_LINEAR[1]
+    want_red = srgb_encode(BG_LINEAR[0] + BEAM_LINEAR[0] * energy) * 255.0
+    want_blue = srgb_encode(BG_LINEAR[2] + BEAM_LINEAR[2] * energy) * 255.0
+
+    from_red = np.abs(r - want_red)
+    from_blue = np.abs(b - want_blue)
     return np.maximum(from_red, from_blue)[usable], examined
 
 
@@ -414,9 +477,10 @@ def main():
         return 1
 
     if fraction > MAX_OFF_RAY and not args.measure_anyway:
-        # `:.2f` rather than `:g`, which would print the beam as (0.3, 1, 0.45)
-        # and make it harder to recognise as the shader's own literal.
-        beam = ", ".join(f"{c:.2f}" for c in BEAM)
+        # Six significant figures, which is how the shader spells it: the beam is
+        # a linear-light triple since #60 and printing it rounded would make it
+        # unrecognisable as that literal.
+        beam = ", ".join(f"{c:.6g}" for c in BEAM_LINEAR)
         print(f"{fraction:.1%} of the drawable's unsaturated pixels are colours this shader")
         print("cannot produce.")
         print(f"It writes background + a * ({beam}), so red and blue follow green exactly.")

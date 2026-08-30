@@ -428,6 +428,18 @@ pub const core_exponent: usize = 4;
 /// literal, answered by construction.
 pub const background_bytes = [3]u8{ 5, 5, 8 };
 
+/// The same three in the linear light the shader writes.
+///
+/// An exact division rather than an inverted power, because bytes 0 to 10 are all
+/// inside sRGB's linear segment: `12.92 * (5 / (255 * 12.92)) * 255` is 5.000,
+/// half a byte from either rounding boundary. That margin is the reason the
+/// background is spelled this way at all — Apple's float-to-unorm conversion is
+/// documented to bias low by 1/127500 of full scale, so a literal that landed near
+/// a `.5` boundary would be a coin flip rather than a constant.
+pub fn backgroundLinear(channel: usize) f32 {
+    return @as(f32, @floatFromInt(background_bytes[channel])) / (255.0 * srgb_slope);
+}
+
 /// The four phosphors, **authored in sRGB and decoded once** by `buildPalette`.
 ///
 /// Authored rather than stored linear so the numbers in this file are the numbers
@@ -470,8 +482,8 @@ pub fn paletteEntry(tint_srgb: [3]f32, t: f32) [3]f32 {
     const white_weight = squared * squared;
 
     var out: [3]f32 = undefined;
-    for (&out, tint_srgb, background_bytes) |*slot, tint, byte| {
-        const background = @as(f32, @floatFromInt(byte)) / (255.0 * srgb_slope);
+    for (&out, tint_srgb, 0..) |*slot, tint, channel| {
+        const background = backgroundLinear(channel);
 
         // A tint component of exactly 1.0 stays exactly 1.0 for every weight,
         // which is what makes the dominant channel an exact readout of `t`. The

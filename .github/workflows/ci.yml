@@ -213,10 +213,17 @@ jobs:
   #
   # **Every number the step printed is identical to the development machine's**,
   # on different silicon: row 269 for silence, row 26 for full scale, rail on row
-  # 5, twenty periods from twenty cycles, a beam ray of 0.2998 and 0.4500 with
-  # 0.00000 worst deviation, and one deposit peaking at exactly 1.0000. That last
-  # one is the interesting one, since it means the diamond-exit finding recorded in
-  # ADR 0013 holds on more than one GPU.
+  # 5, twenty periods from twenty cycles, a beam ray with 0.00000 worst deviation,
+  # and one deposit peaking at exactly 1.0000. That last one is the interesting
+  # one, since it means the diamond-exit finding recorded in ADR 0013 holds on more
+  # than one GPU.
+  #
+  # The ray's own two figures were 0.2998 and 0.4500 and are now **0.0732 and
+  # 0.1705**, which is #60 rather than a drift: the drawable became
+  # `BGRA8Unorm_sRGB`, so the deposit is the sRGB decode of the colour phase 2
+  # wrote rather than that colour reused as linear light. The picture is unchanged
+  # and the numbers behind it moved, which is the one kind of change a recorded
+  # measurement cannot survive being left alone through.
   #
   # [#69]: https://github.com/cboone/fosforo/issues/69
   #

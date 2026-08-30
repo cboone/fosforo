@@ -94,10 +94,19 @@ fragment float4 decay_fragment(VertexOut in [[stage_in]],
 // inside a window capture by looking for exactly RGB(5, 5, 8), blue leading red
 // and green by two to four. Emitting it where no energy has landed is what keeps
 // that crop working.
+//
+// **Stated as the bytes it must show, divided by the transfer function's linear
+// slope, because the drawable is `BGRA8Unorm_sRGB` and this shader now writes
+// linear light.** The hardware encodes on write, so the number here is the
+// *inverse* of what reaches the screen. Both components are inside sRGB's linear
+// segment, whose ceiling is byte 10, so the round trip is an exact division and
+// lands on the integer rather than near it: `12.92 * (5 / (255 * 12.92)) * 255`
+// is 5.000, half a byte from either rounding boundary. Writing 0.02 here instead
+// would store byte 39 and break the crop while failing nothing in this file.
 fragment float4 resolve_fragment(VertexOut in [[stage_in]],
                                  texture2d<float, access::read> energy [[texture(0)]]) {
     const float3 lit = energy.read(uint2(in.position.xy)).rgb;
-    return float4(float3(0.02, 0.02, 0.03) + lit, 1.0);
+    return float4(float3(5.0, 5.0, 8.0) / (255.0 * 12.92) + lit, 1.0);
 }
 
 // The other half of `TraceUniforms` in `src/gpu/metal/renderer.zig`, and nothing
@@ -154,11 +163,21 @@ vertex TraceOut trace_vertex(uint vertex_id [[vertex_id]],
 // literal here rather than a constant on the Zig side: nothing else reads it and
 // that issue deletes it.
 //
+// **In linear light, and it is the same green it always was.** Phase 2 wrote
+// (0.30, 1.00, 0.45) into a drawable that applied no transfer function, so the
+// compositor read those numbers as already display-encoded and showed bytes
+// (76, 255, 115). Now that the drawable encodes on write, keeping the same
+// picture means writing the sRGB *decode* of that triple. Leaving the old numbers
+// would have shipped (149, 255, 179) — a visibly paler, whiter green — while
+// changing nothing that names a colour, which is the whole reason this
+// conversion is its own commit. `src/gpu/measure.zig` holds the derivation as a
+// test.
+//
 // This is now a *deposit* into the accumulation rather than a write to the
 // drawable, blended one-to-one and additive, so where the beam crosses its own
 // path the value climbs past 1.0. That headroom is what #60 wants and it is the
 // reason the accumulation is floating point. Keeping the colour green until then
 // is deliberate: the screenshot tooling isolates the trace with green > 64.
 fragment float4 trace_fragment() {
-    return float4(0.30, 1.0, 0.45, 1.0);
+    return float4(0.073239, 1.0, 0.170645, 1.0);
 }

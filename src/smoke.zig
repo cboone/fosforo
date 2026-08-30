@@ -1053,7 +1053,7 @@ fn checkResolve(energy: []f32, picture: []u8, window: []f32) !void {
             if (image.channel(x, y, 1) > trace_threshold) lit += 1;
 
             for (0..3) |channel| {
-                const want = resolved(background[channel], image.channel(x, y, channel));
+                const want = resolved(channel, image.channel(x, y, channel));
                 const off = @as(i32, got[channel]) - @as(i32, want);
                 if (@abs(off) > @abs(worst)) worst = off;
             }
@@ -1074,14 +1074,32 @@ fn checkResolve(energy: []f32, picture: []u8, window: []f32) !void {
     // One byte level of slack, for the rounding between a float the shader
     // computed and the unorm the format stores. Against a gain of a tenth, whole
     // channels move by a hundred levels.
+    //
+    // **The slack means more now than it did, and it is still one level.** Since
+    // #60 the drawable is `BGRA8Unorm_sRGB`, so this compares the model's own
+    // evaluation of the transfer function against the render-output stage's, and
+    // those need not round the same way at a boundary: the slope near black is
+    // 12.92 x 255, which puts one level at 3.0e-4 of linear energy. Widening this
+    // pre-emptively would be widening the one assertion that would have caught
+    // #55. Read the printed number first.
     if (@abs(worst) > 1) return error.ResolveNotAnAdd;
 }
 
 /// What the resolve should make of one channel: the background plus the energy,
-/// clipped by the format and quantized once.
-fn resolved(background: u8, energy: f32) u8 {
-    const linear = @as(f32, @floatFromInt(background)) / 255.0 + energy;
-    return @intFromFloat(@round(std.math.clamp(linear, 0.0, 1.0) * 255.0));
+/// clipped, and put through the drawable's transfer function.
+///
+/// **The encode is the hardware's, not this shader's.** `drawable_pixel_format`
+/// is `BGRA8Unorm_sRGB`, so the fragment writes linear light and the render-output
+/// stage converts on write. `measure.srgbByte` is the model's independently
+/// derived copy of that conversion, which is the whole reason it lives in a file
+/// `zig build test` can reach without a GPU.
+///
+/// The background comes from `measure` rather than from the byte read off the
+/// picture, because a byte cannot say which linear value produced it: 5 is any
+/// linear value in a range 0.0003 wide, and adding energy to the wrong end of
+/// that range moves the prediction by a level exactly where the toe is steepest.
+fn resolved(channel: usize, energy: f32) u8 {
+    return measure.srgbByte(measure.backgroundLinear(channel) + energy);
 }
 
 /// The phosphor dims by the decay factor once per frame.

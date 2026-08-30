@@ -50,11 +50,34 @@ const shader_source = shader.embedded;
 /// wrong one shows up immediately as a black or garbled drawable rather than
 /// as anything subtle.
 const mtl = struct {
-    /// `MTLPixelFormatBGRA8Unorm`. Phase 3 moves to the sRGB variant when the
-    /// tonemap needs its palette maths in linear light; for a flat colour the
-    /// two are indistinguishable, and choosing now would decide it in the wrong
-    /// phase.
+    /// `MTLPixelFormatBGRA8Unorm`. **No longer the drawable's format** — see the
+    /// sRGB variant below, which #60 moved to. Kept because it is the value the
+    /// one below is adjacent to, and because the pair is what makes either
+    /// checkable against `MTLPixelFormat.h` at a glance.
     const pixel_format_bgra8_unorm: u64 = 80;
+
+    /// `MTLPixelFormatBGRA8Unorm_sRGB`, the drawable's format since #60.
+    ///
+    /// The hardware applies the sRGB transfer function on colour-attachment
+    /// write, which is what lets the palette mix and the tonemap run in linear
+    /// light while the compositor still receives display-ready bytes. Read out of
+    /// `MTLPixelFormat.h:66` rather than recalled, which is what this block's own
+    /// header asks for and what the line-strip enum two bullets down was caught
+    /// by. The stored bytes are unchanged by the move; what changes is which
+    /// *linear* value produces a given byte.
+    ///
+    /// **`CAMetalLayer.colorspace` stays nil and no `setColorspace:` is added.**
+    /// Nil means "these bytes are already display-ready" rather than "unmanaged",
+    /// and it is the assumption format 80 was relying on all along. Never set
+    /// `kCGColorSpaceLinearSRGB`: that is the double encode, and it shows as
+    /// middle grey reading 187.
+    ///
+    /// The consequence to know before touching either literal in
+    /// `shaders/scope.metal`: both are now the *inverse* of this transfer
+    /// function, so reverting this constant alone would not fail anything, it
+    /// would draw a background 7.8 times too bright and a paler beam. The
+    /// background assertions in `src/smoke.zig` are what refuse that.
+    const pixel_format_bgra8_unorm_srgb: u64 = 81;
 
     /// `MTLPixelFormatRGBA16Float`, the accumulation's format.
     ///
@@ -168,7 +191,15 @@ const accumulation_pixel_format = mtl.pixel_format_rgba16_float;
 /// and the one pipeline that renders into it. Two named formats used at every
 /// site is what makes a test asserting they differ unnecessary: there is nothing
 /// left to drift.
-const drawable_pixel_format = mtl.pixel_format_bgra8_unorm;
+///
+/// **Three sites read this and they have to agree**: the layer's
+/// `setPixelFormat:`, `resolve_pass.pixel_format`, and `buildTarget`'s offscreen
+/// descriptor. One constant is what makes that true by construction rather than
+/// by review, which #60 turned from tidiness into the thing holding a pixel-format
+/// change together. A pipeline compiled against one format and encoded against a
+/// texture of another is a draw-time validation failure that `probe` never
+/// reaches, so `MTL_DEBUG_LAYER` is the instrument if this is ever split.
+const drawable_pixel_format = mtl.pixel_format_bgra8_unorm_srgb;
 
 /// How much of the phosphor survives one frame.
 ///
@@ -339,9 +370,9 @@ const Surface = union(enum) {
     /// drawables are write-only and are presented.
     layer: objc.Object,
 
-    /// A `BGRA8Unorm` texture this renderer allocated, in shared storage so the
-    /// CPU can read it. Nothing is presented and no drawable exists, so `frame`
-    /// can never return `.no_drawable` on this side.
+    /// A `BGRA8Unorm_sRGB` texture this renderer allocated, in shared storage so
+    /// the CPU can read it. Nothing is presented and no drawable exists, so
+    /// `frame` can never return `.no_drawable` on this side.
     target: objc.Object,
 };
 
@@ -2256,7 +2287,13 @@ const MTLRegion = extern struct { origin: MTLOrigin = .{}, size: MTLSize };
 /// Stated rather than derived, because Metal derives neither for a buffer: the
 /// blit in `readback` has to be told its destination's row stride, and getting it
 /// wrong produces a picture skewed by a fraction of a row rather than a failure.
-/// Eight for `RGBA16Float`, four for `BGRA8Unorm`.
+/// Eight for `RGBA16Float`, four for `BGRA8Unorm_sRGB`. The sRGB-ness is in how
+/// the GPU accesses the texture rather than in how its bytes are laid out, so it
+/// costs nothing here: `getBytes:` copies the storage allocation, and what it
+/// hands back is already encoded. Measured rather than assumed — the offscreen
+/// half read `RGBA(5, 5, 8, 255)` for a background the shader wrote as
+/// `float3(5, 5, 8) / (255 * 12.92)`, which is only true if the hardware encoded
+/// on write and this call decoded nothing.
 const energy_bytes_per_pixel: usize = 8;
 const picture_bytes_per_pixel: usize = 4;
 
@@ -2642,6 +2679,19 @@ test "the screenshot tool still holds this project's numbers" {
     try testing.expectEqual(iface.trace_full_scale, @as(f32, @floatCast(full_scale)));
     try testing.expectEqual(iface.trace_rail, @as(f32, @floatCast(rail)));
 
+    // No name on the script's side may end with another's, because `indexOf`
+    // takes the first match: a `TRACE_FULL_SCALE` declared above `FULL_SCALE`
+    // would silently repoint the assertion above at a different number and pass.
+    // Counted rather than trusted to a convention nobody can see from here.
+    for ([_][]const u8{
+        "FULL_SCALE = ",
+        "RAIL = ",
+        "BACKGROUND_BYTES = ",
+        "BEAM_LINEAR = ",
+    }) |needle| {
+        try testing.expectEqual(@as(usize, 1), std.mem.count(u8, script, needle));
+    }
+
     // The shader's two. Both sides spell these the same way, so the parsed f64s
     // are bit-identical and no narrowing is needed.
     //
@@ -2649,8 +2699,17 @@ test "the screenshot tool still holds this project's numbers" {
     // inside a window capture by looking for exactly the background, and the
     // guard that refuses a recompressed capture depends on both, because it
     // predicts red and blue from green along the ray they define.
-    const background = scalarsAfter(script, "BACKGROUND = ", "(", 3) orelse return error.NotFound;
-    const beam = scalarsAfter(script, "BEAM = ", "(", 3) orelse return error.NotFound;
+    //
+    // **Both were renamed by #60 and the rename is the point.** The drawable is
+    // `BGRA8Unorm_sRGB` now, so the shader writes linear light and the hardware
+    // encodes on write: the background is stated as the bytes it must show
+    // divided by the transfer function's slope, and the deposit is the sRGB
+    // decode of the colour phase 2 wrote. Both changed meaning without changing
+    // role, which is the one case a textual comparison cannot catch — it would
+    // have gone on comparing two agreeing numbers that no longer mean the same
+    // thing. A stale script now fails `NotFound` instead.
+    const background = scalarsAfter(script, "BACKGROUND_BYTES = ", "(", 3) orelse return error.NotFound;
+    const beam = scalarsAfter(script, "BEAM_LINEAR = ", "(", 3) orelse return error.NotFound;
 
     const written = scalarsAfter(
         shader_source,
@@ -2685,7 +2744,15 @@ test "the script reader finds nothing rather than guessing" {
 
     // A constant that exists, read at the wrong arity. This is what stops a field
     // being added to one of the tuples and going unnoticed.
-    try testing.expectEqual(@as(?[4]f64, null), scalarsAfter(script, "BEAM = ", "(", 4));
+    //
+    // **The anchor has to name a tuple that is actually there**, and #60 is where
+    // that nearly stopped being true: this said `BEAM = `, which the rename in
+    // `scripts/measure-trace` would have turned into a second copy of the
+    // not-found assertion above — green, with its comment still claiming to test
+    // arity. Re-pointed at a constant that exists, and the assertion below is what
+    // says so.
+    try testing.expect(scalarsAfter(script, "BEAM_LINEAR = ", "(", 3) != null);
+    try testing.expectEqual(@as(?[4]f64, null), scalarsAfter(script, "BEAM_LINEAR = ", "(", 4));
 }
 
 test "the accumulation's uniforms are laid out the way the shader reads them" {
