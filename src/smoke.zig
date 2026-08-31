@@ -592,13 +592,21 @@ const trace_threshold: f32 = 0.5;
 /// loop, so a real clock would put a fraction of a millisecond between them and
 /// every decay expectation below would become a measurement of the runner.
 ///
-/// One sixtieth of a second, which is not an arbitrary choice of nominal rate.
-/// `palette.decay_tau_nanos` is anchored so that exactly this interval yields
-/// exactly the 0.90 per frame #55 shipped, so **every number this half printed
-/// before #56 it still prints**: `checkResolve`'s per-pixel prediction,
-/// `checkHotCore`'s white point and `checkDecay`'s five ratios are unchanged, and
-/// so are the figures quoted from them in `AGENTS.md` and ADR 0019.
-const trace_frame_nanos: u64 = std.time.ns_per_s / 60;
+/// One frame at the decay's own reference rate, which is not an arbitrary choice
+/// of nominal rate. `palette.decay_tau_nanos` is anchored so that exactly this
+/// interval yields exactly the 0.90 per frame #55 shipped, so **every number this
+/// half printed before #56 it still prints**: `checkResolve`'s per-pixel
+/// prediction, `checkHotCore`'s white point and `checkDecay`'s five ratios are
+/// unchanged, and so are the figures quoted from them in `AGENTS.md` and ADR 0019.
+///
+/// **The model's constant rather than `std.time.ns_per_s / 60`**, which is the
+/// same interval only by coincidence: the division truncates to 16,666,666 ns
+/// where `decay_reference_frame_nanos` rounds to 16,666,667. A nanosecond is
+/// nothing here — `decayOver` returns a bit-identical `f32` for both, since one
+/// part in 1.6e8 is two orders of magnitude below the spacing near 0.9 — but the
+/// sentence above says *exactly*, and a second spelling of "one frame at the
+/// reference rate" is a second thing to keep in step with the anchor.
+const trace_frame_nanos: u64 = palette.decay_reference_frame_nanos;
 
 /// What the phosphor keeps between two of this half's frames.
 ///
@@ -721,9 +729,14 @@ const Worker = struct {
         self.result = self.drive();
     }
 
-    /// The synthetic clock starts at zero, which the renderer reads as the first
-    /// frame of a fresh one: `last_frame_nanos` is null, so that frame's elapsed
-    /// time is zero and it decays a pair `buildAccumulation` has just cleared.
+    /// The synthetic clock starts at zero, and what the renderer makes of that is
+    /// worth stating exactly, because the obvious reading is wrong. This is the
+    /// first frame of a fresh renderer, so `last_frame_nanos` is null and
+    /// `Renderer.frame` stands in `palette.decay_reference_frame_nanos` rather
+    /// than an elapsed time of zero. The fade is a no-op either way against a pair
+    /// `buildAccumulation` has just cleared; what the interval decides is that
+    /// frame's white point, which is why zero was not an option.
+    ///
     /// Every frame after it is one `interval_nanos` later, so `frames` frames
     /// deposit and decay across `(frames - 1) * interval_nanos` of simulated wall
     /// time. Counting the intervals rather than the frames is what the checks
