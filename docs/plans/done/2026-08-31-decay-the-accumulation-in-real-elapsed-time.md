@@ -1,6 +1,6 @@
 # Decay the accumulation in real elapsed time
 
-Issue [#56](https://github.com/cboone/fosforo/issues/56). Branch `feature/decay-in-real-time`. Phase 3, step 5 of [the build plan](2026-07-25-repo-foundation-and-phased-build-plan.md). Depends on [#55](https://github.com/cboone/fosforo/issues/55) (the accumulation) and [#51](https://github.com/cboone/fosforo/issues/51) (the offscreen readback); branched from `feature/tonemap` ([#60](https://github.com/cboone/fosforo/issues/60)) rather than from `main`, so that must merge first.
+Issue [#56](https://github.com/cboone/fosforo/issues/56). Branch `feature/decay-in-real-time`. Phase 3, step 5 of [the build plan](../todo/2026-07-25-repo-foundation-and-phased-build-plan.md). Depends on [#55](https://github.com/cboone/fosforo/issues/55) (the accumulation) and [#51](https://github.com/cboone/fosforo/issues/51) (the offscreen readback); branched from `feature/tonemap` ([#60](https://github.com/cboone/fosforo/issues/60)) rather than from `main`, so that must merge first.
 
 ## Context
 
@@ -8,7 +8,7 @@ Issue [#56](https://github.com/cboone/fosforo/issues/56). Branch `feature/decay-
 
 The defect is observable in about a minute and has a measured baseline, which is the strongest position an issue like this can start from. Playing `click-2hz.wav`, a 1 ms burst at 0.8 repeated twice a second: at the panel's native ~120 Hz each click fades over roughly a quarter second, and pinned to 60 Hz in System Settings **the fade visibly doubles in length**. The acceptance criterion is that after this change those two are the same.
 
-[ADR 0007](../adr/0007-renderer-simulates-a-crt.md) already requires this in as many words — *"Decay is exponential in real elapsed time against a user-facing time constant, so the look is identical at 60 Hz, 120 Hz, or variable refresh"* — so this issue discharges a consequence that ADR recorded rather than deciding anything that wants a new one. What it does decide is **which clock**, a question [#37](https://github.com/cboone/fosforo/issues/37)'s plan deferred here in writing.
+[ADR 0007](../../adr/0007-renderer-simulates-a-crt.md) already requires this in as many words — *"Decay is exponential in real elapsed time against a user-facing time constant, so the look is identical at 60 Hz, 120 Hz, or variable refresh"* — so this issue discharges a consequence that ADR recorded rather than deciding anything that wants a new one. What it does decide is **which clock**, a question [#37](https://github.com/cboone/fosforo/issues/37)'s plan deferred here in writing.
 
 **Three things have changed since the issue was filed and all three make the work smaller.**
 
@@ -169,10 +169,45 @@ Also worth a look while there, because #55's resolve-gain defect was found by ey
 - **`white_headroom` is not re-judged.** ADR 0019 says explicitly to leave it until #58 widens the dwell range, because the picture cannot currently distinguish one value from another.
 - **No new instrument for the resume clamp.** Its worst case is a 7% brightness blip on a single frame, and there is nothing to measure it with that would not cost more than the artefact.
 
+## What happened
+
+**Every number the plan predicted held, and two things it did not predict were found by the harness rather than by reasoning.**
+
+`tau` is 158,187,026 ns, derived at comptime from `(60 Hz, 0.90)`: `@log` turned out to be comptime-evaluable on `f64` at Zig 0.16.0, so the literal fallback was not needed and the derivation is executable. The per-frame factors it produces are 0.876603, 0.900000, 0.948683 and 0.974004 at 48, 60, 120 and 240 Hz, matching ADR 0019's table exactly.
+
+`smoke-trace`'s ten existing cases print byte-identical numbers, which is what anchoring on 60 Hz bought: `resolve: 2412 lit pixels, worst channel off by 0`, `thirty deposits peak at 9.539, white point 8.000`, and the same four decay ratios. `checkDecayIsInRealTime` reads 0.5430 and 0.5439 against a predicted 0.5451 — **0.18% apart**.
+
+**The first frame cannot use a zero interval, and `checkResolve` is what said so.** The plan asserted that one deposit would resolve "within a percent of its usual value" at `dt = 0`, on the grounds that the tonemap's shoulder term is negligible at an energy of one. It is negligible, and the resolve check still failed at **two levels off** against a tolerance of one, because a decay of 1.0 sends the white point to its 8e5 clamp rather than to something merely large. The first frame now stands in one interval at the reference rate, which is a bounded guess where zero was not a guess at all. By eye that frame would have looked exactly right.
+
+**The clamp caught the new check before the new check caught anything.** `checkDecayIsInRealTime` was first written asking `decayOver(decay_span_nanos)` for its expectation, which clamps at 41.7 ms and predicts 0.7684 against a true 0.5451. Composing per step is both correct and better, since it makes the two arms' expectations two independent derivations that must coincide.
+
+### Planted defects
+
+Committed first, so `git restore` could not revert the fix along with the plant.
+
+| Plant | Caught by | Reading |
+| ----- | --------- | ------- |
+| The decay is per frame again — `frame` ignores its parameter | `checkDecayIsInRealTime` | 0.2813 against 0.5451, the predicted `0.9^12 = 0.2824` |
+| The clock advances at the top of `frame`, above the semaphore wait | `checkHotCore`, `CoreNotWhite` | thirty deposits pile to 29.703 against 9.539 |
+| The clock advances below the semaphore wait but not at the commit | **nothing** | unchanged at 0.5430 |
+
+The third is the honest one. `.no_frame_slot` returns *above* where the elapsed time is computed, so that placement loses nothing and the invariant holds there too; only hoisting above the semaphore breaks it, and in a host it is `.no_drawable` under a busy compositor that would do the same. The invariant is real and its blast radius is narrower than the plan claimed.
+
+### `--refresh` was added, and the measurement is why
+
+The plan said to measure before adding the flag and to keep a constant if the white point's influence stayed under a byte. It does for `lit_threshold` — 120.62 at 48 Hz to 120.33 at 240, three tenths of a byte — and it does not for `energy_from_tonemapped`, which reads 5.0 deposits at 60 Hz and 7.0 at 120 for the same `t = 0.9`. Inverting the curve near saturation is exactly where the white point does its work. One number needs the flag and the other does not, so the flag exists and defaults to 120.
+
+One consequence worth carrying: the lit threshold straddles a rounding boundary, so the *printed* integer goes 121 below about 90 Hz and 120 above. One level on a threshold changes no conclusion, but a re-measured capture that moved by one is explained.
+
+### The release binary
+
+`monotonicNanos` is no longer debug-only, so AGENTS.md's claim that adopting `std.Io` "left the release binary byte-identical" is now half wrong. Measured by building `--release=fast` with and without the one call in `Editor.tick`: **220,000 to 220,176 bytes, +176**, and the binary gains one imported symbol, `clock_gettime_nsec_np`. `Io.Threaded`'s symbols are still absent, which is what ADR 0015's vtable argument was about, so nothing there changed.
+
 ## Commit sequence
 
-1. `feat:` the time constant and `decayOver` in `palette.zig`, with its tests. No caller yet.
-2. `feat:` `frame` takes a timestamp — seam, renderer, `gui.zig`, `smoke.zig` call sites. Behaviour changes here.
-3. `test:` the harness drives a synthetic clock; `checkDecayIsInRealTime`.
-4. `chore:` `scripts/measure-trace` and its constants test.
-5. `docs:` the comment that refuses `CVTimeStamp`, the shader's future-tense notes, ADRs 0007 and 0019, README, AGENTS.md, the build plan.
+The plan's five-commit split was optimistic about what compiles on its own, and the reason is worth recording. Deleting `palette.decay_per_frame` breaks `smoke.zig` and two tests in `renderer.zig`, one of which reads `scripts/measure-trace` as text, so the model, the seam, the renderer, the editor, the harness's call sites and the Python constant all have to move in one commit for `zig build test` to pass. What was actually committed:
+
+1. `docs:` the plan.
+2. `feat:` the whole behaviour change, which is everything that must move together.
+3. `test:` the harness's synthetic clock and `checkDecayIsInRealTime`.
+4. `docs:` the refusal of `CVTimeStamp`, the shader's future-tense notes, ADRs 0007 and 0019, README, AGENTS.md, the build plan, and this section.

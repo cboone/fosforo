@@ -1873,9 +1873,17 @@ pub const Renderer = struct {
         //
         // The clock belongs here rather than at the top for the reason the field
         // gives: a tick that returned early decayed nothing, so the time it
-        // spanned is still owed to whichever frame draws next. Moving this line
-        // above any early return would discard it, and the symptom would be a
-        // phosphor that holds too long on a loaded machine and nowhere else.
+        // spanned is still owed to whichever frame draws next.
+        //
+        // **Planted and measured rather than argued.** Hoisted above the
+        // semaphore wait, a `.no_frame_slot` tick banks the interval and the retry
+        // that follows sees none, so nothing fades: `smoke-trace` reports thirty
+        // deposits piling up to 29.703 against 9.539 and fails `CoreNotWhite`.
+        // Offscreen that is the common path, since there is no display link
+        // pacing the loop; in a host it is `.no_drawable` under a busy compositor
+        // that does the same thing. Note which check caught it — the hot core's,
+        // not the decay's — because the symptom is a picture that will not reach
+        // white rather than a fade at the wrong speed.
         self.accum_source ^= 1;
         self.last_frame_nanos = now_nanos;
 
