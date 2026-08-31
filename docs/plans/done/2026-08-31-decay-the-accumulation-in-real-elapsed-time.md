@@ -181,6 +181,25 @@ Also worth a look while there, because #55's resolve-gain defect was found by ey
 
 **The clamp caught the new check before the new check caught anything.** `checkDecayIsInRealTime` was first written asking `decayOver(decay_span_nanos)` for its expectation, which clamps at 41.7 ms and predicts 0.7684 against a true 0.5451. Composing per step is both correct and better, since it makes the two arms' expectations two independent derivations that must coincide.
 
+### The host half, as far as it goes without hands
+
+`clap-host` loaded the installed debug bundle and reported `rendering at 60.0 Hz, 960x540 at 2.00x, 882 sample window, 420 uploaded, 0 torn` for as long as it was watched. **That line is stronger evidence than it was before this issue**, because `Editor.tick` now reads the clock once and hands the same reading to the decay and to the meter: a stable 60.0 Hz *is* the statement that the intervals feeding `decayOver` are 16.67 ms, and there is no separate reading that could be wrong while the meter looked right.
+
+The display happened to be at 60 Hz, which is the anchor rate, so the decay in that session was exactly the 0.90 that shipped before — the picture is meant to be identical there and the capture says it is. Measured off a window-targeted `screencapture` at 1920x1080, converted out of Display P3:
+
+```text
+drawable found at x=0 y=130, cropping to it
+off the curve    0.02% of 2071680 unsaturated pixels
+highest peak     row 539    implies sample +0.0021
+brightest pixel  g=255, at or above the white point
+```
+
+Row 539 and `+0.0021` are the same figures #38 measured in REAPER and ADR 0019 measured in `clap-host`, so the vertical mapping is untouched. The last line is the one that belongs to this issue: the white point is derived from the decay, the decay now comes from a measured interval, and a stationary trace still dwells all the way to white. Had those intervals been wrong the white point would have been wrong with them and that line would not have reached 255.
+
+**Take the window by id rather than the screen.** A full-screen capture put `find_drawable`'s bounding box at 2296x1232 against a 1920x1080 drawable, swept in adjacent dark chrome, and was refused at 19.8% off the ray with a median deviation of 0.00 — the crop was wrong, not the picture. `screencapture -o -x -t png -l <window>` fixes it, and the id comes from `CGWindowListCopyWindowInfo`.
+
+**What is left needs hands and is the issue's own acceptance test.** Play `click-2hz.wav`, pin the display to 60 Hz in System Settings and back to 120, and confirm the fade duration does not change. It follows from the two facts above, and this project's standard is to look anyway.
+
 ### Planted defects
 
 Committed first, so `git restore` could not revert the fix along with the plant.
