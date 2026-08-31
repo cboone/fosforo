@@ -40,59 +40,212 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageCms, UnidentifiedImageError
 
-# This project's display contract, restated. Four numbers this file does not own
-# and cannot derive, copied from two files in two other languages, with a test on
-# the Zig side reading this script and asserting all four still agree. Without
+# This project's display contract, restated. Seven numbers this file does not own
+# and cannot derive, copied from three files in two other languages, with a test on
+# the Zig side reading this script and asserting all seven still agree. Without
 # that test a constant that moved would leave everything below reporting
 # confident numbers against the old mapping.
+#
+# **No name here may end with another's.** The Zig side finds each by substring
+# and takes the first match, so a `TRACE_FULL_SCALE` declared above `FULL_SCALE`
+# would silently repoint that assertion at the wrong number. The test counts
+# occurrences for exactly that reason.
+#
+# **#60 replaced two of them and added three, and the renames are deliberate.**
+# The drawable moved to `BGRA8Unorm_sRGB`, so the shader writes linear light and
+# the hardware encodes on write; and the trace stopped carrying a colour, which
+# moved to a gradient the shader looks up. `BACKGROUND` and `BEAM` therefore both
+# changed meaning without changing role, which is the one case a textual
+# comparison cannot catch, so both were renamed and a stale copy of this file now
+# fails the constants test loudly instead.
 FULL_SCALE = 0.9  # iface.trace_full_scale
 RAIL = 0.98  # iface.trace_rail
-BACKGROUND = (0.02, 0.02, 0.03)  # resolve_fragment's literal
-BEAM = (0.30, 1.0, 0.45)  # trace_fragment's literal
+BACKGROUND_BYTES = (5.0, 5.0, 8.0)  # palette.background_bytes
+CORE_EXPONENT = 4  # palette.core_exponent
+WHITE_HEADROOM = 0.8  # palette.white_headroom
+DECAY = 0.9  # palette.decay_per_frame, until #56 makes it a function of elapsed time
 
-# The two colours as the drawable stores them. `BGRA8Unorm` is not sRGB, so the
-# 8-bit values are linear in the shader's floats and this is the whole of the
-# conversion. Kept unrounded, because the ray prediction wants 5.1 and 7.65
-# rather than the 5 and 8 an eye reads off a screenshot.
-BG8 = tuple(c * 255.0 for c in BACKGROUND)
-BEAM8 = tuple(c * 255.0 for c in BEAM)
+# The four gradients, authored in sRGB, in the order the shader's `palette_row`
+# selects them: green, amber, storage-tube blue, neutral.
+#
+# Each has its largest component at exactly 1.0, and that is the property this
+# whole file rests on rather than a coincidence of taste. It makes that channel an
+# affine function of the tonemapped value, so one channel of a capture inverts the
+# picture exactly and the other two are predicted from it. A re-tint that broke it
+# would leave every measurement below reading a curve it no longer describes.
+# Named one per line rather than as a nested tuple, because the Zig side reads
+# these by finding an anchor and then the next `(`: a tuple of tuples would hand it
+# the outer parenthesis and it would parse nothing.
+TINT_GREEN = (0.30, 1.00, 0.45)  # P31, and the colour phase 2's trace drew
+TINT_AMBER = (1.00, 0.69, 0.00)  # P3, the amber terminal phosphor
+TINT_BLUE = (0.35, 0.60, 1.00)  # P11, the storage-tube blue
+TINT_NEUTRAL = (1.00, 1.00, 1.00)  # no tint at all, for reading rather than looking
+
+TINTS = (TINT_GREEN, TINT_AMBER, TINT_BLUE, TINT_NEUTRAL)
+
+# sRGB, IEC 61966-2-1. The drawable's transfer function, applied by the
+# render-output stage on write and undone here to get back to what the shader
+# computed. `src/gpu/measure.zig` holds the same arithmetic on the Zig side; the
+# constants test ties the literals, and nothing ties these two implementations
+# beyond both being the published formula.
+SRGB_KNEE_LINEAR = 0.0031308
+SRGB_KNEE_ENCODED = 0.04045
+SRGB_SLOPE = 12.92
+SRGB_GAMMA = 2.4
+SRGB_SCALE = 1.055
+SRGB_OFFSET = 0.055
+
+
+def srgb_encode(linear):
+    """Linear light to the 0-1 value an sRGB drawable stores."""
+    c = np.clip(np.asarray(linear, dtype=np.float64), 0.0, 1.0)
+    return np.where(
+        c <= SRGB_KNEE_LINEAR,
+        SRGB_SLOPE * c,
+        SRGB_SCALE * np.power(c, 1.0 / SRGB_GAMMA) - SRGB_OFFSET,
+    )
+
+
+def srgb_decode(encoded):
+    """The inverse, for reading a capture back as the light the shader wrote."""
+    s = np.clip(np.asarray(encoded, dtype=np.float64), 0.0, 1.0)
+    return np.where(
+        s <= SRGB_KNEE_ENCODED,
+        s / SRGB_SLOPE,
+        np.power((s + SRGB_OFFSET) / SRGB_SCALE, SRGB_GAMMA),
+    )
+
+
+# The background in the two forms the rest of this file needs it in.
+#
+# **The bytes are what is stated and the linear value is the derivation**, which
+# is the opposite of how this file used to hold it and is not a style choice. The
+# crop looks for exact bytes; deriving them through the transfer function would
+# put a conversion between the constants test and the thing that actually
+# depends on the number, and a mistake there would crop a black region and report
+# rows for it rather than failing.
+BG8 = BACKGROUND_BYTES
+BG_LINEAR = tuple(c / (255.0 * SRGB_SLOPE) for c in BACKGROUND_BYTES)
+
+
+def palette(tint, t, channel):
+    """One gradient's linear-light value at a tonemapped value, per channel.
+
+    The closed form `src/gpu/palette.zig` builds its table from. The shader reads
+    that table and interpolates between neighbours rather than evaluating this,
+    which at 256 entries differs from the closed form by 0.004 of a byte — three
+    orders of magnitude inside the tolerance below, so predicting from the formula
+    rather than from a rebuilt table costs nothing and saves this file a copy of
+    the table's geometry.
+    """
+    t = np.clip(np.asarray(t, dtype=np.float64), 0.0, 1.0)
+    background = BG_LINEAR[channel]
+    linear = srgb_decode(tint[channel])
+    hue = linear + (1.0 - linear) * t**CORE_EXPONENT
+    return background + (1.0 - background) * hue * t
+
+
+def dominant(tint):
+    """The channel a gradient drives to exactly 1.0, and therefore inverts on."""
+    return int(np.argmax(tint))
+
+
+def tonemapped_from_dominant(tint, byte):
+    """The tonemapped value a byte of the dominant channel implies, exactly.
+
+    That channel's tint component is 1.0, so `mix(tint, 1, w)` leaves it at 1 for
+    every weight and the gradient reduces to `bg + (1 - bg) t` there. Exact rather
+    than fitted, which is what lets the other two channels be predicted rather
+    than tolerated.
+    """
+    background = BG_LINEAR[dominant(tint)]
+    linear = srgb_decode(np.asarray(byte, dtype=np.float64) / 255.0)
+    return (linear - background) / (1.0 - background)
+
+
+def energy_from_tonemapped(t):
+    """Invert the curve, so a capture can report the energy behind a colour.
+
+    Extended Reinhard `t = e(1 + e/w²)/(1 + e)` rearranges to a quadratic in `e`:
+    `e²/w² + e(1 - t) - t = 0`. Reported rather than asserted on, because it is
+    the number that makes retuning possible from a screenshot instead of from a
+    guess, and because it saturates: at or above the white point the curve has
+    stopped distinguishing, which is the brightness axis's rail and is exactly
+    what `RAIL` is on the vertical one.
+    """
+    white = WHITE_HEADROOM / max(1.0 - DECAY, 1e-6)
+    a = 1.0 / (white * white)
+    b = 1.0 - t
+    if t >= 1.0:
+        return float("inf")
+    return (-b + np.sqrt(b * b + 4.0 * a * t)) / (2.0 * a)
+
 
 # How far a capture may stray from the exact background before a pixel stops
 # counting as background, and how far the blue lead may stray from its nominal 3.
 # Both are empirical: they describe what the screen-capture path does to a value,
 # not what the shader writes, which is why they are numbers here rather than
-# derived from BACKGROUND the way the centres are.
+# derived from BACKGROUND_BYTES the way the centres are.
 BG_WINDOW = 2
 LEAD_WINDOW = 1
 
-# The colour-ray guard. See `ray_deviation` for what it tests and why the shade
-# count it replaced stopped working.
+# The colour guard. See `ray_deviation` for what it tests and why the shade count
+# it replaced stopped working.
 #
-# Both numbers are measured rather than chosen, from a REAPER capture at
-# 2018x1778 and a quality-60 JPEG of that same file, read after `to_srgb`:
+# **Re-derived for #60 rather than carried forward.** The pre-#60 pair was 0.0074%
+# lossless against 23.7% at quality 60, measured against a straight ray; the
+# picture is a curve now and every number below comes from two fresh REAPER
+# captures at 1920x1080, a 100 Hz sine at 0.5 and a level-2.000 sine, each read
+# after `to_srgb`:
 #
-#                       lossless      JPEG q60
-#   off the ray at 1     0.9446%      98.7932%
-#   off the ray at 2     0.0074%      23.7258%
-#   off the ray at 3     0.0072%      19.5761%
-#   max deviation           8.64        170.73
+#                      sine 0.5    level 2.000
+#   lossless             0.02%         0.02%
+#   JPEG q95            22.19%        34.39%
+#   JPEG q80            30.35%        43.70%
+#   JPEG q60            28.34%        41.96%
 #
-# **A tolerance of 1 is what makes 2 a floor rather than a preference**: it puts
-# a good capture at 0.94%, above the threshold below, so it would refuse the very
-# picture this tool exists to measure. 2 is the tightest that does not, and 3 buys
-# nothing. The threshold then sits 67x above a good capture and 47x below a
-# recompressed one, which is room enough that neither has to be re-measured for a
-# different editor size.
+# Three orders of magnitude, which is the same margin the ray had and is what
+# makes the threshold need no calibration against the machine it runs on: it sits
+# 25x above a good capture and 1100x below a recompressed one.
+#
+# **A tolerance of 1 is what makes 2 a floor rather than a preference**, and the
+# curve tightened that argument rather than loosening it. At 1 a good capture reads
+# 2.01% and 3.49%, both above the threshold, so it would refuse the very pictures
+# this tool exists to measure; at 2 the same captures read 0.019% and 0.021%. Three
+# and four buy 0.005 of a percentage point between them.
 RAY_TOLERANCE = 2
 MAX_OFF_RAY = 0.005
 
-# Measured on the same capture, and it earns its place: dropping the exclusion
-# entirely takes a good picture from 0.0074% off the ray to 0.1161% and its max
-# deviation from 8.64 to 110.89, because a clipped green sits under red and blue
-# that are still climbing. Where exactly the cut falls does not matter, which is
-# the useful part: 240, 250 and 254 give identical results, since the population
-# it removes is at 255 exactly. 3774 pixels of that capture were excluded.
+# The exclusion is nearly inert today and is kept for when it is not.
+#
+# **Measured before #60 it removed 3774 pixels of a capture; measured after, two.**
+# The premise has not changed — the dominant channel saturates first and a
+# saturated pixel carries no usable `t`, because the others keep climbing behind
+# one that cannot — but almost nothing now reaches the white point, so there is
+# almost nothing to exclude. That is a fact about `white_headroom` being
+# provisional rather than about this constant: #58 widens the dwell range, the
+# headroom is re-judged against it, and pixels start saturating again.
 SATURATED = 250
+
+# The energy at which a pixel counts as lit, and the reason `--threshold` is
+# derived rather than defaulted to a byte.
+#
+# **A fixed byte would have doubled the persistence envelope this tool reports
+# without saying so.** Before #60 the resolve was linear, so the old default of 64
+# meant an energy of 0.231, about thirteen frames of trail at a decay of 0.9.
+# Under the sRGB toe and the tonemap the same byte is an energy of 0.052, about
+# twenty-eight frames: the same number, a different measurement, and nothing in
+# the output would have marked the change. Stating the energy and computing the
+# byte is what keeps a capture comparable with #38's tables.
+LIT_ENERGY = 0.231
+
+
+def lit_threshold(tint):
+    """The dominant channel's byte at which a pixel counts as lit."""
+    white = WHITE_HEADROOM / max(1.0 - DECAY, 1e-6)
+    e = LIT_ENERGY
+    t = min(e * (1.0 + e / (white * white)) / (1.0 + e), 1.0)
+    return round(float(srgb_encode(palette(tint, t, dominant(tint)))) * 255.0)
 
 
 def open_image(path):
@@ -203,9 +356,9 @@ def find_drawable(rgb):
     # their declarations say so. Do not tighten them to zero on the strength of
     # the word "exactly" anywhere else in this file.
     #
-    # The centres come from BACKGROUND rather than being written out, so the one
-    # place this file states the background is the one the constants test checks.
-    # Only the windows either side are this function's own.
+    # The centres come from BACKGROUND_BYTES rather than being written out, so the
+    # one place this file states the background is the one the constants test
+    # checks. Only the windows either side are this function's own.
     want = [round(c) for c in BG8]
     lead = want[2] - want[0]
     bg = (
@@ -221,15 +374,32 @@ def find_drawable(rgb):
     return int(cols.min()), int(rows.min()), int(cols.max()) + 1, int(rows.max()) + 1
 
 
-def ray_deviation(rgb):
+def ray_deviation(rgb, tint):
     """How far each unsaturated pixel sits from the colour this shader can produce.
 
-    Everything the renderer puts on the drawable is `background + c * beam` for
-    some `c >= 0`. Every deposit is the same colour and the decay multiplies the
-    whole vector, so accumulated energy is always a scalar multiple of one ray
-    through colour space. Green is the channel the beam drives hardest, so it
-    gives the best-conditioned estimate of `c`, and red and blue then follow
-    exactly rather than approximately.
+    Everything the renderer puts on the drawable is one gradient's value at some
+    tonemapped `t`, so the whole picture lies on a one-dimensional curve through
+    colour space. The gradient's dominant channel is an exact affine function of
+    `t`, so it inverts the curve, and the other two then follow exactly rather
+    than approximately.
+
+    **#60 bent the ray into a curve and the guard kept its shape**, which is worth
+    stating because the premise it replaced sounded just as solid. Before, every
+    deposit was one colour and the decay multiplied the whole vector, so a lit
+    pixel was `background + c * beam` and the population was a straight ray.
+    Now the beam deposits a scalar and the colour comes from a lookup that runs
+    toward white, so the population is a curve. Both are one-dimensional, which is
+    all this check ever needed: a capture that has been resampled or recompressed
+    leaves the manifold whatever its shape, because chroma subsampling puts one
+    channel where its partners are not.
+
+    Two things follow, and neither is optional. The capture is **decoded to linear
+    before inverting**, because the drawable is `BGRA8Unorm_sRGB` and a screenshot
+    therefore holds the curve's image under a non-linear map. And the prediction is
+    **encoded back before comparing**, so the deviation stays in the 8-bit levels
+    the tolerance is stated in; comparing decoded values would put the tolerance in
+    linear units, where one level is 3.0e-4 near black and 0.009 near white, and a
+    single number could not mean anything in both places.
 
     **This replaces a count of distinct green levels, whose premise #55 ended.**
     That guard refused any capture holding more than 32 shades, on the stated
@@ -250,21 +420,29 @@ def ray_deviation(rgb):
     ray when either channel is, and the count separately because a fraction of
     nothing has to be reported as such rather than as zero.
     """
-    r, g, b = (rgb[:, :, i].astype(np.float32) for i in range(3))
+    channels = [rgb[:, :, i].astype(np.float64) for i in range(3)]
+    lead = dominant(tint)
 
-    # Green clips first, at c = 0.98, and a clipped pixel carries no usable c:
-    # red and blue keep climbing behind a green that cannot. Excluded rather than
-    # tolerated, since the beam crossing its own path is exactly where the trace
-    # is brightest and most worth measuring.
-    usable = g < SATURATED
+    # The dominant channel saturates first, and a saturated pixel carries no
+    # usable `t`: the others keep climbing behind one that cannot. Excluded rather
+    # than tolerated, since the beam dwelling on a pixel is exactly where the
+    # picture is brightest and most worth measuring.
+    usable = channels[lead] < SATURATED
     examined = int(usable.sum())
     if examined == 0:
-        return np.empty(0, dtype=np.float32), 0
+        return np.empty(0, dtype=np.float64), 0
 
-    energy = (g - BG8[1]) / BEAM8[1]
-    from_red = np.abs(r - (BG8[0] + BEAM8[0] * energy))
-    from_blue = np.abs(b - (BG8[2] + BEAM8[2] * energy))
-    return np.maximum(from_red, from_blue)[usable], examined
+    t = tonemapped_from_dominant(tint, channels[lead])
+
+    worst = None
+    for c in range(3):
+        if c == lead:
+            continue
+        want = srgb_encode(palette(tint, t, c)) * 255.0
+        distance = np.abs(channels[c] - want)
+        worst = distance if worst is None else np.maximum(worst, distance)
+
+    return worst[usable], examined
 
 
 def off_ray(deviation, examined):
@@ -317,12 +495,14 @@ def explain_ray(deviation, examined):
     print(f"  refusing above {MAX_OFF_RAY:.4%}")
 
 
-def lit_rows(img, threshold):
+def lit_rows(img, threshold, channel):
     """Topmost and bottommost lit row per column, or -1 where the column is dark."""
-    # The trace is green on a near-black background, so the green channel alone
-    # separates them; using luminance would also catch the background's blue.
-    green = np.asarray(img.convert("RGB"), dtype=np.int16)[:, :, 1]
-    lit = green > threshold
+    # The palette's dominant channel, which is an affine function of the tonemapped
+    # value and therefore the trace's own readout. Luminance would also catch the
+    # background's blue, and any other channel washes out at the low end where the
+    # tint is weakest.
+    lead = np.asarray(img.convert("RGB"), dtype=np.int16)[:, :, channel]
+    lit = lead > threshold
     any_lit = lit.any(axis=0)
     top = np.where(any_lit, lit.argmax(axis=0), -1)
     bottom = np.where(any_lit, lit.shape[0] - 1 - lit[::-1].argmax(axis=0), -1)
@@ -338,7 +518,22 @@ def implied_sample(row, height):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("image")
-    ap.add_argument("--threshold", type=int, default=64, help="green level counted as lit")
+    ap.add_argument(
+        "--palette",
+        type=int,
+        default=0,
+        choices=range(len(TINTS)),
+        help="which gradient the shader's palette_row selects: 0 green, 1 amber, 2 blue, 3 neutral",
+    )
+    ap.add_argument(
+        "--threshold",
+        type=int,
+        default=None,
+        help=(
+            "level of the palette's dominant channel counted as lit; "
+            f"default is derived from an energy of {LIT_ENERGY} deposits"
+        ),
+    )
     ap.add_argument("--periods", action="store_true", help="also count periods")
     ap.add_argument(
         "--no-crop", action="store_true", help="the image is already exactly the drawable"
@@ -386,12 +581,16 @@ def main():
 
     width, height = img.size
 
+    tint = TINTS[args.palette]
+    lead = dominant(tint)
+    threshold = args.threshold if args.threshold is not None else lit_threshold(tint)
+
     # Refusing is right when the picture cannot have come from this shader: a
     # plausible wrong answer is worse than none, and the case that produced this
     # guard reported a railed trace for a signal at full scale.
     drawable = np.asarray(img.convert("RGB"), dtype=np.int16)
-    shades = len(np.unique(drawable[:, :, 1]))
-    deviation, examined = ray_deviation(drawable)
+    shades = len(np.unique(drawable[:, :, lead]))
+    deviation, examined = ray_deviation(drawable, tint)
     fraction = off_ray(deviation, examined)
 
     # No unsaturated pixel means no usable estimate of the beam's scalar anywhere,
@@ -414,12 +613,11 @@ def main():
         return 1
 
     if fraction > MAX_OFF_RAY and not args.measure_anyway:
-        # `:.2f` rather than `:g`, which would print the beam as (0.3, 1, 0.45)
-        # and make it harder to recognise as the shader's own literal.
-        beam = ", ".join(f"{c:.2f}" for c in BEAM)
+        named = ("green", "amber", "storage-tube blue", "neutral")[args.palette]
         print(f"{fraction:.1%} of the drawable's unsaturated pixels are colours this shader")
         print("cannot produce.")
-        print(f"It writes background + a * ({beam}), so red and blue follow green exactly.")
+        print(f"It looks every colour up in one {named} gradient, so the other two channels")
+        print("follow the brightest one exactly.")
         print("A resampled or recompressed capture breaks that and moves every number below.")
         print("Recapture with:  screencapture -o -x -t png -W shot.png")
         print("  -o drops the window shadow, which otherwise confuses the crop")
@@ -433,7 +631,7 @@ def main():
             explain_ray(deviation, examined)
         return 1
 
-    top, bottom, any_lit = lit_rows(img, args.threshold)
+    top, bottom, any_lit = lit_rows(img, threshold, lead)
 
     if not any_lit.any():
         print("no lit pixels found: wrong region, or the capture is of a covered window")
@@ -451,8 +649,16 @@ def main():
     # number every pre-#55 measurement was taken under, so anyone holding #38's
     # tables can see at a glance which regime a capture is in, and it is the tell
     # for whether a trail is lit at all.
-    print(f"green levels     {shades}")
-    print(f"off the ray      {fraction:.2%} of {examined} unsaturated pixels")
+    #
+    # **It no longer distinguishes a trail from its absence and is kept anyway.**
+    # Before #60 the picture held two levels of one colour; now a gradient puts
+    # dozens of levels in a single frame whether or not anything is fading. The
+    # trail message below therefore reads the *rows* instead. Two numbers that used
+    # to be one.
+    named = ("green", "amber", "storage-tube blue", "neutral")[args.palette]
+    print(f"palette          {named}, reading channel {'rgb'[lead]} above {threshold}")
+    print(f"{'rgb'[lead]} levels        {shades}")
+    print(f"off the curve    {fraction:.2%} of {examined} unsaturated pixels")
     print()
     print(
         f"highest peak     row {peak_top:<6} implies sample {implied_sample(peak_top, height):+.4f}"
@@ -468,13 +674,32 @@ def main():
     plateau = int((top == peak_top).sum())
     print(f"plateau width    {plateau} columns at the highest row")
 
+    # What the brightest pixel implies about the energy behind it, which is the
+    # number retuning the curve is done against. `inf` where the tonemap has
+    # saturated, which is the brightness axis's own rail: at or above the white
+    # point the curve has stopped distinguishing and the honest answer is that the
+    # amount is unknowable, exactly as it is for a trace sitting on `RAIL`.
+    peak_lead = int(np.asarray(img.convert("RGB"), dtype=np.int16)[:, :, lead].max())
+    peak_t = float(tonemapped_from_dominant(tint, peak_lead))
+    peak_energy = energy_from_tonemapped(peak_t)
+    if np.isfinite(peak_energy):
+        print(
+            f"brightest pixel  {'rgb'[lead]}={peak_lead}, t={peak_t:.4f}, {peak_energy:.2f} deposits"
+        )
+    else:
+        print(f"brightest pixel  {'rgb'[lead]}={peak_lead}, at or above the white point")
+
     # Persistence changes what a peak row means, and nothing about the picture
-    # says so. Two green levels is a trace with no trail, where every lit pixel
-    # belongs to this frame; more than two means a fade is present, and the
-    # topmost lit pixel in a column then belongs to whichever recent frame put
-    # the beam highest. The measurement is unchanged and its meaning is not,
-    # which is a fact about #55 rather than a defect here (#64).
-    if shades > 2:
+    # says so. A column whose lit span is deeper than a couple of pixels is showing
+    # a fade rather than this frame's sample, and the topmost lit pixel then
+    # belongs to whichever recent frame put the beam highest. The measurement is
+    # unchanged and its meaning is not, which is a fact about #55 rather than a
+    # defect here (#64).
+    #
+    # Read off the rows since #60, because the level count this used to test can no
+    # longer tell a trail from a gradient.
+    spans = bottom[any_lit] - top[any_lit]
+    if spans.size and float(np.median(spans)) > 2.0:
         print()
         print("a trail is lit, so the rows above are the envelope over the persistence")
         print("window rather than this frame's sample")

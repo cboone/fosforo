@@ -342,12 +342,11 @@ pub const ShaderStats = struct {
 /// is the third way it breaks: two branches each appending an operation both leave
 /// the opening line untouched, and neither diff shows it.
 ///
-/// `liveWindowBuffers` and `liveAccumulationTextures` are the seventh and
-/// eighth, and are the same kind of thing as `probe`: questions about the
-/// backend rather than instructions to it. Both exist because the leak check
-/// was measured and cannot see the resource in question, while it catches a
-/// leaked command queue in the same run, so the backend has to answer for those
-/// two itself.
+/// `liveWindowBuffers` and `liveTextures` are the seventh and eighth, and are the
+/// same kind of thing as `probe`: questions about the backend rather than
+/// instructions to it. Both exist because the leak check was measured and cannot
+/// see the resource in question, while it catches a leaked command queue in the
+/// same run, so the backend has to answer for those two itself.
 ///
 /// They are two operations rather than one because they count different things
 /// and were measured separately, which is the rule ADR 0013 set after the first
@@ -355,6 +354,17 @@ pub const ShaderStats = struct {
 /// anything is assumed about it. The second measurement found a worse answer
 /// than the first, since peak RSS catches a leaked window buffer and does not
 /// move at all for a leaked texture.
+///
+/// **The rule is about measuring separately, not about counting separately**, and
+/// #60 is where that distinction was worth having. Its palette lookup is a third
+/// resource and a second kind of texture — sixteen kilobytes in shared storage
+/// rather than megabytes in private — so it got its own planted leak, and the
+/// answer came back the same: forty cycles leaking one apiece moved the `leaks`
+/// byte total from 12,544 to 12,544, against the 640 KiB a visible leak would have
+/// added. Same instrument, same blindness, so it joined this counter and the
+/// operation was *renamed* from `liveAccumulationTextures` rather than a ninth
+/// being added. A count that answers "did any texture leak" is the whole of what
+/// anything asserts on.
 ///
 /// `probe` is the sixth, and it has one caller: `src/smoke.zig`. It does
 /// everything `init` does except attach a surface, which makes it the half of
@@ -437,7 +447,7 @@ comptime {
     // `[thread-safe]`, and a plain count because that is all a caller can do
     // anything with: naming what is being counted would name a Metal type.
     assertSignature("liveWindowBuffers", @TypeOf(Renderer.liveWindowBuffers), fn () usize);
-    assertSignature("liveAccumulationTextures", @TypeOf(Renderer.liveAccumulationTextures), fn () usize);
+    assertSignature("liveTextures", @TypeOf(Renderer.liveTextures), fn () usize);
     // The eleventh, `[thread-safe]`, and the same kind of thing as the two above: a
     // question about the backend rather than an instruction to it. It exists
     // because hot reload is otherwise unobservable from outside the picture, and

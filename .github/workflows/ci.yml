@@ -134,7 +134,7 @@ jobs:
   #   appkit  needs a window server as well. Required too, since #72: 65 runs
   #           answered whether a hosted runner grants one to an unbundled
   #           process, and this half carries the only assertion anywhere on
-  #           `liveAccumulationTextures`.
+  #           `liveTextures`.
   #   leaks   the same window server, plus `leaks`. Still `continue-on-error`,
   #           and that asymmetry is the argument rather than a leftover.
   #
@@ -213,10 +213,22 @@ jobs:
   #
   # **Every number the step printed is identical to the development machine's**,
   # on different silicon: row 269 for silence, row 26 for full scale, rail on row
-  # 5, twenty periods from twenty cycles, a beam ray of 0.2998 and 0.4500 with
-  # 0.00000 worst deviation, and one deposit peaking at exactly 1.0000. That last
-  # one is the interesting one, since it means the diamond-exit finding recorded in
-  # ADR 0013 holds on more than one GPU.
+  # 5, twenty periods from twenty cycles, four channels agreeing to 0.00000 at
+  # every lit pixel, and one deposit peaking at exactly 1.0000. That last one is
+  # the interesting one, since it means the diamond-exit finding recorded in ADR
+  # 0013 holds on more than one GPU.
+  #
+  # **#60 replaced what this half asserts about colour, and the replacement is
+  # recorded rather than the old numbers being quietly dropped.** Those were a
+  # *ray* through colour space, 0.2998 and 0.4500, emitted by
+  # `checkBeamIsOneColour`. The deposit carries no colour at all now, so
+  # `checkDepositIsScalar` reports the four channels' agreement instead and
+  # nothing emits a ray under any name. The resolve figures are what took their
+  # place, and they match across machines too: 2412 lit pixels with the worst
+  # channel off by 0, one deposit reading RGB(75, 189, 96), and thirty deposits
+  # reaching RGB(255, 255, 255) against a white point of 8.000. Re-measured on
+  # run 33446784490 rather than carried forward, which is the one kind of change
+  # a recorded measurement cannot survive being left alone through.
   #
   # [#69]: https://github.com/cboone/fosforo/issues/69
   #
@@ -244,7 +256,7 @@ jobs:
   # **Required here means the job goes red, not that a merge is blocked.** `main`
   # declares no required status checks, so what changes is that a failure is
   # visible as one. That is enough, because of what this half carries:
-  # `liveAccumulationTextures` is asserted here and nowhere else, and #55
+  # `liveTextures` is asserted here and nowhere else, and #55
   # established that a leaked `MTLTexture` is invisible to `leaks` and to peak
   # RSS both, so the project's only instrument for its largest resource was
   # reporting through a step that could not go red.

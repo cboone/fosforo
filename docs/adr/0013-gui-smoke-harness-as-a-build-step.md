@@ -130,7 +130,7 @@ The rule this document set under #38 is that a Metal resource which is not a buf
 
 **Peak RSS is also blind, which does not follow from the buffer case and is the finding worth recording.** A leaked `MTLBuffer` moved peak RSS from 47.7 MB to 57.7 MB and was catchable that way, so a leaked texture was expected to be far more visible still, at 33 to 59 MB per cycle rather than 96 KiB. It does not move it at all: 44.3 MB against 44.1 MB clean at 40 cycles, while leaking nearly two gigabytes. Shared storage is in the process's resident set and `MTLStorageModePrivate` is not.
 
-So `gpu.Renderer.liveAccumulationTextures` is not the better of two instruments in the way `liveWindowBuffers` is. It is the only one, and the seam grew an eighth operation to carry it.
+So `gpu.Renderer.liveTextures` — `liveAccumulationTextures` until #60 renamed it — is not the better of two instruments in the way `liveWindowBuffers` is. It is the only one, and the seam grew an eighth operation to carry it.
 
 **What the counter catches and what it does not, both planted.** It catches an allocation never handed back: removing the release from `replaceAccumulation` fails `smoke-appkit` with 20 textures outstanding across 10 cycles. It does not catch a `releaseAccumulation` that stops sending `release`, because the count returns either way, and that hole is worse here than for the window buffers precisely because RSS backstops that one and backstops nothing for this.
 
@@ -211,7 +211,7 @@ What replaces the checkbox is instrumentation rather than patience. `Report what
 
 `smoke-leaks` keeps `continue-on-error`. That is not caution left over from the AppKit half. The reason #63 gave for it, that the leak step *is* the AppKit half with an instrument wrapped around it and therefore inherits its dependency on the runner, has stopped applying now that the dependency is settled. A different and better reason has taken its place.
 
-**`smoke-appkit` can only fail on its own assertions plus one runner capability.** `framesPresented`, `windowsUploaded`, `liveWindowBuffers`, `liveAccumulationTextures`, and the window-server connection that 65 runs have now answered. Every one of those is a fact about this repository.
+**`smoke-appkit` can only fail on its own assertions plus one runner capability.** `framesPresented`, `windowsUploaded`, `liveWindowBuffers`, `liveTextures`, and the window-server connection that 65 runs have now answered. Every one of those is a fact about this repository.
 
 **`smoke-leaks` additionally judges the runner's own AppKit chatter.** `scripts/smoke-leak-check` matches leaked classes against `^(NSView|CALayer|CAMetalLayer|IOSurface|IOGPU|_?MTL|AGX)`, and several of those prefixes name classes that AppKit, CoreAnimation and the window server allocate on their own account. An `IOSurface` or an `NSView` leaked by a framework, for reasons that have nothing to do with this project, fails that step, and nothing in this repository would be wrong. That is the Consequences sentence above, exactly and specifically, and it applies to the leak step and not to the AppKit one.
 
@@ -221,7 +221,7 @@ The byte total tells the same story from the other side, and the figure quoted u
 
 `main` declares no required status checks and no ruleset that references a check name. Dropping `continue-on-error` therefore changes exactly one thing: a failing AppKit half turns the `smoke` job red instead of leaving a green job with a `::notice::` nobody reads. No ruleset is being changed and none is needed for this to be worth doing.
 
-That is enough because of what the step carries. #55 established that a leaked `MTLTexture` is invisible to `leaks` and to peak RSS both, so `liveAccumulationTextures` is not the better of two instruments, it is the only one, and it is asserted in `smoke-appkit` and nowhere else. #63 then refused the peak-RSS slope partly on the grounds that the counters already catch what it would, which is an argument that leans on the counters being load-bearing. A load-bearing check that cannot go red is a silent failure reported by a silent step.
+That is enough because of what the step carries. #55 established that a leaked `MTLTexture` is invisible to `leaks` and to peak RSS both, so `liveTextures` is not the better of two instruments, it is the only one, and it is asserted in `smoke-appkit` and nowhere else. #63 then refused the peak-RSS slope partly on the grounds that the counters already catch what it would, which is an argument that leans on the counters being load-bearing. A load-bearing check that cannot go red is a silent failure reported by a silent step.
 
 **The cost is real and is being accepted rather than argued away.** A runner image that stops granting a window server turns this job red on every push until someone reverts the flag, and it does so at the worst moment, when nobody is expecting it. The revert is one line, the notice now names the image that caused it, and the alternative was an instrument nobody is obliged to read.
 
@@ -267,7 +267,7 @@ Shader hot-reload ([ADR 0009](./0009-runtime-shader-compilation.md)) is the firs
 
 `hotReloadPhase` runs once, before the cycle loop, rather than inside `oneCycle`. Two independent reasons and both had to be measured.
 
-A cycle in `oneCycle` lasts about as long as one 250 ms poll interval, so a watcher started on its first frame is joined before it ever looks twice: the arms simply cannot run inside one. And running it per cycle would cost `smoke-leaks -Dleak-cycles=400` twenty minutes and 1,200 out-of-process compiles for no coverage the single phase does not already give. Sitting before the loop also puts it inside the existing `liveWindowBuffers() == 0` and `liveAccumulationTextures() == 0` assertions for free.
+A cycle in `oneCycle` lasts about as long as one 250 ms poll interval, so a watcher started on its first frame is joined before it ever looks twice: the arms simply cannot run inside one. And running it per cycle would cost `smoke-leaks -Dleak-cycles=400` twenty minutes and 1,200 out-of-process compiles for no coverage the single phase does not already give. Sitting before the loop also puts it inside the existing `liveWindowBuffers() == 0` and `liveTextures() == 0` assertions for free.
 
 ### The arm that is not a repeat of the one before it
 
@@ -307,3 +307,21 @@ What survives is the rule this document already states, arriving from a third di
 **The obligation this creates for a merge is worth naming.** A number measured on a branch is a number measured against that branch's harness, and #51 and #72 both changed this one underneath. Re-measuring after the merge is not diligence, it is the only way the figure means anything.
 
 `smoke-appkit` measures 4.4 s and `smoke-leaks -Dleak-cycles=40` 15.6 s against a documented 13 s. Both sit far inside ceilings set at roughly 4x the slowest observed run, so no `timeout-minutes` changed.
+
+## Amended by issue #60: the prediction under #51 held, and the counting rule needed a distinction
+
+### The picture was the only half that changed, exactly as predicted
+
+The #51 amendment above said "the geometry assertions read the *accumulation* rather than the picture precisely because #60 rewrites only the latter". That turned out to be exactly right, and it is worth recording as a hit rather than leaving it as a claim: of the nine cases in the trace half, **seven were untouched** by a change that replaced the resolve outright, moved the drawable to a different pixel format, and deleted the trace's colour. `checkDecay` in particular would have been destroyed had it read the picture, since the sRGB curve does not preserve a ratio.
+
+Two cases changed and one is new. `checkResolve` keeps its whole-image loop and swaps its model, and now predicts **all three channels from one number**, which is stronger than the per-channel comparison it replaces: it asserts the picture's chroma follows from the intensity, which is the palette's whole claim. `checkBeamIsOneColour` became `checkDepositIsScalar`, because its ray premise died with the deposit's colour while its loop remained the only thing anywhere asserting the accumulation's four channels move together. And `checkHotCore` is new, because every other case drives one depositing frame and the feature #60 exists to produce needs about sixteen: without it the hot core would have shipped unexecuted.
+
+### A resource gets its own planted leak; it does not automatically get its own counter
+
+The rule this document set under #55 is that a resource which is not a buffer gets a planted leak **before anything is assumed about it**. #60 added a third resource, a sixteen-kilobyte palette lookup in shared rather than private storage, and the rule was followed: forty cycles leaking one apiece moved the `leaks` byte total from 12,544 to 12,544, against the 640 KiB a visible leak would have added.
+
+**Same instrument, same blindness, so it joined the existing counter rather than getting a ninth seam operation**, and `liveAccumulationTextures` was renamed `liveTextures`. The distinction worth carrying is that the rule is about *measuring* separately, not about *counting* separately: what a caller asserts is that no texture leaked, and one number answers that. The rename was not cosmetic — with the old wording a leaked palette reported "7 accumulation textures were never released", which sends the reader to the wrong file. Confirmed by planting again after the rename: `error.TexturesLeaked`.
+
+### What the harness still cannot see, and #60 sharpened it
+
+The offscreen path reads `getBytes:` off a texture and never involves CoreAnimation. So `smoke-trace` settles what the *hardware* does — it read `RGBA(5, 5, 8, 255)` for a background written as `float3(5, 5, 8) / (255 * 12.92)`, which is only true if the render-output stage encoded on write and `getBytes:` decoded nothing — and it says nothing whatever about what the **compositor** does with a `_sRGB` layer whose colorspace is nil. A screenshot of a running host is the only instrument for that, which is this document's position restated one layer up: the thing the harness cannot see is still the picture, and it is now the picture *on a screen* rather than the picture at all.

@@ -37,11 +37,19 @@ pub const Image = struct {
 
     /// The green channel, which is where a trace is read.
     ///
-    /// Green rather than luminance, and that is not an aesthetic choice: the
-    /// background has more blue than green, so a luminance threshold would find
-    /// the background lit everywhere. It is also why `trace_fragment`'s
-    /// provisional colour is green-dominant and why #60 ends this convention
-    /// along with the colour.
+    /// **#60 was expected to end this convention and did not**, which is worth
+    /// stating because the reason it survived is now a constraint rather than an
+    /// accident. This reads the *accumulation*, and since #60 the deposit is a
+    /// scalar carried in all four channels, so green is the energy and any other
+    /// channel would do; `checkDepositIsScalar` in `src/smoke.zig` is what keeps
+    /// that true. On the *picture* side the same name still works for a different
+    /// reason: every gradient in `src/gpu/palette.zig` has its largest tint
+    /// component at exactly 1.0, so that channel stays an affine readout of the
+    /// tonemapped value.
+    ///
+    /// Green rather than luminance was never an aesthetic choice and still is
+    /// not: the background has more blue than green, so a luminance threshold
+    /// would find the background lit everywhere.
     pub fn green(self: Image, x: usize, y: usize) f32 {
         return self.pixels[(y * self.width + x) * 4 + 1];
     }
@@ -287,6 +295,44 @@ pub fn plateauWidth(image: Image, threshold: f32) usize {
 }
 
 // ---------------------------------------------------------------------------
+// Where the picture is brightest
+// ---------------------------------------------------------------------------
+
+pub const Point = struct { x: usize, y: usize };
+
+/// Where the brightest pixel of one channel is, or nothing when the image is
+/// dark.
+///
+/// `maxChannel` answers how bright and this answers where, which is what a check
+/// on the resolved picture needs: the picture is bytes and the energy is floats,
+/// so the only way to read the two at one point is to find the point first.
+///
+/// The comparison is strictly against zero rather than seeded from the first
+/// pixel, which is what makes the null real: this reads the *accumulation*,
+/// where an undeposited pixel holds exactly zero, so a cleared surface has no
+/// brightest pixel rather than an arbitrary one. Seeding from the first pixel
+/// returns `(0, 0)` for a blank image, and `checkHotCore`'s `TraceNotDrawn` then
+/// never fires and the case reports itself as a dim trace instead.
+pub fn peakPixel(image: Image, c: usize) ?Point {
+    var found: ?Point = null;
+    var peak: f32 = 0;
+
+    var y: usize = 0;
+    while (y < image.height) : (y += 1) {
+        var x: usize = 0;
+        while (x < image.width) : (x += 1) {
+            const value = image.channel(x, y, c);
+            if (value > peak) {
+                peak = value;
+                found = .{ .x = x, .y = y };
+            }
+        }
+    }
+
+    return found;
+}
+
+// ---------------------------------------------------------------------------
 // Windows
 // ---------------------------------------------------------------------------
 
@@ -456,6 +502,7 @@ test "a dark image yields nothing rather than a guess" {
     try testing.expectEqual(@as(usize, 0), periods(image, 0.5));
     try testing.expectEqual(@as(usize, 0), plateauWidth(image, 0.5));
     try testing.expectEqual(@as(f32, 0), maxChannel(image, 1));
+    try testing.expectEqual(@as(?Point, null), peakPixel(image, 1));
 }
 
 test "an image shorter than its declared geometry is reported as incomplete" {
@@ -596,6 +643,11 @@ test "a lit span and a peak channel are read off the same image" {
     // Unclipped, which is what makes the decay ratio measurable at all.
     try testing.expectEqual(@as(f32, 2.5), maxChannel(image, 1));
     try testing.expectEqual(@as(f32, 0.0), maxChannel(image, 0));
+
+    // The brighter of the two, not the first one found: the dim pixel is earlier
+    // in scan order, so a search seeded from whatever it saw first reports it.
+    try testing.expectEqual(Point{ .x = 40, .y = 7 }, peakPixel(image, 1).?);
+    try testing.expectEqual(@as(?Point, null), peakPixel(image, 0));
 }
 
 test "a sine window holds whole cycles across the drawn span" {

@@ -27,3 +27,13 @@ The concrete consequences:
 - **Tonemapping with an emergent hot core.** Compressing unbounded linear energy through a curve and mapping through a palette running toward white produces a white-hot core inside a colored bloom wherever the beam dwelt, without ever drawing a core explicitly. This is the single most recognizable feature of a good scope render, and it emerges from accumulation plus tonemap rather than being authored.
 
 An alternative path exists for maximal fidelity: rasterize segments in a compute kernel that atomically adds fixed-point energy into the accumulation buffer, giving exact control over deposition at the cost of hand-written line rasterization. The additive-blend pipeline is chosen because it is simpler and looks excellent; the compute path stays available if the last increment of fidelity is wanted later.
+
+## Amended by issue #60: the tonemap consequence is built
+
+The third pass exists. `resolve_fragment` compresses accumulated energy through extended Reinhard and looks the result up in one of four gradients running to white, into a `BGRA8Unorm_sRGB` drawable so the arithmetic happens in linear light.
+
+**The emergent hot core is real, and it is now executed rather than asserted.** `zig build smoke-trace` drives one deposit and thirty and reads the picture back: `RGB(75, 189, 96)` and `RGB(255, 255, 255)`. Nothing draws a core, exactly as this ADR predicted; what produces it is the top of one monotone ramp being reached only where the beam dwelt.
+
+Two things this ADR did not anticipate, both recorded in [ADR 0019](./0019-brightness-is-a-fixed-transfer-function.md) because they are decisions rather than consequences. The white point has to be **derived from the decay** or the look tracks the refresh rate once decay becomes a function of elapsed time. And plain Reinhard cannot produce the feature at all: the attainable energy domain is bounded by the dwell asymptote, and plain Reinhard needs an energy seventeen times that to reach white, so the core would be pale green forever.
+
+**One honest caveat about what is visible today.** Steps 4, 5 and 6 of the build plan's phase 3 are not built, so the only source of energy variation is persistence at pixels the beam revisits. That is enough — a stationary trace goes white and a moving one stays tinted — but the velocity weighting this ADR calls "the single relationship" that produces the characteristic look is still ahead, and the core it will produce is a different and sharper thing than the one dwell alone produces.

@@ -33,3 +33,11 @@ The decision has to be recorded rather than merely implemented, because the impl
 **A fixed axis has a floor, and it is arithmetic.** One backing pixel of excursion needs a sample of `1 / (trace_full_scale * height / 2)`, which is about -54 dBFS at the default editor on a 2x display and about -42 dBFS at the smallest editor on a 1x one. Below that a signal reads as flat. An auto-ranging display would not have that floor, which is the one genuine thing given up here, and it is given up knowingly: a scope that shows -80 dBFS as a full-height waveform has told a bigger lie than one that shows it as a flat line.
 
 **This is not in tension with [ADR 0007](./0007-renderer-simulates-a-crt.md).** That ADR makes brightness a readout of the signal's statistics, and this one makes displacement a readout of its amplitude. Both say the same thing from different directions: what appears on screen is a measurement rather than a composition. A hardware scope's volts-per-division knob is set by a person and stays where it is put, and nothing about simulating the tube implies simulating an operator who keeps turning it.
+
+## Amended by issue #60: the question was asked, and there is no tension
+
+A tonemap *is* soft compression, and this ADR forbids "any soft compression of the region above full scale". The distinction that saves it is the one this document's own closing paragraph already draws: that clause governs **displacement**, and a tonemap governs **brightness**. They are two axes, and neither derives anything from the signal's own statistics.
+
+Recorded rather than left implicit because the sentence reads like a prohibition on exactly what #60 built, and someone will quote it. [ADR 0019](./0019-brightness-is-a-fixed-transfer-function.md) carries the decision and pre-refuses the thing that *would* breach this one: an exposure or white point derived from the frame's measured peak energy, which is auto-gain on the brightness axis and needs an ADR superseding 0019 to add.
+
+The reasoning transfers in the other direction too, which is the part worth having. #60's white point is the brightness axis's **rail**: above it the display says "at or above" and refuses to say how far, which is this ADR's own criterion for `trace_rail`. `scripts/measure-trace` reports the two the same way.
