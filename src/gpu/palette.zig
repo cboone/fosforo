@@ -319,6 +319,16 @@ pub const decay_per_frame: f32 = 0.90;
 /// exactly at `e = w` while the steady state is only approached, so a white point
 /// set at the asymptote itself would never arrive: the core would be pale green
 /// forever. At 0.8 a dwelt pixel goes white after sixteen frames.
+///
+/// **Provisional, and #58 settles it rather than a tuning session.** Measured in
+/// REAPER against a 100 Hz sine: the picture peaked at 2.2 and 3.0 deposits on
+/// two successive frames, against roughly 1 for a fast crossing. **No white point
+/// can carve a visible core out of a 2:1 range** — set it high and nothing reaches
+/// white, set it low and everything does, and dropping this to 0.2 moved fifty
+/// pixels of thirty-two thousand. Velocity weighting widens that ratio by an order
+/// of magnitude, at which point there is a range to map. The value here is what
+/// the paragraph above argues for on its own terms; it is not tuned to a picture,
+/// because the picture cannot yet distinguish one value from another.
 pub const white_headroom: f32 = 0.8;
 
 /// The gradient `shaders/scope.metal` selects, restated for the same reason

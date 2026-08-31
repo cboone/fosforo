@@ -23,7 +23,7 @@
 // that factor is a constant until #56 measures elapsed time, and `trace_fragment`
 // still draws a line strip until #57 makes it geometry. The resolve is done:
 // #60 put a tonemap and a palette lookup there, and there is no colour left in
-// this file — the gradients are built in `src/gpu/measure.zig` and uploaded, so
+// this file — the gradients are built in `src/gpu/palette.zig` and uploaded, so
 // the GPU and the model that checks it read one table rather than two copies of
 // one formula.
 
@@ -44,6 +44,22 @@ using namespace metal;
 // itself would never arrive and the core would stay pale green. At 0.8 a dwelt
 // pixel goes white after sixteen frames.
 //
+// **Provisional at 0.8, and #58 is what settles it.** Measured in REAPER against
+// a 100 Hz sine: the picture peaked at 2.2 and 3.0 deposits on two successive
+// frames, against roughly 1 for a fast crossing. **No white point can carve a
+// visible core out of a 2:1 range** — set it high and nothing reaches white, set
+// it low and everything does. Dropping this to 0.2 put white at 2.0 deposits and
+// moved fifty pixels of thirty-two thousand, which is invisible, so the knob has
+// almost no useful travel today. Velocity weighting divides the deposit by
+// segment screen length and widens that ratio by an order of magnitude, at which
+// point a core appears at a sensible white point because there is a range to map.
+// Re-judge this when #58 lands rather than tuning it now; 0.8 is the value the
+// paragraph above argues for on its own terms.
+//
+// The 2.2-against-3.0 swing between frames is worth carrying too: the sweep is
+// free-running, so how hard the beam dwells depends on where the phase happens to
+// land, and phase 4's triggering is what stops that wandering.
+//
 // Editable live: a debug build recompiles this file on save (#61), and this is
 // the number worth turning while looking at a host.
 constant float white_headroom = 0.8;
@@ -53,7 +69,7 @@ constant float white_headroom = 0.8;
 // A literal rather than a uniform because nothing can author or automate a choice
 // until phase 5 gives it a parameter. All four are reachable today by editing this
 // digit and saving, which is what makes them shipped rather than dormant. The
-// gradients themselves are built in `src/gpu/measure.zig` and uploaded, so they
+// gradients themselves are built in `src/gpu/palette.zig` and uploaded, so they
 // are one definition rather than two: the GPU and the model read the same table.
 constant uint palette_row = 0;
 
