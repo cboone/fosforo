@@ -1149,12 +1149,20 @@ fn checkHotCore(energy: []f32, picture: []u8, window: []f32) !void {
 
         // And tinted rather than white, which is the other half of the claim: at
         // one deposit the gradient has barely begun running toward white.
+        //
+        // The gap is taken in `i32` on `checkResolve`'s precedent, and here that
+        // is load-bearing rather than tidy: these are bytes, so the obvious
+        // `got[channel] + 24 > got[lead]` is `u8` arithmetic that overflows at
+        // 232 and above. That is not a corner, it is exactly the near-white
+        // pixel this assertion exists to reject, and it fails in whichever
+        // direction is worse for the build you are in. Debug panics with
+        // `integer overflow` instead of naming the defect; ReleaseFast wraps 278
+        // to 22, compares it against 255, and lets the white trace through.
         for (0..3) |channel| {
             if (channel == lead) continue;
-            if (got[channel] >= got[lead]) return error.MovingTraceNotTinted;
-            if (tint[channel] < 1.0 and got[channel] + 24 > got[lead]) {
-                return error.MovingTraceNotTinted;
-            }
+            const gap = @as(i32, got[lead]) - @as(i32, got[channel]);
+            if (gap <= 0) return error.MovingTraceNotTinted;
+            if (tint[channel] < 1.0 and gap < 24) return error.MovingTraceNotTinted;
         }
     }
 
