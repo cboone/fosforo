@@ -331,12 +331,25 @@ An eighth, `fix:`, for whatever the host session turns up, should be expected ra
 
 **Three findings from writing the code, none of them anticipated.** Zig's `@min` narrows its result type, so `@min(n, palette_entries - 1)` against a comptime 255 infers `u8` and the successor overflows at exactly `t = 1` — the white end every test checks. `srgbEncode(1.0)` is 0.99999994 rather than 1.0, because `1.055 - 0.055` is not exact in f32, so the tests assert the byte. And the neutral gradient is neutral only *above* the background: blue leads red by `(bg_b - bg_r)(1 - t)`, which is not an imperfection but the lead `find_drawable` locates the drawable by, so it has to survive at zero in every gradient.
 
+## What the host session settled
+
+**The compositor check passes**, which was the one assumption nothing automated here could reach. A `clap-host` window, captured with `screencapture` and converted out of the display's Display P3 profile, reads exactly `RGB(5, 5, 8)` at every corner and across **99.9%** of the drawable — the same bytes format 80 put on screen. `find_drawable` located the drawable unaided at `x=0 y=130`, exactly the 130-pixel menu-bar offset, at exactly 1920x1080. The centre line at silence reads `RGB(255, 255, 255)`, because a stationary trace dwells to the white point, and the peak row is 539 implying `+0.0021`, which is the figure #38 measured in REAPER before any of this.
+
+**One correction to an earlier reading in this session.** A first attempt at the same capture returned a 100% black frame and was written up as Screen Recording not being granted to the terminal. It was the display having gone to sleep; capture works. The rule the mistake illustrates is the one this project already keeps — a null result is worthless until the instrument has been shown to be running — and it was applied to the wrong instrument.
+
+**A capture of clap-host is not exactly 0.00% off the curve, and the residue is fully accounted for.** 504 pixels at columns 0 to 11, rows 1045 to 1079, holding neutral greys on a smooth ramp: the window's own rounded bottom corners, inside the drawable's bounding box. That is 0.024% of the drawable against the 0.03% reported, so none of it is the shader. Worth knowing before anyone reads a non-zero figure as a defect.
+
 ## What is not done
 
-**Commit 6 and host verification steps 6 to 8 are outstanding, and both need a display this session could not reach.** `screencapture` from this terminal returns a 100% black frame: Screen Recording is not granted to it, so a capture shows no windows at all. That is an instrument failure and not a result — the "no Fosforo background found" it produced says nothing whatever about the compositor, and reading it as evidence would be exactly the trap this project keeps a rule about.
+**The guard's constants still cannot be re-derived, and the host session established *why* rather than just leaving it outstanding.** `RAY_TOLERANCE`, `MAX_OFF_RAY` and `SATURATED` were measured against a REAPER capture carrying a signal, and the only capture available here is clap-host showing silence, which is 99.9% flat background. Measured on it:
 
-What that leaves unmeasured, precisely:
+| capture                | off the curve |
+| ---------------------- | ------------- |
+| lossless               | 0.03%         |
+| JPEG q95               | 0.04%         |
+| JPEG q80               | 0.51%         |
+| JPEG q60               | crop refuses  |
 
-- **Whether a `_sRGB` layer with a nil colorspace composites the way format 80 did.** `readback` calls `getBytes:` and never involves CoreAnimation, so no automated check here can see it. The argument that it holds is strong — the stored bytes are byte-identical to what was on screen before, Apple documents nil as "already display-ready", and the offscreen half confirmed the hardware half of the chain by reading `RGBA(5, 5, 8, 255)` — but it is an argument. The check is one screenshot of a running host: the background must still read `RGB(5, 5, 8)`. The fallback if it does not is in the findings above and costs one `pow`.
-- **`RAY_TOLERANCE`, `MAX_OFF_RAY` and `SATURATED`**, which were measured against the straight ray and still carry those numbers. The guard was verified structurally on a synthetic pair at 0.00% against 27.6%, which is the same shape of margin as before, but the tables must be *replaced* from a real capture rather than edited.
-- **The look**, which is the thing no automated check can judge. A badly chosen constant is arithmetically correct and passes a model-versus-picture comparison because both sides use it.
+Against the pre-#60 pair of 0.0074% lossless and **23.7%** at q60. The margin collapses because the guard detects resampling by finding chroma off the curve, and a picture with almost no chroma has almost nothing to detect: at q80 a good capture already sits at the threshold. **These numbers are a demonstration that the guard still discriminates, and they are not a calibration.** Replacing the tables needs a capture carrying a real signal, which means REAPER and one of the tone files, and it is the whole of what remains of commit 6.
+
+**The look has not been judged against material.** clap-host feeds silence, so what a host has shown is the background, the geometry and the dwelt end of the range. A moving trace at a normal level, the level sweep that confirms brightness does not track level, and the transition when the transport stops all need REAPER. Nothing automated can catch a badly chosen constant: a white point wrong by a factor of ten is arithmetically correct and passes a model-versus-picture comparison because both sides use it.
