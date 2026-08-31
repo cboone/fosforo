@@ -198,7 +198,9 @@ Row 539 and `+0.0021` are the same figures #38 measured in REAPER and ADR 0019 m
 
 **Take the window by id rather than the screen.** A full-screen capture put `find_drawable`'s bounding box at 2296x1232 against a 1920x1080 drawable, swept in adjacent dark chrome, and was refused at 19.8% off the ray with a median deviation of 0.00 — the crop was wrong, not the picture. `screencapture -o -x -t png -l <window>` fixes it, and the id comes from `CGWindowListCopyWindowInfo`.
 
-**What is left needs hands and is the issue's own acceptance test.** Play `click-2hz.wav`, pin the display to 60 Hz in System Settings and back to 120, and confirm the fade duration does not change. It follows from the two facts above, and this project's standard is to look anyway.
+**The acceptance test passed.** #56's comment states it as a criterion rather than a technique: *"After this issue, the visible fade duration of a `click-2hz.wav` click must be the same at 60 Hz and at 120 Hz. Before it, the 60 Hz fade is twice the 120 Hz one."* Run in REAPER against the installed debug bundle, switching the display between the two rates: **no visible effect on the fade duration.** That is the before-and-after this issue was filed with, and it is now the after.
+
+Worth naming what that adds over the offscreen check, because the two are not the same claim. `checkDecayIsInRealTime` renders a window it supplied itself and hands the renderer synthetic timestamps, so it says everything about the arithmetic and nothing about the audio path, the ring, the display link, or whether a real `CVDisplayLink` at two different rates produces the intervals the arithmetic assumes. The host says exactly that and by eye, which is the half no harness here can reach.
 
 ### Planted defects
 
