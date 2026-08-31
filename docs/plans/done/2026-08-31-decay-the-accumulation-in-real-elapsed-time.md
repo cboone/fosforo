@@ -206,11 +206,11 @@ Worth naming what that adds over the offscreen check, because the two are not th
 
 Committed first, so `git restore` could not revert the fix along with the plant.
 
-| Plant | Caught by | Reading |
-| ----- | --------- | ------- |
-| The decay is per frame again — `frame` ignores its parameter | `checkDecayIsInRealTime` | 0.2813 against 0.5451, the predicted `0.9^12 = 0.2824` |
-| The clock advances at the top of `frame`, above the semaphore wait | `checkHotCore`, `CoreNotWhite` | thirty deposits pile to 29.703 against 9.539 |
-| The clock advances below the semaphore wait but not at the commit | **nothing** | unchanged at 0.5430 |
+| Plant                                                              | Caught by                      | Reading                                                |
+| ------------------------------------------------------------------ | ------------------------------ | ------------------------------------------------------ |
+| The decay is per frame again: `frame` ignores its parameter        | `checkDecayIsInRealTime`       | 0.2813 against 0.5451, the predicted `0.9^12 = 0.2824` |
+| The clock advances at the top of `frame`, above the semaphore wait | `checkHotCore`, `CoreNotWhite` | thirty deposits pile to 29.703 against 9.539           |
+| The clock advances below the semaphore wait but not at the commit  | **nothing**                    | unchanged at 0.5430                                    |
 
 The third is the honest one. `.no_frame_slot` returns *above* where the elapsed time is computed, so that placement loses nothing and the invariant holds there too; only hoisting above the semaphore breaks it, and in a host it is `.no_drawable` under a busy compositor that would do the same. The invariant is real and its blast radius is narrower than the plan claimed.
 
