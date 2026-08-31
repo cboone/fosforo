@@ -656,6 +656,12 @@ pub const Editor = struct {
     /// ADR 0010 asks for: the resources a resize invalidates are replaced
     /// before this frame reads them, rather than underneath a frame already in
     /// progress.
+    ///
+    /// **The clock is read once here and used twice**, by the decay and by the
+    /// meter. Two reads would work and would be worse: the phosphor's fade and
+    /// the reported rate would then describe two instants a frame's work apart,
+    /// and the whole point of #56 is that the first of those is a measurement
+    /// somebody will later quote against the second.
     fn tick(context: *anyopaque) void {
         const self: *Editor = @ptrCast(@alignCast(context));
 
@@ -663,6 +669,13 @@ pub const Editor = struct {
         defer self.gate.leave();
 
         const renderer = if (self.renderer) |*r| r else return;
+
+        // Before the mailbox rather than after, so the interval this frame
+        // decays over covers the resize and the window read as well as the draw.
+        // Exponential decay composes, so where in the tick this is taken changes
+        // only which frame a fixed offset lands in and never the total; taking it
+        // first is the reading that means "when this frame began".
+        const now = display_link.monotonicNanos();
 
         if (self.pending.take()) |update| {
             renderer.resize(update.size, update.scale);
@@ -677,9 +690,9 @@ pub const Editor = struct {
         // Counted, not merely performed. Monotonic and never reset, so a caller
         // that samples it twice can tell the loop advanced without having to
         // coordinate with teardown over when zero means "not started".
-        if (renderer.frame().drew()) _ = self.presented.fetchAdd(1, .release);
+        if (renderer.frame(now).drew()) _ = self.presented.fetchAdd(1, .release);
 
-        self.report();
+        self.report(now);
     }
 
     /// [render-thread] Read the trailing window and hand it across the seam.
@@ -798,14 +811,18 @@ pub const Editor = struct {
     /// 120 Hz and a loop that stopped ten seconds ago produce identical
     /// pictures. This line is the difference, and it carries the drawable size
     /// too, which is what makes a resize observable rather than inferred.
-    fn report(self: *Editor) void {
+    ///
+    /// Takes the time rather than reading it, which is `Meter.observe`'s own
+    /// argument one level up: `tick` reads the clock once for the decay and this
+    /// is the second reader of that reading, not a second reading.
+    fn report(self: *Editor, now_ns: u64) void {
         if (builtin.mode != .Debug) return;
 
         // Every write to `meter` happens here, on this thread. That is what
         // makes it safe to hold no lock around it.
         if (self.takeMeterReset()) self.meter = .{};
 
-        const rate = self.meter.observe(display_link.monotonicNanos()) orelse return;
+        const rate = self.meter.observe(now_ns) orelse return;
         const l = self.log orelse return;
 
         l.print(c.CLAP_LOG_DEBUG, "rendering at {d:.1} Hz, {d}x{d} at {d:.2}x, {d} sample window, {d} uploaded, {d} torn", .{

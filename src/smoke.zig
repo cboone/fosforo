@@ -584,6 +584,30 @@ const trace_height: u32 = 540;
 /// display's colour space, and this reads the float the shader wrote.
 const trace_threshold: f32 = 0.5;
 
+/// The interval between frames on this half's synthetic clock.
+///
+/// **Offscreen there is no display link, so a frame's elapsed time is supplied
+/// rather than measured**, which is the reason `Renderer.frame` takes a clock
+/// reading rather than taking one (#56). Frames here run back to back in a tight
+/// loop, so a real clock would put a fraction of a millisecond between them and
+/// every decay expectation below would become a measurement of the runner.
+///
+/// One sixtieth of a second, which is not an arbitrary choice of nominal rate.
+/// `palette.decay_tau_nanos` is anchored so that exactly this interval yields
+/// exactly the 0.90 per frame #55 shipped, so **every number this half printed
+/// before #56 it still prints**: `checkResolve`'s per-pixel prediction,
+/// `checkHotCore`'s white point and `checkDecay`'s five ratios are unchanged, and
+/// so are the figures quoted from them in `AGENTS.md` and ADR 0019.
+const trace_frame_nanos: u64 = std.time.ns_per_s / 60;
+
+/// What the phosphor keeps between two of this half's frames.
+///
+/// 0.90, and the model is asked rather than told so that a `tau` moved without
+/// this file being reopened changes the expectations here instead of leaving
+/// them asserting the old look. The value is what it is because of the anchor
+/// `trace_frame_nanos` describes, not because it is written down twice.
+const trace_decay: f32 = palette.decayOver(trace_frame_nanos);
+
 /// How many times a frame will be retried when every slot is still in flight.
 ///
 /// Offscreen there is no display link pacing the loop, so a tight run of frames
@@ -645,12 +669,27 @@ const Probe = struct {
     /// return null, so the trace draw is skipped and the decay runs alone. That
     /// is the shipping behaviour for an editor open on a plugin the host has not
     /// activated, reused rather than simulated.
+    ///
+    /// Every case but `checkDecayIsInRealTime` uses `runAt`'s default interval;
+    /// that one is the whole point of the parameter existing.
     fn run(self: *Probe, window: []const f32, frames: u32, deposit: u32) !void {
+        return self.runAt(window, frames, deposit, trace_frame_nanos);
+    }
+
+    /// `run`, with the synthetic clock's step named.
+    fn runAt(
+        self: *Probe,
+        window: []const f32,
+        frames: u32,
+        deposit: u32,
+        interval_nanos: u64,
+    ) !void {
         var worker: Worker = .{
             .renderer = &self.renderer,
             .window = window,
             .frames = frames,
             .deposit = deposit,
+            .interval_nanos = interval_nanos,
         };
 
         const thread = try std.Thread.spawn(.{}, Worker.entry, .{&worker});
@@ -675,27 +714,42 @@ const Worker = struct {
     window: []const f32,
     frames: u32,
     deposit: u32,
+    interval_nanos: u64,
     result: anyerror!void = {},
 
     fn entry(self: *Worker) void {
         self.result = self.drive();
     }
 
+    /// The synthetic clock starts at zero, which the renderer reads as the first
+    /// frame of a fresh one: `last_frame_nanos` is null, so that frame's elapsed
+    /// time is zero and it decays a pair `buildAccumulation` has just cleared.
+    /// Every frame after it is one `interval_nanos` later, so `frames` frames
+    /// deposit and decay across `(frames - 1) * interval_nanos` of simulated wall
+    /// time. Counting the intervals rather than the frames is what the checks
+    /// below state their expectations in.
+    ///
+    /// **A retried frame does not advance the clock**, deliberately. `driveFrame`
+    /// re-presents the same instant until a slot frees, which is what a real tick
+    /// hitting `.no_frame_slot` does: the renderer keeps the interval owed and
+    /// hands it to whichever attempt commits. Advancing per attempt would make
+    /// the simulated elapsed time depend on how busy the GPU was, which is the
+    /// measurement-of-the-runner this whole clock exists to avoid.
     fn drive(self: *Worker) !void {
         self.renderer.upload(self.window);
 
         var i: u32 = 0;
         while (i < self.frames) : (i += 1) {
             if (i == self.deposit) self.renderer.upload(&[_]f32{});
-            try driveFrame(self.renderer);
+            try driveFrame(self.renderer, i * self.interval_nanos);
         }
     }
 };
 
-fn driveFrame(renderer: *gpu.Renderer) !void {
+fn driveFrame(renderer: *gpu.Renderer, now_nanos: u64) !void {
     var attempt: usize = 0;
     while (attempt < trace_frame_attempts) : (attempt += 1) {
-        switch (renderer.frame()) {
+        switch (renderer.frame(now_nanos)) {
             .presented => return,
             // The one outcome worth waiting out. Yielding rather than sleeping
             // because reaching for `std.Io` from a thread its single-threaded
@@ -1052,7 +1106,7 @@ fn checkResolve(energy: []f32, picture: []u8, window: []f32) !void {
     // about how the table was built: there is no background term in
     // `resolve_fragment` at all, so if these disagree the gradient's first entry
     // is not what reaches an unlit pixel.
-    const at_zero = palette.resolved(&table, palette.shipped_palette, palette.decay_per_frame, 0.0);
+    const at_zero = palette.resolved(&table, palette.shipped_palette, trace_decay, 0.0);
     for (0..3) |channel| {
         if (background[channel] != at_zero[channel]) return error.BackgroundNotThePaletteAtZero;
     }
@@ -1075,7 +1129,7 @@ fn checkResolve(energy: []f32, picture: []u8, window: []f32) !void {
             const want = palette.resolved(
                 &table,
                 palette.shipped_palette,
-                palette.decay_per_frame,
+                trace_decay,
                 image.channel(x, y, 1),
             );
             for (0..3) |channel| {
@@ -1171,7 +1225,7 @@ fn checkHotCore(energy: []f32, picture: []u8, window: []f32) !void {
 
         const image = probe.image();
         const peak = measure.maxChannel(image, 1);
-        const white = palette.whitePoint(palette.decay_per_frame);
+        const white = palette.whitePoint(trace_decay);
         say("  hot core: thirty deposits peak at {d:.3}, white point {d:.3}", .{ peak, white });
         if (peak < white) return error.DwellNeverReachesWhite;
 
@@ -1218,7 +1272,7 @@ fn checkDecay(energy: []f32, picture: []u8, window: []f32) !void {
 
         const quiet = frames - 1;
         const ratio = peak / first;
-        const want = std.math.pow(f32, palette.decay_per_frame, @floatFromInt(quiet));
+        const want = std.math.pow(f32, trace_decay, @floatFromInt(quiet));
         say("  decay: after {d} quiet frames, {d:.4} of the deposit, expected {d:.4}", .{
             quiet,
             ratio,

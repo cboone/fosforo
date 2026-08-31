@@ -19,13 +19,15 @@
 // where the decay and the deposit write the same target, which is why those two
 // are one pass and not two.
 //
-// Phase 3 is not finished here. `decay_fragment` takes its factor per frame but
-// that factor is a constant until #56 measures elapsed time, and `trace_fragment`
-// still draws a line strip until #57 makes it geometry. The resolve is done:
-// #60 put a tonemap and a palette lookup there, and there is no colour left in
-// this file — the gradients are built in `src/gpu/palette.zig` and uploaded, so
-// the GPU and the model that checks it read one table rather than two copies of
-// one formula.
+// Phase 3 is not finished here: `trace_fragment` still draws a line strip until
+// #57 makes it geometry. The other two are done. #60 put a tonemap and a palette
+// lookup in the resolve, and there is no colour left in this file — the gradients
+// are built in `src/gpu/palette.zig` and uploaded, so the GPU and the model that
+// checks it read one table rather than two copies of one formula. #56 made the
+// decay factor `exp(-dt / tau)` against a measured elapsed time, and that arrived
+// without a line of MSL changing: it is computed once per frame on the Zig side
+// rather than once per pixel here, which is what `AccumUniforms` being a uniform
+// rather than a literal was always for.
 
 #include <metal_stdlib>
 
@@ -36,8 +38,11 @@ using namespace metal;
 // **The white point is derived from the decay rather than fixed**, which is why
 // this is a fraction and not an energy. A beam that never moves converges on
 // 1 / (1 - decay); anchoring white there makes the look independent of how long
-// the phosphor holds, and once #56 makes the decay a function of elapsed time it
-// is what stops the picture reading twice as hot at 120 Hz as at 60.
+// the phosphor holds, and since #56 made the decay a function of elapsed time it
+// is what stops the picture reading twice as hot at 120 Hz as at 60. That is a
+// live property now rather than a prediction, and a test in
+// `src/gpu/palette.zig` holds a deposit's brightness to within two bytes across
+// 48, 60, 120 and 240 Hz.
 //
 // Below one deliberately. Reinhard reaches its white point exactly at e = w while
 // the steady state is only approached, so a white point set at the asymptote
@@ -109,9 +114,11 @@ struct AccumUniforms {
 // `fullscreen_vertex`'s uv. Both surfaces are top-left origin, so nothing needs
 // inverting between them.
 //
-// `uniforms.decay` is a constant per frame today. #56 makes it exp(-dt / tau)
-// against a measured elapsed time, which is why it arrives as a uniform rather
-// than living here as a literal the way `trace_fragment`'s colour does.
+// `uniforms.decay` is `exp(-dt / tau)` for the interval since the last committed
+// frame, computed in `src/gpu/palette.zig` and handed over per frame (#56). That
+// is why it arrives as a uniform rather than living here as a literal the way
+// `trace_fragment`'s colour used to: it is a measurement, not a look constant.
+// The `exp` stays on the CPU because it is the same number for every pixel.
 fragment float4 decay_fragment(VertexOut in [[stage_in]],
                                texture2d<float, access::read> source [[texture(0)]],
                                constant AccumUniforms &uniforms [[buffer(0)]]) {

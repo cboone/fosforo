@@ -5,10 +5,11 @@
 //! sample window into it as a single aliased line strip one device pixel wide,
 //! and resolve that accumulation over a dim background into the drawable. The
 //! persistence is phase 3's step 2 (#55); what is still crude is deliberate and
-//! is the rest of that phase. The decay factor is a per-frame constant until #56
-//! measures elapsed time, the beam stays a line strip until #57 makes it
-//! geometry. The resolve is done: #60 put a curve and a palette lookup there, and
-//! the drawable became `BGRA8Unorm_sRGB` so that arithmetic runs in linear light.
+//! is the rest of that phase. The beam stays a line strip until #57 makes it
+//! geometry. Two of the three are done: #60 put a curve and a palette lookup in
+//! the resolve, and the drawable became `BGRA8Unorm_sRGB` so that arithmetic runs
+//! in linear light; #56 made the decay `exp(-dt / tau)` against an elapsed time
+//! `frame` is handed, so the persistence is the same at every refresh rate.
 //! Drawing something ugly first is what lets each of those be judged on how it
 //! looks rather than on whether the signal path works at all.
 
@@ -212,22 +213,6 @@ const accumulation_pixel_format = mtl.pixel_format_rgba16_float;
 /// reaches, so `MTL_DEBUG_LAYER` is the instrument if this is ever split.
 const drawable_pixel_format = mtl.pixel_format_bgra8_unorm_srgb;
 
-/// How much of the phosphor survives one frame.
-///
-/// **Provisional, and per frame rather than per second, which is a defect #56
-/// fixes rather than a value it tunes.** The look therefore depends on the
-/// refresh rate: 0.90 falls to 5% in 28 frames, about 237 ms at 120 Hz and
-/// 474 ms at 60. That is deliberate. The development machine's panel drifts
-/// between 48 and 120 Hz on its own, so the frame-rate dependence is visible
-/// here rather than hidden, which is the right way for a placeholder to behave.
-///
-/// It reaches the shader as a uniform rather than as an MSL literal, unlike
-/// `trace_fragment`'s colour. The colour is a look constant that #60 deletes;
-/// this is a value #56 has to compute per frame from a measured elapsed time,
-/// so the binding is needed either way and a Zig-side constant is one a test can
-/// hold a range on.
-const decay_per_frame: f32 = 0.90;
-
 /// The drawable's size in whole backing pixels.
 ///
 /// Distinct from `iface.Size`, which is logical points everywhere above this
@@ -415,12 +400,19 @@ const Attachment = struct {
 /// fourth resource for a slot discipline to cover and nothing for a leak check
 /// to be blind to.
 ///
-/// One field today, and a struct rather than a bare float because #56 replaces
-/// the constant with a value computed per frame and #60 is likely to want a
-/// companion. A second field then costs a layout test line rather than a new
-/// binding.
+/// Still one field after #56, which replaced the constant behind it with
+/// `palette.decayOver(elapsed)` and needed no second one: the white point the
+/// resolve derives is a function of the same number, so both passes read one
+/// field and cannot disagree about which frame they are drawing.
+///
+/// **No default, deliberately, and that is a change #56 made rather than an
+/// omission.** While the decay was a constant a default was a convenience; now
+/// that it is a measurement, `.{}` would compile into a plausible picture at a
+/// fixed persistence, which is the failure this project keeps naming. The type
+/// system is what refuses it, and a test asserts the field carries no default so
+/// nobody restores one for tidiness.
 const AccumUniforms = extern struct {
-    decay: f32 = decay_per_frame,
+    decay: f32,
 };
 
 /// How far the CPU may run ahead of the GPU, in frames.
@@ -1076,6 +1068,29 @@ pub const Renderer = struct {
     /// rather than half-updated.
     accum_source: u1 = 0,
 
+    /// The clock reading the accumulation was last decayed against, or null
+    /// before the first committed frame.
+    ///
+    /// **Advanced on the same line as `accum_source` and for the same reason.**
+    /// The elapsed time a skipped tick spanned has to survive into the next one
+    /// that draws, or a run of `.no_frame_slot` would discard the seconds it
+    /// covered and the phosphor would hold too long under exactly the load that
+    /// produces them. Resetting this per tick would be a defect that only appears
+    /// on a busy machine, which is the kind this file is written to avoid.
+    ///
+    /// Null before the first committed frame, which stands in
+    /// `palette.decay_reference_frame_nanos` rather than an elapsed time of zero.
+    /// The fade is a no-op either way on a pair `buildAccumulation` has just
+    /// cleared; the white point is not, and zero would put it at its 8e5 clamp for
+    /// that one frame. That docstring carries the reasoning and the measurement.
+    ///
+    /// **`resize` deliberately leaves this alone**, although it clears the
+    /// accumulation on the same terms. A slow drag can put a long gap here, and
+    /// `palette.max_elapsed_nanos` already bounds what that does to one frame's
+    /// white point; adding a second place that resets the clock would be a second
+    /// place to get the "never lose time" invariant above wrong.
+    last_frame_nanos: ?u64 = null,
+
     /// Recompiles the shader off this thread when the file changes.
     ///
     /// Zero-sized and inert outside a debug build. Started by the first `frame`
@@ -1531,17 +1546,35 @@ pub const Renderer = struct {
 
     /// [render-thread] Draw and present one frame.
     ///
-    /// Driven by the display link, which is why it takes no arguments: what it
-    /// draws arrived through `upload` and everything else about a frame is
-    /// already this object's. A frame that cannot be drawn is skipped rather
-    /// than escalated, and the caller has nothing to decide.
+    /// Driven by the display link. What it draws arrived through `upload` and
+    /// everything else about a frame is already this object's; the one thing it
+    /// cannot know for itself is when this frame is happening, which is
+    /// `now_nanos`. A frame that cannot be drawn is skipped rather than
+    /// escalated, and the caller has nothing to decide.
+    ///
+    /// **`now_nanos` is an absolute reading of a monotonic clock, not an
+    /// interval, and that direction is the design rather than a convention.**
+    /// Only this function knows whether a tick committed: there are six early
+    /// returns above, and the elapsed time a skipped one spanned has to reach the
+    /// next frame that draws. A caller handing over a `dt` cannot maintain that,
+    /// because it cannot see the outcome until after it has already computed the
+    /// interval. Handing over `now` puts the invariant in the one place that can
+    /// hold it, beside `accum_source`.
+    ///
+    /// Which clock is `display_link.monotonicNanos()`, and the reasoning for
+    /// preferring it to the `CVTimeStamp` CoreVideo hands the callback is in
+    /// `src/platform/displaylink.zig` (#56). What makes the parameter a bare
+    /// `u64` rather than a clock the backend reads for itself is `smoke-trace`:
+    /// the harness drives frames back to back with no real time between them, so
+    /// a renderer reading its own clock could only be checked against whatever
+    /// interval the machine happened to produce.
     ///
     /// It does report what happened, which is a different thing from failing.
     /// Nobody outside can otherwise distinguish a loop presenting frames from
     /// one skipping every single tick, and those look identical from the far
     /// side of a flat colour. ADR 0013 names that gap; this is the signal that
     /// closes it.
-    pub fn frame(self: *Renderer) iface.Outcome {
+    pub fn frame(self: *Renderer, now_nanos: u64) iface.Outcome {
         platform.assertNotMainThread();
         markRenderThread();
 
@@ -1691,7 +1724,20 @@ pub const Renderer = struct {
         });
         if (encoder.value == null) return .no_encoder;
 
-        const accum_uniforms: AccumUniforms = .{};
+        // Read here and committed at the bottom, which is the whole of #56 on
+        // this side. `last_frame_nanos` is not advanced yet, because this frame
+        // may still take one of the early returns below and the interval would
+        // then belong to whichever tick draws next.
+        //
+        // Saturating, because a monotonic clock cannot run backwards and a
+        // wrapping subtraction if one ever did would produce an interval of
+        // several hundred years rather than a visible complaint. `decayOver`
+        // clamps the far end, so both directions land somewhere survivable.
+        const elapsed = if (self.last_frame_nanos) |last|
+            now_nanos -| last
+        else
+            palette.decay_reference_frame_nanos;
+        const accum_uniforms: AccumUniforms = .{ .decay = palette.decayOver(elapsed) };
 
         // Two pipelines, one encoder, one render pass, decay first. This
         // hardware is tile-based deferred, so both draws run against tile memory
@@ -1821,9 +1867,17 @@ pub const Renderer = struct {
 
         // Only now, and the asymmetry with `slot` above is deliberate. `slot`
         // advances on a successful wait, because a successful wait is what
-        // proves the buffer is free. This advances on a commit, because a commit
-        // is what proves the target was written. Two invariants, two points.
+        // proves the buffer is free. These two advance on a commit, because a
+        // commit is what proves the target was written. Two invariants, two
+        // points, and the second point carries two things since #56.
+        //
+        // The clock belongs here rather than at the top for the reason the field
+        // gives: a tick that returned early decayed nothing, so the time it
+        // spanned is still owed to whichever frame draws next. Moving this line
+        // above any early return would discard it, and the symptom would be a
+        // phosphor that holds too long on a loaded machine and nowhere else.
         self.accum_source ^= 1;
+        self.last_frame_nanos = now_nanos;
 
         return .presented;
     }
@@ -2853,7 +2907,7 @@ test "the screenshot tool still holds this project's numbers" {
         "BACKGROUND_BYTES = ",
         "CORE_EXPONENT = ",
         "WHITE_HEADROOM = ",
-        "DECAY = ",
+        "TAU_NS = ",
     }) |needle| {
         try testing.expectEqual(@as(usize, 1), std.mem.count(u8, script, needle));
     }
@@ -2875,8 +2929,15 @@ test "the screenshot tool still holds this project's numbers" {
     const headroom = scalarAfter(script, "WHITE_HEADROOM = ") orelse return error.NotFound;
     try testing.expectEqual(palette.white_headroom, @as(f32, @floatCast(headroom)));
 
-    const decay = scalarAfter(script, "DECAY = ") orelse return error.NotFound;
-    try testing.expectEqual(palette.decay_per_frame, @as(f32, @floatCast(decay)));
+    // **The one integer here, and comparing it as one is the point.** #56
+    // replaced the script's per-frame `DECAY = 0.9` with the time constant behind
+    // it, and a nanosecond count is exact in `f64` up to 2^53, so this needs
+    // neither the narrowing the two above do nor a tolerance. The script derives
+    // its own decay from this and a refresh rate, which is the same derivation
+    // `palette.decayOver` performs and deliberately not a second constant to keep
+    // in step.
+    const tau = scalarAfter(script, "TAU_NS = ") orelse return error.NotFound;
+    try testing.expectEqual(@as(f64, @floatFromInt(palette.decay_tau_nanos)), tau);
 
     // The four gradients, in the order `palette_row` selects them, each anchored
     // on its own name. The script declares them one per line for this reason: a
@@ -2922,11 +2983,13 @@ test "the shader's look constants and the model's are the same numbers" {
         row,
     );
 
-    // The decay reaches the shader as a uniform rather than as a literal, so this
-    // is the one look constant with no MSL side. The model needs it anyway,
-    // because the white point is derived from it, and a second copy of a number
-    // is a second copy however good the reason.
-    try testing.expectEqual(decay_per_frame, palette.decay_per_frame);
+    // There is no third line here any more, and its absence is the point. The
+    // decay used to be a constant restated in this file and in the model, tied by
+    // an assertion; #56 made it `palette.decayOver(elapsed)` and this file calls
+    // that rather than paraphrasing it. A restatement is worth a test when the
+    // two sides cannot import each other, which is why `white_headroom` above
+    // still needs one; between two Zig files where one already imports the other
+    // it is a second copy with a test to prove the copy was made.
 }
 
 test "the script reader finds nothing rather than guessing" {
@@ -2963,21 +3026,59 @@ test "the accumulation's uniforms are laid out the way the shader reads them" {
 }
 
 test "a frame both dims what is there and shows what is left" {
-    // The range is the whole claim, and it is what makes two of this issue's
-    // planted defects fail here rather than needing an eye. At 1.0 nothing
-    // decays and the picture saturates; at 0.0 nothing persists and this change
-    // reduces to the trace it replaced.
-    try testing.expect(decay_per_frame > 0.0);
-    try testing.expect(decay_per_frame < 1.0);
+    // The range is the whole claim, and it is what makes two of #55's planted
+    // defects fail here rather than needing an eye. At 1.0 nothing decays and the
+    // picture saturates; at 0.0 nothing persists and the accumulation reduces to
+    // the trace it replaced.
+    //
+    // Asked of the function rather than of a constant since #56, across the
+    // intervals a refresh can actually produce plus the clamp, because there is
+    // no single factor left to hold a range on.
+    for ([_]u64{ 0, std.time.ns_per_s / 240, std.time.ns_per_s / 60, palette.max_elapsed_nanos }) |elapsed| {
+        const decay = palette.decayOver(elapsed);
+        try testing.expect(decay > 0.0);
+        try testing.expect(decay <= 1.0);
+    }
+
+    // A zero interval reaches exactly 1.0, which is the first frame of a renderer
+    // whose accumulation was just cleared, and anything that is really an interval
+    // is below it.
+    //
+    // A microsecond rather than a nanosecond, and the difference is a fact about
+    // `f32` worth knowing rather than a tolerance being dodged. `exp(-1 / 1.58e8)`
+    // is `1 - 6.3e-9`, and the spacing below 1.0 in `f32` is `5.96e-8`, so a
+    // one-nanosecond interval rounds to exactly 1.0 and this assertion would fail
+    // against correct arithmetic. Intervals go opaque somewhere under five
+    // nanoseconds, which is five million times shorter than the shortest refresh
+    // any display produces, so nothing rests on it.
+    try testing.expectEqual(@as(f32, 1.0), palette.decayOver(0));
+    try testing.expect(palette.decayOver(std.time.ns_per_us) < 1.0);
 }
 
-test "the uniforms carry the file's constants rather than a second copy of them" {
-    // The defaults are the whole mechanism by which the shader learns both
-    // numbers, so a `frame` that filled them in by hand would compile and draw
-    // at whatever it chose. Same reasoning as the `TraceUniforms` test above.
-    const uniforms: AccumUniforms = .{};
+test "the decay uniform has no default to fall back on" {
+    // **#56 removed a default and this is what keeps it removed.** While the
+    // decay was a constant the default was how the shader learned it, the way
+    // `TraceUniforms` still learns `full_scale` and `rail`. Now it is a
+    // measurement, and a default would let a `.{}` written for brevity compile
+    // into a plausible picture at a fixed persistence — the frame-rate dependence
+    // this issue exists to remove, restored silently by a tidy-up.
+    //
+    // `frame` is the only constructor, and the type system is what refuses any
+    // other. This asserts the refusal rather than the construction, because the
+    // construction is checked by the compiler already.
+    const field = @typeInfo(AccumUniforms).@"struct".fields[0];
 
-    try testing.expectEqual(decay_per_frame, uniforms.decay);
+    try testing.expectEqualStrings("decay", field.name);
+    try testing.expectEqual(@as(?*const anyopaque, null), field.default_value_ptr);
+
+    // The counterpart, so this test cannot pass by reading a struct that has no
+    // fields at all: `TraceUniforms` still carries two defaults, and they are
+    // still how the shader learns the vertical mapping.
+    inline for (@typeInfo(TraceUniforms).@"struct".fields) |trace_field| {
+        if (comptime !std.mem.eql(u8, trace_field.name, "sample_count")) {
+            try testing.expect(trace_field.default_value_ptr != null);
+        }
+    }
 }
 
 test "every pass names the format it is compiled against" {
