@@ -339,17 +339,14 @@ An eighth, `fix:`, for whatever the host session turns up, should be expected ra
 
 **A capture of clap-host is not exactly 0.00% off the curve, and the residue is fully accounted for.** 504 pixels at columns 0 to 11, rows 1045 to 1079, holding neutral greys on a smooth ramp: the window's own rounded bottom corners, inside the drawable's bounding box. That is 0.024% of the drawable against the 0.03% reported, so none of it is the shader. Worth knowing before anyone reads a non-zero figure as a defect.
 
-## What is not done
+## What the tuning session settled, and what it handed to #58
 
-**The guard's constants still cannot be re-derived, and the host session established *why* rather than just leaving it outstanding.** `RAY_TOLERANCE`, `MAX_OFF_RAY` and `SATURATED` were measured against a REAPER capture carrying a signal, and the only capture available here is clap-host showing silence, which is 99.9% flat background. Measured on it:
+Both outstanding items are closed, and the second closed with a finding rather than a number.
 
-| capture                | off the curve |
-| ---------------------- | ------------- |
-| lossless               | 0.03%         |
-| JPEG q95               | 0.04%         |
-| JPEG q80               | 0.51%         |
-| JPEG q60               | crop refuses  |
+**The guard's constants are re-derived** from two REAPER captures, a 100 Hz sine at 0.5 and a level-2.000 sine: 0.02% off the curve lossless against 22.19% to 43.70% recompressed, which is the same three orders of magnitude the straight ray had. `RAY_TOLERANCE` and `MAX_OFF_RAY` keep their values on a re-measured argument rather than an inherited one — at a tolerance of 1 both good captures read above the threshold, at 2.01% and 3.49%, which is still what makes 2 a floor. `SATURATED` now excludes two pixels where it used to exclude 3,774, and is kept for when #58 makes it load-bearing again.
 
-Against the pre-#60 pair of 0.0074% lossless and **23.7%** at q60. The margin collapses because the guard detects resampling by finding chroma off the curve, and a picture with almost no chroma has almost nothing to detect: at q80 a good capture already sits at the threshold. **These numbers are a demonstration that the guard still discriminates, and they are not a calibration.** Replacing the tables needs a capture carrying a real signal, which means REAPER and one of the tone files, and it is the whole of what remains of commit 6.
+**The white point cannot be tuned yet, and that is the session's real result.** The picture peaks at 2.2 and 3.0 deposits on successive frames of the same sine, against roughly 1 for a fast crossing. No white point can carve a visible core out of a 2:1 range: dropping `white_headroom` from 0.8 to 0.2 moved fifty pixels of thirty-two thousand and was confirmed invisible in a host. So it stays at 0.8, on the argument the derivation makes for it, and #58 re-judges it against a picture that can distinguish one value from another. That is recorded at the constant, in `src/gpu/palette.zig`, in ADR 0019, and as a comment on #58.
 
-**The look has not been judged against material.** clap-host feeds silence, so what a host has shown is the background, the geometry and the dwelt end of the range. A moving trace at a normal level, the level sweep that confirms brightness does not track level, and the transition when the transport stops all need REAPER. Nothing automated can catch a badly chosen constant: a white point wrong by a factor of ten is arithmetically correct and passes a model-versus-picture comparison because both sides use it.
+**Three predictions in this plan were wrong and are corrected in the record.** `level-2.000` is not a hot-core demonstration: the rail row is fixed but the columns on it shift with phase like everything else, so clamping spreads dwell rather than concentrating it. The level sweep does not show constant brightness across levels, and should not — a quieter sine travels fewer rows per sample, so samples pile onto one pixel and it accumulates more, which is the beam dwelling on a slower-moving trace. And [#80](https://github.com/cboone/fosforo/issues/80) was filed on that same false premise and has been rewritten to test the transfer function instead of asserting something untrue about energy.
+
+**Two issues came out of the session.** [#79](https://github.com/cboone/fosforo/issues/79), the vertical line a transport stop draws, which is a maximally-fast segment depositing full energy on every row it spans. And [#80](https://github.com/cboone/fosforo/issues/80). Both are probably #58's, and both say so.
