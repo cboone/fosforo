@@ -132,6 +132,82 @@ pub fn extremes(image: Image, threshold: f32) ?Extremes {
     return found;
 }
 
+/// Where the beam's centre sits in a column, as a fractional row.
+///
+/// **The estimator every vertical assertion is stated in, and #57 is why it had
+/// to exist.** A one-pixel line has no interior, so `topRow` *was* the trace's
+/// position. A beam with width and a falloff does have one, and `topRow` then
+/// reads the threshold contour's upper edge, which sits above the centreline by
+/// the lit half-width — systematically, and with the same sign at every level.
+/// `pixelTolerance` is one backing pixel by construction and cannot absorb that,
+/// and widening it would be the exact thing this file's header refuses: a
+/// tolerance wide enough to hide a systematic error is a tolerance that hides one.
+///
+/// The energy-weighted mean is exact rather than approximate, because the profile
+/// is symmetric about the centreline and the accumulation is linear. Weighted by
+/// energy directly, not by a thresholded mask.
+///
+/// **Summed over the whole column rather than over the lit rows, which is both
+/// cheaper to justify and more accurate.** The biweight has compact support, so
+/// an unlit pixel holds exactly 0.0 and contributes exactly nothing; including
+/// them costs one multiply-add each and removes a bias. Thresholding first
+/// roughly doubles the residual error at an adversarial sub-pixel offset, from
+/// 0.054 rows to 0.112, and worse, makes it depend on where between two pixel
+/// centres the beam happens to fall — a bias that varies with the signal, in an
+/// instrument whose whole purpose is to have none.
+///
+/// Returns nothing when the column carries no energy at all, which is what
+/// distinguishes a dark column from one centred on row zero.
+pub fn centroidRow(image: Image, x: usize) ?f32 {
+    var weight: f32 = 0;
+    var moment: f32 = 0;
+
+    var y: usize = 0;
+    while (y < image.height) : (y += 1) {
+        const energy = image.green(x, y);
+        if (energy <= 0) continue;
+
+        weight += energy;
+        moment += energy * @as(f32, @floatFromInt(y));
+    }
+
+    if (weight <= 0) return null;
+    return moment / weight;
+}
+
+/// The highest and lowest centres the trace reaches anywhere.
+///
+/// `extremes`' counterpart, and what replaces it wherever the question is where
+/// the trace *is* rather than which pixels are lit. Both bounds are taken over
+/// column centroids, so a beam of any width contributes its centre rather than
+/// its edge and the two bounds are biased identically — which is what makes
+/// `checkSymmetry` in `src/smoke.zig` an assertion about symmetry again rather
+/// than about the beam's width.
+pub const Centres = struct {
+    /// Smallest centroid reached, so the trace's positive peak.
+    top: f32,
+    /// Largest centroid reached, so its negative trough.
+    bottom: f32,
+};
+
+pub fn centres(image: Image) ?Centres {
+    var found: ?Centres = null;
+
+    var x: usize = 0;
+    while (x < image.width) : (x += 1) {
+        const centre = centroidRow(image, x) orelse continue;
+
+        if (found) |*seen| {
+            seen.top = @min(seen.top, centre);
+            seen.bottom = @max(seen.bottom, centre);
+        } else {
+            found = .{ .top = centre, .bottom = centre };
+        }
+    }
+
+    return found;
+}
+
 /// The leftmost and rightmost lit columns, or nothing when the image is dark.
 ///
 /// The horizontal mapping's readout. `2i / (n - 1)` puts the last vertex exactly
@@ -189,7 +265,27 @@ pub fn maxChannel(image: Image, c: usize) f32 {
 /// apart; both are inside the one-pixel band every assertion here is stated in,
 /// and reconciling them is not this file's business.
 pub fn impliedSample(row: usize, height: usize) f32 {
-    const centred = (@as(f32, @floatFromInt(row)) + 0.5) / @as(f32, @floatFromInt(height));
+    return impliedSampleAt(@floatFromInt(row), height);
+}
+
+/// The same inversion, from a fractional row.
+///
+/// What `centroidRow` feeds, and the reason it is a separate entry point rather
+/// than a cast at the call site is that the `+ 0.5` above has to apply to both or
+/// the two readouts sit half a pixel apart. `impliedSample` delegates here so
+/// there is one copy of the arithmetic rather than two that agree today.
+///
+/// **This is where silence stops reading `+0.0021`.** At an even height the
+/// centreline falls on the boundary between two rows: at 540 it is window-space
+/// `y = 270.0`, equidistant from the centres of rows 269 and 270, so a symmetric
+/// profile weights them equally and the centroid is exactly `269.5`. That plus
+/// the half is 270.0, which is exactly half the height, so this returns exactly
+/// zero. #38 measured the `+0.0021` an edge estimator gives here and declined a
+/// corrective bias partly on the grounds that this step would re-answer the
+/// question; it did, and the answer is that no bias was ever needed — the
+/// geometry was right and the instrument was reading its edge.
+pub fn impliedSampleAt(row: f32, height: usize) f32 {
+    const centred = (row + 0.5) / @as(f32, @floatFromInt(height));
     return (1.0 - 2.0 * centred) / iface.trace_full_scale;
 }
 
@@ -399,14 +495,25 @@ const testing = std.testing;
 /// sample's row to the next's. An analyser tested against one-pixel-per-column
 /// images would pass while being wrong about exactly the case that matters.
 ///
-/// Not the shader and not a claim to be: it is a model of a line strip, used to
-/// test the analysis. What the shader actually draws is what `zig build
-/// smoke-trace` measures.
+/// Not the shader and not a claim to be: it is a model of the beam, used to test
+/// the analysis. What the shader actually draws is what `zig build smoke-trace`
+/// measures.
+///
+/// **#57 gave it a width and a falloff, and that was not optional.** Left as a
+/// one-pixel line, every test below would have gone on validating `centroidRow`
+/// against the primitive it was written to replace: an estimator that reads a
+/// beam's centre would look correct on images that have no interior to read.
+///
+/// The profile is the biweight the shader deposits, applied to the distance from
+/// a pixel's centre to the column's segment rather than to a point, which is the
+/// one-dimensional form of the shader's distance-to-segment. That keeps the
+/// property the centroid depends on — symmetry about the centreline — without
+/// reproducing the oriented quad, which this file has no business knowing about.
 fn rasterize(pixels: []f32, width: usize, height: usize, window: []const f32) Image {
     @memset(pixels, 0);
     const image: Image = .{ .width = width, .height = height, .pixels = pixels };
 
-    var previous: ?usize = null;
+    var previous: ?f32 = null;
     for (window, 0..) |sample, i| {
         const x_ndc = 2.0 * @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(window.len - 1)) - 1.0;
         const column = @min(
@@ -415,20 +522,42 @@ fn rasterize(pixels: []f32, width: usize, height: usize, window: []const f32) Im
         );
 
         const row_f = expectedRow(sample, height);
-        const row = @min(height - 1, @as(usize, @intFromFloat(@max(0.0, @round(row_f)))));
+        const from = if (previous) |p| @min(p, row_f) else row_f;
+        const to = if (previous) |p| @max(p, row_f) else row_f;
 
-        const from = if (previous) |p| @min(p, row) else row;
-        const to = if (previous) |p| @max(p, row) else row;
+        // Every row the segment reaches, plus the skirt either side. Clamped to
+        // the image, which is what stops the three-sample ramp — whose endpoints
+        // sit on the rail — indexing off the top and bottom.
+        const first: usize = @intFromFloat(@max(0.0, @floor(from - model_half_width)));
+        const last: usize = @min(
+            height - 1,
+            @as(usize, @intFromFloat(@max(0.0, @ceil(to + model_half_width)))),
+        );
 
-        var y = from;
-        while (y <= to) : (y += 1) {
-            pixels[(y * width + column) * 4 + 1] = 1.0;
+        var y = first;
+        while (y <= last) : (y += 1) {
+            const centre = @as(f32, @floatFromInt(y));
+            const d = @max(0.0, @max(from - centre, centre - to));
+            const u = @min(d / model_half_width, 1.0);
+            const falloff = 1.0 - u * u;
+
+            const slot = &pixels[(y * width + column) * 4 + 1];
+            slot.* = @max(slot.*, falloff * falloff);
         }
-        previous = row;
+        previous = row_f;
     }
 
     return image;
 }
+
+/// The beam's half-width in this model, in pixels.
+///
+/// `iface.beam_width_points / 2` at a scale of one, which is the geometry
+/// `Renderer.initOffscreen` runs and therefore the one every number in
+/// `src/smoke.zig` is stated at. Held here rather than imported so this file's
+/// tests describe the analysis at a geometry they choose, the way they already
+/// choose 960x540.
+const model_half_width: f32 = iface.beam_width_points / 2.0;
 
 /// Scratch for one rasterized image.
 ///
@@ -520,7 +649,7 @@ test "an image shorter than its declared geometry is reported as incomplete" {
     try testing.expect((Image{ .width = 16, .height = 8, .pixels = &full }).complete());
 }
 
-test "a flat window lights every column on one row" {
+test "a flat window lights every column, centred on the centre line" {
     const width: usize = 128;
     const height: usize = 64;
 
@@ -532,9 +661,63 @@ test "a flat window lights every column on one row" {
 
     try testing.expectEqual(width, litColumns(image, 0.5));
 
-    const seen = extremes(image, 0.5).?;
-    try testing.expectEqual(seen.top, seen.bottom);
-    try testing.expect(@abs(impliedSample(seen.top, height)) <= pixelTolerance(height));
+    // **This test used to assert `top == bottom`, and #57 is what made that
+    // false.** A beam with width lights more than one row by construction, so the
+    // property worth asserting moved from how many rows are lit to where their
+    // energy is centred. Every column carries the same centroid, and it is the
+    // centre line, which is the same claim the old form was making about a
+    // one-pixel line and is now making about a beam.
+    const seen = centres(image).?;
+    try testing.expectApproxEqAbs(seen.top, seen.bottom, 1e-4);
+
+    // Exactly zero rather than within a pixel, because 64 is even: the centreline
+    // falls between two rows, a symmetric profile weights them equally, and the
+    // centroid lands on the boundary. This is #38's `+0.0021` not happening.
+    try testing.expectApproxEqAbs(
+        @as(f32, 0.0),
+        impliedSampleAt(seen.top, height),
+        1e-5,
+    );
+
+    // And the beam does have an interior, so the assertion above is not being
+    // satisfied by the old one-pixel image in disguise.
+    const lit = extremes(image, 0.5).?;
+    try testing.expect(lit.bottom > lit.top);
+}
+
+test "the centroid recovers the row the mapping asks for, at every level" {
+    const width: usize = 128;
+    const height: usize = 64;
+
+    var pixels: [width * height * 4]f32 = undefined;
+    var window: [width]f32 = undefined;
+
+    // Every level the harness checks, plus zero, against `expectedRow` — which is
+    // the mapping derived independently on this side rather than the rasterizer
+    // asked what it just did.
+    //
+    // **A twentieth of a pixel, where `pixelTolerance` is a whole one.** That gap
+    // is the entire case for the estimator: the row a beam's *edge* falls on is a
+    // quantity the profile and the sub-pixel phase both move, and it is what every
+    // vertical assertion used to be stated in.
+    for ([_]f32{ 0.0, 0.25, -0.25, 0.5, -0.5, 1.0, -1.0 }) |sample| {
+        constant(&window, sample);
+        const image = rasterize(&pixels, width, height, &window);
+
+        const centre = centroidRow(image, width / 2).?;
+        try testing.expectApproxEqAbs(expectedRow(sample, height), centre, 0.06);
+    }
+
+    // A dark column is nothing rather than row zero, which is the distinction a
+    // sum with no guard would lose.
+    constant(&window, 0.0);
+    const image = rasterize(&pixels, width, height, &window);
+    try testing.expect(centroidRow(image, width / 2) != null);
+
+    var dark: [width * height * 4]f32 = @splat(0);
+    const blank: Image = .{ .width = width, .height = height, .pixels = &dark };
+    try testing.expectEqual(@as(?f32, null), centroidRow(blank, 0));
+    try testing.expectEqual(@as(?Centres, null), centres(blank));
 }
 
 test "periods are counted exactly, including where a crossing spans many rows" {
@@ -676,10 +859,22 @@ test "a plateau is measured but says nothing about level" {
 
     var window: [width]f32 = undefined;
 
-    // The measurement recorded in #51's comment: an unclipped sine at 1.089 has
-    // a narrower top than one at 1.000, because it moves faster through its peak
-    // than the eight pixels of clamping widen it. So the two are not ordered by
-    // level, which is why nothing asserts on this number.
+    // The measurement recorded in #51's comment: an unclipped sine at 1.089 had
+    // a *narrower* top than one at 1.000, because it moved faster through its peak
+    // than the eight pixels of clamping widened it.
+    //
+    // **#57 reversed that, which is the strongest possible argument for the thing
+    // this test's name has always claimed.** At a one-pixel line the widths were
+    // 17 at the rail against a larger figure at full scale; with a beam they are
+    // 27 at the rail against 17 at full scale, because `plateauWidth` counts
+    // columns sharing the topmost lit row and a clamped peak presents a flat edge
+    // that many more columns share. Same signals, same analyser, opposite
+    // ordering, and the only thing that changed was the primitive.
+    //
+    // So the ordering is not asserted, in either direction. What is asserted is
+    // that both are positive, which is all `plateauWidth` is ever allowed to be
+    // read as saying. It is reported by `scripts/measure-trace` and concluded
+    // from nowhere.
     sine(&window, 2.0, 1.0);
     const at_full = plateauWidth(rasterize(pixels, width, height, &window), 0.5);
 
@@ -688,5 +883,4 @@ test "a plateau is measured but says nothing about level" {
 
     try testing.expect(at_full > 0);
     try testing.expect(at_rail > 0);
-    try testing.expect(at_rail < at_full);
 }
