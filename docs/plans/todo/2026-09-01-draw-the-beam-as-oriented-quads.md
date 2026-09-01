@@ -235,7 +235,7 @@ The last two are deliberately included expecting an asymmetric result, and recor
 - **Decimation.** [#62](https://github.com/cboone/fosforo/issues/62). The density scale fixes the brightness, not the fragment cost of drawing 8192 segments onto 480 pixels.
 - **Moving `trace_rail`.** Its stated reason changes; its value does not.
 - **Re-judging `white_headroom`.** ADR 0019 holds it provisional and hands it to #58.
-- **HDR, a 10-bit drawable, or P3.** The falloff skirt puts many more pixels in the gradient's toe where 8-bit quantization is worst, which strengthens both cases. Being filed separately.
+- **A 10-bit drawable, P3, or EDR.** The falloff skirt puts many more pixels in the gradient's toe where 8-bit quantization is worst, and this issue measured the cost: `checkResolve` went from off by 0 to off by 1 across 518,400 pixels, with lit pixels rising from 2412 to 4853. Filed as [#83](https://github.com/cboone/fosforo/issues/83) and [#84](https://github.com/cboone/fosforo/issues/84), both behind #58, since velocity weighting is what decides how many pixels end up in the toe that ships.
 
 ## Risks to watch at the keyboard
 
