@@ -584,6 +584,38 @@ const trace_height: u32 = 540;
 /// display's colour space, and this reads the float the shader wrote.
 const trace_threshold: f32 = 0.5;
 
+/// The interval between frames on this half's synthetic clock.
+///
+/// **Offscreen there is no display link, so a frame's elapsed time is supplied
+/// rather than measured**, which is the reason `Renderer.frame` takes a clock
+/// reading rather than taking one (#56). Frames here run back to back in a tight
+/// loop, so a real clock would put a fraction of a millisecond between them and
+/// every decay expectation below would become a measurement of the runner.
+///
+/// One frame at the decay's own reference rate, which is not an arbitrary choice
+/// of nominal rate. `palette.decay_tau_nanos` is anchored so that exactly this
+/// interval yields exactly the 0.90 per frame #55 shipped, so **every number this
+/// half printed before #56 it still prints**: `checkResolve`'s per-pixel
+/// prediction, `checkHotCore`'s white point and `checkDecay`'s five ratios are
+/// unchanged, and so are the figures quoted from them in `AGENTS.md` and ADR 0019.
+///
+/// **The model's constant rather than `std.time.ns_per_s / 60`**, which is the
+/// same interval only by coincidence: the division truncates to 16,666,666 ns
+/// where `decay_reference_frame_nanos` rounds to 16,666,667. A nanosecond is
+/// nothing here — `decayOver` returns a bit-identical `f32` for both, since one
+/// part in 1.6e8 is two orders of magnitude below the spacing near 0.9 — but the
+/// sentence above says *exactly*, and a second spelling of "one frame at the
+/// reference rate" is a second thing to keep in step with the anchor.
+const trace_frame_nanos: u64 = palette.decay_reference_frame_nanos;
+
+/// What the phosphor keeps between two of this half's frames.
+///
+/// 0.90, and the model is asked rather than told so that a `tau` moved without
+/// this file being reopened changes the expectations here instead of leaving
+/// them asserting the old look. The value is what it is because of the anchor
+/// `trace_frame_nanos` describes, not because it is written down twice.
+const trace_decay: f32 = palette.decayOver(trace_frame_nanos);
+
 /// How many times a frame will be retried when every slot is still in flight.
 ///
 /// Offscreen there is no display link pacing the loop, so a tight run of frames
@@ -645,12 +677,27 @@ const Probe = struct {
     /// return null, so the trace draw is skipped and the decay runs alone. That
     /// is the shipping behaviour for an editor open on a plugin the host has not
     /// activated, reused rather than simulated.
+    ///
+    /// Every case but `checkDecayIsInRealTime` uses `runAt`'s default interval;
+    /// that one is the whole point of the parameter existing.
     fn run(self: *Probe, window: []const f32, frames: u32, deposit: u32) !void {
+        return self.runAt(window, frames, deposit, trace_frame_nanos);
+    }
+
+    /// `run`, with the synthetic clock's step named.
+    fn runAt(
+        self: *Probe,
+        window: []const f32,
+        frames: u32,
+        deposit: u32,
+        interval_nanos: u64,
+    ) !void {
         var worker: Worker = .{
             .renderer = &self.renderer,
             .window = window,
             .frames = frames,
             .deposit = deposit,
+            .interval_nanos = interval_nanos,
         };
 
         const thread = try std.Thread.spawn(.{}, Worker.entry, .{&worker});
@@ -675,27 +722,47 @@ const Worker = struct {
     window: []const f32,
     frames: u32,
     deposit: u32,
+    interval_nanos: u64,
     result: anyerror!void = {},
 
     fn entry(self: *Worker) void {
         self.result = self.drive();
     }
 
+    /// The synthetic clock starts at zero, and what the renderer makes of that is
+    /// worth stating exactly, because the obvious reading is wrong. This is the
+    /// first frame of a fresh renderer, so `last_frame_nanos` is null and
+    /// `Renderer.frame` stands in `palette.decay_reference_frame_nanos` rather
+    /// than an elapsed time of zero. The fade is a no-op either way against a pair
+    /// `buildAccumulation` has just cleared; what the interval decides is that
+    /// frame's white point, which is why zero was not an option.
+    ///
+    /// Every frame after it is one `interval_nanos` later, so `frames` frames
+    /// deposit and decay across `(frames - 1) * interval_nanos` of simulated wall
+    /// time. Counting the intervals rather than the frames is what the checks
+    /// below state their expectations in.
+    ///
+    /// **A retried frame does not advance the clock**, deliberately. `driveFrame`
+    /// re-presents the same instant until a slot frees, which is what a real tick
+    /// hitting `.no_frame_slot` does: the renderer keeps the interval owed and
+    /// hands it to whichever attempt commits. Advancing per attempt would make
+    /// the simulated elapsed time depend on how busy the GPU was, which is the
+    /// measurement-of-the-runner this whole clock exists to avoid.
     fn drive(self: *Worker) !void {
         self.renderer.upload(self.window);
 
         var i: u32 = 0;
         while (i < self.frames) : (i += 1) {
             if (i == self.deposit) self.renderer.upload(&[_]f32{});
-            try driveFrame(self.renderer);
+            try driveFrame(self.renderer, i * self.interval_nanos);
         }
     }
 };
 
-fn driveFrame(renderer: *gpu.Renderer) !void {
+fn driveFrame(renderer: *gpu.Renderer, now_nanos: u64) !void {
     var attempt: usize = 0;
     while (attempt < trace_frame_attempts) : (attempt += 1) {
-        switch (renderer.frame()) {
+        switch (renderer.frame(now_nanos)) {
             .presented => return,
             // The one outcome worth waiting out. Yielding rather than sleeping
             // because reaching for `std.Io` from a thread its single-threaded
@@ -755,6 +822,7 @@ fn traceHalf() !void {
     try checkResolve(energy, picture, window);
     try checkHotCore(energy, picture, window);
     try checkDecay(energy, picture, window);
+    try checkDecayIsInRealTime(energy, picture, window);
 }
 
 /// A window of zeros draws one flat line through the centre.
@@ -1052,7 +1120,7 @@ fn checkResolve(energy: []f32, picture: []u8, window: []f32) !void {
     // about how the table was built: there is no background term in
     // `resolve_fragment` at all, so if these disagree the gradient's first entry
     // is not what reaches an unlit pixel.
-    const at_zero = palette.resolved(&table, palette.shipped_palette, palette.decay_per_frame, 0.0);
+    const at_zero = palette.resolved(&table, palette.shipped_palette, trace_decay, 0.0);
     for (0..3) |channel| {
         if (background[channel] != at_zero[channel]) return error.BackgroundNotThePaletteAtZero;
     }
@@ -1075,7 +1143,7 @@ fn checkResolve(energy: []f32, picture: []u8, window: []f32) !void {
             const want = palette.resolved(
                 &table,
                 palette.shipped_palette,
-                palette.decay_per_frame,
+                trace_decay,
                 image.channel(x, y, 1),
             );
             for (0..3) |channel| {
@@ -1179,7 +1247,7 @@ fn checkHotCore(energy: []f32, picture: []u8, window: []f32) !void {
 
         const image = probe.image();
         const peak = measure.maxChannel(image, 1);
-        const white = palette.whitePoint(palette.decay_per_frame);
+        const white = palette.whitePoint(trace_decay);
         say("  hot core: thirty deposits peak at {d:.3}, white point {d:.3}", .{ peak, white });
         if (peak < white) return error.DwellNeverReachesWhite;
 
@@ -1226,7 +1294,7 @@ fn checkDecay(energy: []f32, picture: []u8, window: []f32) !void {
 
         const quiet = frames - 1;
         const ratio = peak / first;
-        const want = std.math.pow(f32, palette.decay_per_frame, @floatFromInt(quiet));
+        const want = std.math.pow(f32, trace_decay, @floatFromInt(quiet));
         say("  decay: after {d} quiet frames, {d:.4} of the deposit, expected {d:.4}", .{
             quiet,
             ratio,
@@ -1239,6 +1307,104 @@ fn checkDecay(energy: []f32, picture: []u8, window: []f32) !void {
         // are tens of times outside this.
         if (@abs(ratio - want) > 0.02 * want) return error.DecayWrong;
     }
+}
+
+/// How much simulated wall time `checkDecayIsInRealTime` fades across.
+///
+/// 96 ms rather than a round 100, so that both arms below divide it into whole
+/// nanoseconds and span *exactly* the same interval: 12 steps of 8 ms and 6 of
+/// 16 ms. An interval the two could only approximate would put a residual
+/// difference into the measurement this check is reading a difference out of.
+const decay_span_nanos: u64 = 96 * std.time.ns_per_ms;
+
+/// The same elapsed time fades the phosphor by the same amount however many
+/// frames it was delivered in.
+///
+/// **The whole of #56, and the one check here that could not exist before it.**
+/// Every other case in this half measures a single frame, or a run of frames at
+/// one rate; this one is a claim about how successive frames differ, which is why
+/// #56's body expected to be verified by pinning a display to 60 Hz in System
+/// Settings, capturing after a fixed wall-clock interval, and comparing brightness
+/// by eye. `Renderer.frame` taking a clock reading rather than reading one is what
+/// turns that procedure into an assertion.
+///
+/// The two arms are 125 Hz and 62.5 Hz, which bracket the rates this machine's
+/// panel actually produces, and both fade across `decay_span_nanos`. The
+/// falsification is not subtle, which is the point of the design: with a per-frame
+/// factor the arms would land on `0.9^12 = 0.2824` and `0.9^6 = 0.5314`, a factor
+/// of 1.88 apart against a tolerance of two percent.
+///
+/// Two assertions rather than one, because they fail for different reasons. The
+/// arms agreeing with **each other** is frame-rate independence, which is what the
+/// issue asked for. Each agreeing with `palette.decayOver` is the model and the
+/// shader agreeing about `tau`, which a pair of arms that were both wrong in the
+/// same way would pass.
+fn checkDecayIsInRealTime(energy: []f32, picture: []u8, window: []f32) !void {
+    var measured: [2]f32 = undefined;
+    var predicted: [2]f32 = undefined;
+
+    for (
+        [_]u64{ 8 * std.time.ns_per_ms, 16 * std.time.ns_per_ms },
+        &measured,
+        &predicted,
+    ) |interval, *slot, *want_slot| {
+        const steps = decay_span_nanos / interval;
+
+        // **Composed per step rather than asked of the span directly**, and the
+        // difference is not pedantry: `palette.max_elapsed_nanos` is 41.7 ms, so
+        // `decayOver(decay_span_nanos)` would clamp and predict 0.7684 against a
+        // true 0.5451. That the clamp is invisible here is the point — it bounds
+        // one frame's interval, and a fade delivered in frames never reaches it.
+        //
+        // It also makes the two arms' expectations two independent derivations
+        // that have to coincide, which is checked below rather than assumed.
+        const want = std.math.pow(f32, palette.decayOver(interval), @floatFromInt(steps));
+        want_slot.* = want;
+
+        // One depositing frame, then `steps` that decay alone, so the fade covers
+        // exactly `decay_span_nanos`. `Probe.run`'s clock starts at zero and the
+        // deposit frame is the one with no interval behind it.
+        var deposited = try Probe.init(energy, picture);
+        defer deposited.deinit();
+        measure.constant(window, 0.5);
+        try deposited.runAt(window, 1, 1, interval);
+        const first = measure.maxChannel(deposited.image(), 1);
+
+        var faded = try Probe.init(energy, picture);
+        defer faded.deinit();
+        measure.constant(window, 0.5);
+        try faded.runAt(window, @intCast(steps + 1), 1, interval);
+        slot.* = measure.maxChannel(faded.image(), 1) / first;
+
+        say("  real time: {d} frames {d} ms apart, {d:.4} left after {d} ms, expected {d:.4}", .{
+            steps,
+            interval / std.time.ns_per_ms,
+            slot.*,
+            decay_span_nanos / std.time.ns_per_ms,
+            want,
+        });
+
+        if (@abs(slot.* - want) > 0.02 * want) return error.DecayNotInRealTime;
+    }
+
+    // The two predictions are `exp(-96 ms / tau)` reached from 8 ms twelve times
+    // and from 16 ms six times. They are equal in exact arithmetic, so anything
+    // above `f32` noise here is `decayOver` not being an exponential.
+    try expectClose(predicted[0], predicted[1], 1e-4, error.DecayNotInRealTime);
+
+    const spread = @abs(measured[0] - measured[1]) / predicted[0];
+    say("  real time: the two rates differ by {d:.2}%", .{spread * 100.0});
+
+    // Tighter than either arm's own tolerance, and it can be: both are the same
+    // fade over the same interval, so what separates them is half-float rounding
+    // compounded over twelve multiplies against six rather than any difference in
+    // what was asked for.
+    if (spread > 0.01) return error.DecayNotInRealTime;
+}
+
+/// `a` and `b` within `tolerance` relatively, or the caller's error.
+fn expectClose(a: f32, b: f32, tolerance: f32, err: anyerror) !void {
+    if (@abs(a - b) > tolerance * @abs(b)) return err;
 }
 
 // ---------------------------------------------------------------------------

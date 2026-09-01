@@ -294,14 +294,94 @@ pub fn paletteAt(table: []const f32, palette: Palette, t: f32) [3]f32 {
 // The tonemap
 // ---------------------------------------------------------------------------
 
-/// How much of the phosphor survives one frame, restated from
-/// `src/gpu/metal/renderer.zig`.
+/// The rate the phosphor's time constant is anchored to, and the per-frame factor
+/// it is anchored at.
 ///
-/// Its copy is the one the shader is handed; this is the model's, and a test
-/// there compares them. It is here rather than imported because this file
-/// deliberately reaches nothing but the seam, which is what lets `zig build test`
-/// cover it on a runner with no graphics support at all.
-pub const decay_per_frame: f32 = 0.90;
+/// Two numbers with an argument behind them, rather than one derived decimal with
+/// none. #55 shipped `decay_per_frame = 0.90` and ADR 0019's table measured the
+/// white point against it at 60 Hz, holding a single deposit at green 188 to 190
+/// and the dwell steady state at 255 across 48, 60, 120 and 240 Hz. Anchoring
+/// here is what makes this issue change *when* the phosphor fades and nothing
+/// about how bright it is.
+///
+/// `f64` because they are only ever inputs to the comptime derivation below.
+pub const decay_reference_hz: f64 = 60.0;
+pub const decay_reference_factor: f64 = 0.90;
+
+/// The phosphor's time constant: what survives an interval is `exp(-dt / tau)`.
+///
+/// **Per second rather than per frame, which is the whole of #56.** A per-frame
+/// factor makes persistence a function of what else the machine is doing, and
+/// this machine's panel is adaptive between 48 and 120 Hz on its own: #38's
+/// verification watched the render meter drift between 120.0 and 119.5 while
+/// nothing unusual was happening, and the 0.90 this replaces fades twice as
+/// slowly at 60 Hz as at 120. ADR 0007 asked for exactly this and named it a
+/// user-facing time constant, which is what phase 5 eventually attaches a
+/// parameter to; until then it is a constant with a unit.
+///
+/// 158.19 ms, which is not a round number and is not meant to be. It is
+/// `-(1 / 60) / ln(0.90)`, derived rather than written out so the anchor above is
+/// the thing that can be argued with. A test asserts the round trip, so the
+/// docstring is executable rather than a claim.
+///
+/// The visible consequence, from ADR 0019's measurement that a single deposit
+/// falls below green 16 at frame 54: about **0.9 s of trail at every refresh
+/// rate**, which is what 60 Hz already showed and twice what 120 Hz did.
+pub const decay_tau_nanos: u64 = @intFromFloat(@round(
+    -@as(f64, @floatFromInt(std.time.ns_per_s)) / (decay_reference_hz * @log(decay_reference_factor)),
+));
+
+/// One frame at the reference rate, and what the decay assumes before it has an
+/// interval to measure.
+///
+/// **The first frame of a renderer's life has no previous frame to subtract**, and
+/// zero is the wrong answer even though it looks like the honest one. The fade
+/// itself does not care: that frame decays a pair `buildAccumulation` has just
+/// cleared, so any factor is a no-op. The white point does, and badly — a decay of
+/// 1.0 sends `whitePoint` to its 8e5 clamp, a hundred thousand times the 8.0 a
+/// real frame produces, which is a picture whose hot end cannot arrive. Assuming
+/// the reference rate for one frame is a bounded guess; assuming an infinite one
+/// is not a guess at all.
+///
+/// `src/smoke.zig` is where the difference showed up rather than in a host, which
+/// is what `smoke-trace` is for: at zero the resolve check found a channel two
+/// levels off its prediction against a tolerance of one, and by eye that frame
+/// would have looked exactly right.
+pub const decay_reference_frame_nanos: u64 = @intFromFloat(@round(
+    @as(f64, @floatFromInt(std.time.ns_per_s)) / decay_reference_hz,
+));
+
+/// The longest interval `decayOver` will believe.
+///
+/// 24 Hz is the slowest interval that is still a refresh; anything longer is a
+/// loop that was stopped and started rather than a slow frame. Both directions
+/// were weighed and the numbers decide it. **Unclamped**, a one-second gap — an
+/// editor shown after being hidden — gives a decay of 0.0018, a white point of
+/// 0.801, and `tonemap(1, 0.801)` of exactly 1.0: one pure-white frame, every
+/// time. **Clamped**, the same resume produces a frame about 7% brighter than
+/// steady state, which is a blip nobody will see. What it costs is under-fading
+/// on a machine sustaining fewer than 24 frames a second, which is mild,
+/// self-limiting, and not the case worth optimising for.
+pub const max_elapsed_nanos: u64 = std.time.ns_per_s / 24;
+
+/// How much of the phosphor survives `elapsed_nanos`.
+///
+/// **The clamp lives in here rather than at the call site**, and that is
+/// load-bearing rather than tidy. The backend computes this once and puts the
+/// result in the single `decay` field both fullscreen passes read, so the fade
+/// and the white point derived from it cannot be clamped differently. A caller
+/// clamping its own `dt` would have to get that right twice.
+///
+/// The property everything else rests on is that this composes:
+/// `decayOver(a) * decayOver(b)` is `decayOver(a + b)`, so the total fade across
+/// an interval depends only on how long it was and not on how it was cut into
+/// frames. That is why `display_link.monotonicNanos()` is a sufficient clock and
+/// `CVTimeStamp` was refused; see `src/platform/displaylink.zig`.
+pub fn decayOver(elapsed_nanos: u64) f32 {
+    const dt: f64 = @floatFromInt(@min(elapsed_nanos, max_elapsed_nanos));
+    const tau: f64 = @floatFromInt(decay_tau_nanos);
+    return @floatCast(@exp(-dt / tau));
+}
 
 /// The fraction of a dwelling beam's steady state that reads pure white.
 ///
@@ -309,11 +389,13 @@ pub const decay_per_frame: f32 = 0.90;
 /// the whole reason this constant is a fraction.** A beam that never moves
 /// re-deposits into the same pixel every frame and converges on
 /// `1 / (1 - decay)`; anchoring white to that makes the look independent of how
-/// long the phosphor holds. A fixed white point in energy would not be: once #56
-/// makes the decay `exp(-dt / tau)` the steady state tracks the refresh rate, so
-/// the same picture would read twice as hot at 120 Hz as at 60. Measured across
-/// 48, 60, 120 and 240 Hz, deriving it holds a single deposit at green 188 to 190
-/// and the steady state at 255 throughout.
+/// long the phosphor holds. A fixed white point in energy would not be, and since
+/// #56 that is a live fact rather than a prediction: the decay is `exp(-dt / tau)`
+/// now, so the steady state tracks the refresh rate and a fixed white point would
+/// read twice as hot at 120 Hz as at 60. Measured across 48, 60, 120 and 240 Hz,
+/// deriving it holds a single deposit at green 188 to 190 and the steady state at
+/// 255 throughout, which is asserted rather than recalled: see the frame-rate
+/// invariance test below.
 ///
 /// Below one, and that is not a safety margin. Reinhard reaches its white point
 /// exactly at `e = w` while the steady state is only approached, so a white point
@@ -331,9 +413,9 @@ pub const decay_per_frame: f32 = 0.90;
 /// because the picture cannot yet distinguish one value from another.
 pub const white_headroom: f32 = 0.8;
 
-/// The gradient `shaders/scope.metal` selects, restated for the same reason
-/// `decay_per_frame` is, and pinned to the shader's `palette_row` by the
-/// constants test.
+/// The gradient `shaders/scope.metal` selects, restated on this side because the
+/// model has to know which row it is predicting against, and pinned to the
+/// shader's `palette_row` by the constants test.
 pub const shipped_palette: Palette = .green;
 
 /// Where the tonemap saturates, in deposits.
@@ -347,9 +429,23 @@ pub fn whitePoint(decay: f32) f32 {
     // without a conditional. A decay of exactly 1 is a phosphor that never fades,
     // whose steady state is unbounded; the clamp sends the white point to 8e5,
     // which makes the shoulder term vanish and leaves plain Reinhard rather than
-    // a division by zero. That case is unreachable through `decay_per_frame` and
-    // is reachable through a hot-reloaded shader reading an unbound buffer, which
-    // is what it is guarded for.
+    // a division by zero.
+    //
+    // **Reachable through this file and not through the render loop**, which is
+    // worth separating because the two answers differ. `decayOver(0)` is exactly
+    // 1.0, so any caller holding an interval of zero lands here. `Renderer.frame`
+    // is not such a caller: the first committed frame of a renderer's life stands
+    // in `decay_reference_frame_nanos` rather than a zero interval, precisely
+    // because this clamp would otherwise set that frame's white point, and every
+    // later frame is the difference between two distinct readings of a clock with
+    // nanosecond resolution.
+    //
+    // What it is really guarded for is the shader's copy of this arithmetic, where
+    // a hot-reloaded source can leave a fragment uniform unbound and the value is
+    // then whatever the buffer held. `shaders/scope.metal` carries the other half
+    // of that argument, including the opposite end: at a decay of zero the white
+    // point falls to `white_headroom` and everything above one deposit blows out
+    // white, which is loud and is the right failure.
     return white_headroom / @max(1.0 - decay, 1e-6);
 }
 
@@ -645,4 +741,117 @@ test "the table has a row per palette and the rows differ" {
     try testing.expectApproxEqAbs(lead * 0.5, neutral[2] - neutral[0], 1e-7);
     try testing.expectApproxEqAbs(lead, paletteAt(table, .neutral, 0.0)[2] - paletteAt(table, .neutral, 0.0)[0], 1e-7);
     try testing.expectApproxEqAbs(@as(f32, 0.0), paletteAt(table, .neutral, 1.0)[2] - paletteAt(table, .neutral, 1.0)[0], 1e-7);
+}
+
+/// One refresh interval in nanoseconds, for the tests below.
+fn frameNanos(hz: u64) u64 {
+    return std.time.ns_per_s / hz;
+}
+
+test "the time constant is the anchor it says it is" {
+    // The docstring's `-(1 / 60) / ln(0.90)`, made executable. Without this the
+    // derivation is a comment beside a number nothing checks, and the number is
+    // the one every figure in ADR 0019's table was computed from.
+    try testing.expectApproxEqAbs(@as(f32, 0.90), decayOver(frameNanos(60)), 1e-6);
+
+    // The rest of that table, to six places. These are what a reader will find in
+    // ADR 0019 and in this file's own docstrings, so they are pinned rather than
+    // recalculated by whoever next wonders whether they moved.
+    try testing.expectApproxEqAbs(@as(f32, 0.876603), decayOver(frameNanos(48)), 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 0.948683), decayOver(frameNanos(120)), 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 0.974004), decayOver(frameNanos(240)), 1e-5);
+}
+
+test "nothing fades over no time, and everything fades monotonically" {
+    try testing.expectEqual(@as(f32, 1.0), decayOver(0));
+
+    var previous: f32 = 1.0;
+    var elapsed: u64 = std.time.ns_per_ms;
+    while (elapsed < max_elapsed_nanos) : (elapsed += std.time.ns_per_ms) {
+        const decay = decayOver(elapsed);
+        try testing.expect(decay < previous);
+        try testing.expect(decay > 0.0);
+        previous = decay;
+    }
+}
+
+test "the decay composes, which is why the callback's own clock is enough" {
+    // **The property #56 is actually about.** `exp(-(a + b) / tau)` is
+    // `exp(-a / tau) * exp(-b / tau)`, so the total fade across an interval
+    // depends on how long it was and not on how it was cut into frames. That is
+    // what makes `display_link.monotonicNanos()` a sufficient clock: the
+    // difference between when a callback ran and when its frame will be shown is
+    // a bounded per-frame offset that cancels in the sum, so it never
+    // accumulates. `src/platform/displaylink.zig` carries the refusal this
+    // supports; this is the arithmetic under it, and it needs no GPU to check.
+    //
+    // A per-frame factor fails this for any split that is not the reference rate,
+    // which is the same thing `checkDecayIsInRealTime` asserts through the shader.
+    for ([_][2]u64{
+        .{ frameNanos(120), frameNanos(120) },
+        .{ frameNanos(120), frameNanos(60) },
+        .{ frameNanos(240), frameNanos(48) },
+        .{ 1, frameNanos(60) },
+        .{ frameNanos(30), frameNanos(1000) },
+    }) |split| {
+        const apart = decayOver(split[0]) * decayOver(split[1]);
+        const together = decayOver(split[0] + split[1]);
+
+        // Tight, because both sides are one `@exp` in `f64` narrowed to `f32`:
+        // this is float arithmetic agreeing with itself rather than a rendering
+        // tolerance, and slack here would hide the failure it exists to catch.
+        try testing.expectApproxEqRel(together, apart, 1e-6);
+    }
+}
+
+test "an interval longer than a refresh is not believed" {
+    // The resume case. Everything past the clamp gives one answer, which is what
+    // keeps a hidden-then-shown editor from presenting a single white frame.
+    try testing.expectEqual(decayOver(max_elapsed_nanos), decayOver(10 * std.time.ns_per_s));
+    try testing.expectEqual(decayOver(max_elapsed_nanos), decayOver(std.math.maxInt(u64)));
+
+    // And the numbers the clamp's docstring quotes for choosing it. Unclamped,
+    // a second's gap would put the white point at 0.801 and send one deposit to
+    // exactly 1.0; clamped, the same resume is a few percent off steady state.
+    const resumed = whitePoint(decayOver(10 * std.time.ns_per_s));
+    const steady = whitePoint(decayOver(frameNanos(60)));
+    try testing.expect(resumed > 3.0 and resumed < 4.0);
+    try testing.expect(tonemap(1.0, resumed) < 1.0);
+    try testing.expect(tonemap(1.0, resumed) - tonemap(1.0, steady) < 0.05);
+}
+
+test "the white point holds a deposit's brightness steady across refresh rates" {
+    // **ADR 0019's table, turned into an assertion.** The white point is
+    // `white_headroom / (1 - decay)` precisely so that the dwell asymptote and the
+    // point white is anchored at track the refresh rate together, and #56 is what
+    // makes that a live property rather than a prediction: the decay is now
+    // genuinely different at 48 Hz and at 240.
+    //
+    // Nothing checked this before. It is the failure that would arrive in silence
+    // if `tau` or `white_headroom` moved — a picture that is correct at one
+    // refresh rate and reads hot or dim at another, with every other test still
+    // green.
+    const table = try paletteScratch();
+    defer testing.allocator.free(table);
+
+    const reference = resolved(table, shipped_palette, decayOver(frameNanos(60)), 1.0);
+
+    for ([_]u64{ 48, 120, 240 }) |hz| {
+        const got = resolved(table, shipped_palette, decayOver(frameNanos(hz)), 1.0);
+        for (reference, got) |want, have| {
+            const drift = @as(i32, want) - @as(i32, have);
+            try testing.expect(@abs(drift) <= 2);
+        }
+    }
+
+    // The other end of the range, where a beam that never moves converges. The
+    // steady state is `1 / (1 - decay)`, which is 10 at 60 Hz and 38.5 at 240, and
+    // every one of them has to reach white or the core stops being the top of the
+    // ramp ADR 0007 asks for.
+    for ([_]u64{ 48, 60, 120, 240 }) |hz| {
+        const decay = decayOver(frameNanos(hz));
+        const steady = 1.0 / (1.0 - decay);
+        const got = resolved(table, shipped_palette, decay, steady);
+        for (got) |channel| try testing.expectEqual(@as(u8, 255), channel);
+    }
 }

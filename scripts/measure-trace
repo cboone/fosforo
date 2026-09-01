@@ -32,6 +32,7 @@ hides at the low end where it is easiest to check.
 
 import argparse
 import io
+import math
 import subprocess
 import sys
 import tempfile
@@ -63,7 +64,35 @@ RAIL = 0.98  # iface.trace_rail
 BACKGROUND_BYTES = (5.0, 5.0, 8.0)  # palette.background_bytes
 CORE_EXPONENT = 4  # palette.core_exponent
 WHITE_HEADROOM = 0.8  # palette.white_headroom
-DECAY = 0.9  # palette.decay_per_frame, until #56 makes it a function of elapsed time
+TAU_NS = 158187026  # palette.decay_tau_nanos
+
+# The refresh rate a capture is assumed to have been taken at.
+#
+# **#56 gave this file a dependency it did not have before, and it is a real one
+# rather than bookkeeping.** The decay is now `exp(-dt / TAU_NS)`, so the white
+# point `WHITE_HEADROOM / (1 - decay)` depends on how fast the display was
+# refreshing when the screenshot was taken: 8.0 at 60 Hz and 15.6 at 120. Both
+# numbers below are read through it, and they are affected very differently.
+#
+# `lit_threshold` barely moves, because at an energy of 0.231 deposits the
+# tonemap's shoulder term is negligible: across 48 to 240 Hz, where the white
+# point runs from 6.5 to 30.8, the dominant channel's lit byte goes 120.62,
+# 120.52, 120.37, 120.33 — three tenths of a byte across the whole range. **It
+# does change the reported integer, and only by bad luck**: the value straddles
+# 120.5, so this prints 121 at and below 60 Hz and 120 at and above 120. One level
+# on a threshold is nothing to a persistence envelope, and it is worth knowing
+# before wondering why a re-measured capture moved.
+#
+# `energy_from_tonemapped` moves a great deal, because inverting the curve near
+# saturation is exactly where the white point does its work: a pixel at `t = 0.9`
+# reads 5.0 deposits at 60 Hz and 7.0 at 120, a 39% difference in the one number a
+# retune would be done against. That measurement is why `--refresh` exists and why
+# this is not simply pinned to the reference rate.
+#
+# 120 by default because that is this machine's panel at its usual rate, and
+# because a capture taken while ProMotion was idling lower is the case worth
+# passing a flag for rather than the case worth defaulting to.
+DEFAULT_REFRESH_HZ = 120.0
 
 # The four gradients, authored in sRGB, in the order the shader's `palette_row`
 # selects them: green, amber, storage-tube blue, neutral.
@@ -163,7 +192,20 @@ def tonemapped_from_dominant(tint, byte):
     return (linear - background) / (1.0 - background)
 
 
-def energy_from_tonemapped(t):
+def white_point(refresh_hz):
+    """Where the tonemap saturates, in deposits, for a capture at this rate.
+
+    `palette.whitePoint(palette.decayOver(1 / refresh_hz))`, restated. The white
+    point is derived from the decay rather than fixed, so that a dwelling beam's
+    steady state and the point white is anchored at track the refresh rate
+    together; since #56 made the decay a function of elapsed time that is a live
+    dependency rather than a property held in reserve.
+    """
+    decay = math.exp(-1e9 / (refresh_hz * TAU_NS))
+    return WHITE_HEADROOM / max(1.0 - decay, 1e-6)
+
+
+def energy_from_tonemapped(t, white):
     """Invert the curve, so a capture can report the energy behind a colour.
 
     Extended Reinhard `t = e(1 + e/w²)/(1 + e)` rearranges to a quadratic in `e`:
@@ -172,8 +214,11 @@ def energy_from_tonemapped(t):
     guess, and because it saturates: at or above the white point the curve has
     stopped distinguishing, which is the brightness axis's rail and is exactly
     what `RAIL` is on the vertical one.
+
+    This is the reading `--refresh` matters most to. Near saturation the shoulder
+    term is the whole answer, so a `t` of 0.9 reads 5.0 deposits against a 60 Hz
+    white point and 7.0 against a 120 Hz one.
     """
-    white = WHITE_HEADROOM / max(1.0 - DECAY, 1e-6)
     a = 1.0 / (white * white)
     b = 1.0 - t
     if t >= 1.0:
@@ -240,9 +285,16 @@ SATURATED = 250
 LIT_ENERGY = 0.231
 
 
-def lit_threshold(tint):
-    """The dominant channel's byte at which a pixel counts as lit."""
-    white = WHITE_HEADROOM / max(1.0 - DECAY, 1e-6)
+def lit_threshold(tint, white):
+    """The dominant channel's byte at which a pixel counts as lit.
+
+    Nearly insensitive to `white`, which was measured rather than assumed: across
+    the whole 48 to 240 Hz range the white point moves from 6.5 to 30.8 and this
+    lands between 120.33 and 120.62, because `LIT_ENERGY` sits low on the curve
+    where the shoulder term is negligible. The rounding straddles that span, so
+    the integer returned is 121 below about 90 Hz and 120 above it. See
+    `DEFAULT_REFRESH_HZ`.
+    """
     e = LIT_ENERGY
     t = min(e * (1.0 + e / (white * white)) / (1.0 + e), 1.0)
     return round(float(srgb_encode(palette(tint, t, dominant(tint)))) * 255.0)
@@ -534,6 +586,15 @@ def main():
             f"default is derived from an energy of {LIT_ENERGY} deposits"
         ),
     )
+    ap.add_argument(
+        "--refresh",
+        type=float,
+        default=DEFAULT_REFRESH_HZ,
+        help=(
+            "refresh rate the capture was taken at, which sets the white point; "
+            f"default {DEFAULT_REFRESH_HZ:g} Hz"
+        ),
+    )
     ap.add_argument("--periods", action="store_true", help="also count periods")
     ap.add_argument(
         "--no-crop", action="store_true", help="the image is already exactly the drawable"
@@ -583,7 +644,8 @@ def main():
 
     tint = TINTS[args.palette]
     lead = dominant(tint)
-    threshold = args.threshold if args.threshold is not None else lit_threshold(tint)
+    white = white_point(args.refresh)
+    threshold = args.threshold if args.threshold is not None else lit_threshold(tint, white)
 
     # Refusing is right when the picture cannot have come from this shader: a
     # plausible wrong answer is worse than none, and the case that produced this
@@ -681,7 +743,7 @@ def main():
     # amount is unknowable, exactly as it is for a trace sitting on `RAIL`.
     peak_lead = int(np.asarray(img.convert("RGB"), dtype=np.int16)[:, :, lead].max())
     peak_t = float(tonemapped_from_dominant(tint, peak_lead))
-    peak_energy = energy_from_tonemapped(peak_t)
+    peak_energy = energy_from_tonemapped(peak_t, white)
     if np.isfinite(peak_energy):
         print(
             f"brightest pixel  {'rgb'[lead]}={peak_lead}, t={peak_t:.4f}, {peak_energy:.2f} deposits"

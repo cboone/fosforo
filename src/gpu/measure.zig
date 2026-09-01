@@ -157,9 +157,15 @@ pub fn litSpan(image: Image, threshold: f32) ?Span {
 ///
 /// Unclipped, because the accumulation is floating point and a beam crossing its
 /// own path deposits twice. That headroom is the thing #60 wants and it is also
-/// the only way to measure decay: the ratio of this across successive frames is
-/// the decay factor, and taking it as a ratio is what makes the measurement
-/// independent of how many segments happened to cover the brightest pixel.
+/// the only way to measure decay: the ratio of this across a run of frames is
+/// what the phosphor kept over the elapsed time they spanned, and taking it as a
+/// ratio is what makes the measurement independent of how many segments happened
+/// to cover the brightest pixel.
+///
+/// **Per elapsed time rather than per frame since #56**, which is why
+/// `checkDecayIsInRealTime` can read the same ratio out of two runs at different
+/// frame rates and compare them. The instrument did not change; what a frame
+/// count means did.
 pub fn maxChannel(image: Image, c: usize) f32 {
     var peak: f32 = 0;
 

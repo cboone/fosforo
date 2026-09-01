@@ -399,6 +399,21 @@ pub const ShaderStats = struct {
 /// pixels, because there is no view to read a scale from and inventing one would
 /// put a rounding between a caller and the geometry it is measuring.
 ///
+/// **`frame`'s `u64` is an absolute reading of a monotonic clock in nanoseconds,
+/// and never an interval** (#56). The backend decays the accumulation by
+/// `exp(-dt / tau)`, so it needs to know how long since the last frame it drew,
+/// and *it* is the only thing that knows which frames those were: a tick can take
+/// any of six early returns, and the time a skipped one spanned is still owed to
+/// whichever frame draws next. Passing the reading rather than the difference is
+/// what puts that invariant in the one place able to hold it.
+///
+/// A bare `u64` rather than a clock type, on this file's own rule about arriving
+/// with a caller: there is exactly one clock, `display_link.monotonicNanos()`,
+/// and a seam that named an abstraction over it would be describing a choice
+/// nobody has. The parameter is a value rather than something the backend reads
+/// for itself so that `src/smoke.zig` can supply one, which is what makes
+/// frame-rate independence an assertion instead of a System Settings toggle.
+///
 /// `shaderStats` is the eleventh, and the third of the questions rather than the
 /// instructions. It answers whether a debug build has picked up an edited shader,
 /// which is otherwise observable only in the picture, and the picture is what ADR
@@ -432,7 +447,7 @@ comptime {
     // `[[vertex_id]]`, so the claim held all the way down to the GPU rather than
     // only as far as this line.
     assertSignature("upload", @TypeOf(Renderer.upload), fn (*Renderer, []const f32) void);
-    assertSignature("frame", @TypeOf(Renderer.frame), fn (*Renderer) Outcome);
+    assertSignature("frame", @TypeOf(Renderer.frame), fn (*Renderer, u64) Outcome);
     assertSignature("probe", @TypeOf(Renderer.probe), fn (*Diagnostics) Error!void);
     // `[main-thread]`, and its `Size` is in whole backing pixels rather than the
     // points `init` takes. There is no view here whose scale factor could be

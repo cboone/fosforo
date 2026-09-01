@@ -6,9 +6,9 @@ A Mac-first GPU-rendered phosphor oscilloscope and signal-analysis plugin, autho
 
 Early development, and not yet worth installing unless you are working on it. No release has been cut.
 
-What works: the plugin loads in REAPER and in Logic Pro, through the Audio Unit that [clap-wrapper](https://github.com/free-audio/clap-wrapper) projects it into. It passes stereo audio through unchanged, saves and restores its state, and taps one channel into a lock-free history buffer the render thread reads a trailing window from. It opens a resizable editor backed by a `CAMetalLayer` and renders into it at vsync, driven by a `CVDisplayLink`. **It draws the signal**, as a beam depositing energy into a persistent floating-point accumulation texture that decays between frames, so the trace glows and fades rather than being redrawn from nothing.
+What works: the plugin loads in REAPER and in Logic Pro, through the Audio Unit that [clap-wrapper](https://github.com/free-audio/clap-wrapper) projects it into. It passes stereo audio through unchanged, saves and restores its state, and taps one channel into a lock-free history buffer the render thread reads a trailing window from. It opens a resizable editor backed by a `CAMetalLayer` and renders into it at vsync, driven by a `CVDisplayLink`. **It draws the signal**, as a beam depositing energy into a persistent floating-point accumulation texture that decays between frames, so the trace glows and fades rather than being redrawn from nothing. The fade is exponential in real elapsed time against a time constant, so it looks the same at 60 Hz, at 120, and on a display that drifts between the two.
 
-What does not work yet: the beam is still a one-pixel line strip rather than geometry, its brightness does not vary with how fast it sweeps, and the persistence is measured in frames rather than in seconds. Those are the rest of [phase 3](https://github.com/cboone/fosforo/milestone/3), and each is an issue.
+What does not work yet: the beam is still a one-pixel line strip rather than geometry, and its brightness does not vary with how fast it sweeps. Those are the rest of [phase 3](https://github.com/cboone/fosforo/milestone/3), and each is an issue.
 
 ## Roadmap
 

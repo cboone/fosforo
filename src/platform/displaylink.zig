@@ -36,10 +36,33 @@ const CVOptionFlags = u64;
 /// The two `const CVTimeStamp *` parameters are declared opaque rather than
 /// restated. Every parameter here is pointer-sized, so this is ABI-identical to
 /// the real signature, and `CVTimeStamp` is 80 bytes with a nested `CVSMPTETime`
-/// that nothing in this project reads. Phase 3's frame-rate-independent decay is
-/// the first thing that wants a timestamp, and restating the struct then is the
-/// same rule `src/gpu/iface.zig` already applies to the seam: operations, and
-/// types, arrive with the phase that has a caller for them.
+/// that nothing in this project reads.
+///
+/// **This comment used to say that phase 3's frame-rate-independent decay would
+/// be the caller that changed it. That work is #56, it has landed, and it went
+/// the other way** — the decay reads `monotonicNanos()` below. The reasoning is
+/// here rather than in the issue because it is the kind of thing that looks
+/// arbitrary a year later, and here is where someone would come looking.
+///
+/// **Exponential decay composes.** `exp(-(a + b) / tau)` is
+/// `exp(-a / tau) * exp(-b / tau)`, so the total fade across an interval depends
+/// only on how long it was and not on how it was cut into frames. Both clocks are
+/// monotonic and both cover the whole interval, so both sum to the same wall
+/// time. What `output_time` buys is a better *subdivision* on a frame that misses
+/// its deadline: a phase error of at most one refresh period against a 158 ms time
+/// constant, absorbed by the next interval rather than accumulated.
+/// `src/gpu/palette.zig` holds that property as a test.
+///
+/// Against that, restating the struct means laying out 80 bytes by hand with no
+/// header to check them against, and threading a timestamp through `create`'s
+/// comptime callback into `Editor.tick`. A wrong field offset does not fail: it
+/// yields a plausible `dt` and a phosphor that fades at the wrong speed, which is
+/// the hardest kind of wrong to notice and the kind this project keeps naming.
+///
+/// So the rule this comment cited still holds and now cuts the other way: types
+/// arrive with the phase that has a caller for them, and the phase that would
+/// have had one measured what it would buy and declined. Revisit only with a
+/// reason that survives the composition argument above.
 const OutputCallback = *const fn (
     link: CVDisplayLinkRef,
     now: ?*const anyopaque,
@@ -79,6 +102,14 @@ pub extern "c" fn CGMainDisplayID() DisplayID;
 /// That was measured before it was chosen and it costs nothing (ADR 0015). It
 /// stays in this file because the only thing that reads it is the render loop
 /// this file paces.
+///
+/// **#56 gave it a caller that is not debug-only**, which is the one thing about
+/// it that changed. It used to be reached solely from `Editor.report` and was
+/// stripped from a release build with it; the decay reads it every frame, so a
+/// `--release=fast` binary now imports `clock_gettime_nsec_np` and is 176 bytes
+/// larger. `Io.Threaded`'s symbols are still absent from that binary, which is
+/// the thing ADR 0015 was actually worried about, and this is still the only
+/// clock anything here reads.
 ///
 /// The cast is lossless in the only direction that exists: `Io.Timestamp` counts
 /// signed `i96` nanoseconds, and `awake` counts from boot, so the value is
