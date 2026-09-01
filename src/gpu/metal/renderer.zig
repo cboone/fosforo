@@ -2180,7 +2180,8 @@ fn buildPipelines(device: objc.Object, diags: *iface.Diagnostics) iface.Error!Pi
     if (comptime shader.live) {
         // A stack buffer rather than a field, because this is called from three
         // threads and none of them may allocate. 64 KiB against an 8 MiB
-        // main-thread stack and a 16 MiB spawned one, for a file currently eight.
+        // main-thread stack and a 16 MiB spawned one, for a file currently
+        // fifteen.
         var buf: shader.Buffer = .{};
 
         if (readShader(&buf)) |source| {

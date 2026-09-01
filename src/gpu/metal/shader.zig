@@ -15,7 +15,7 @@
 //! Nothing here allocates. The read lands in a caller-owned `Buffer`, on the same
 //! reasoning as `Editor.samples` and the stack buffer in `clap/log.zig`: the one
 //! thread that calls this has no allocator and should not acquire one to read
-//! eight kilobytes.
+//! fifteen kilobytes.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -57,18 +57,27 @@ pub const path_env = "FOSFORO_SHADER_PATH";
 
 /// The largest shader this build will read.
 ///
-/// `shaders/scope.metal` is around ten kilobytes; the bound is what makes the
+/// `shaders/scope.metal` is around fifteen kilobytes; the bound is what makes the
 /// read allocation-free, and the test below pins the headroom against the file it
-/// is for, so a shader that grew fourfold fails a test rather than being refused
+/// is for, so a shader that grew threefold fails a test rather than being refused
 /// at runtime by a developer who has to work out why.
 ///
-/// **The factor is what moves, not this bound**, and #60 is where that was
-/// decided rather than discovered. The headroom was eightfold, chosen when the
-/// file was 8087 bytes, which put it 105 bytes from failing; a tonemap and a
-/// palette lookup were always going to cross that. Raising `max_bytes` instead
-/// would enlarge the `Buffer` below, which `buildPipelines` holds on the stack of
-/// whichever thread compiles, and the two `[max_bytes]u8` locals in
-/// `src/smoke.zig`, none of which needs to grow to make room for prose.
+/// **The factor is what moves, not this bound**, and it has now moved twice for
+/// the same reason. #60 took it from eightfold to fourfold: it was chosen when the
+/// file was 8087 bytes, which put it 105 bytes from failing, and a tonemap and a
+/// palette lookup were always going to cross that. #57 takes it to threefold,
+/// chosen when the file was 15,247 bytes against a fourfold ceiling of 16,384,
+/// which left 1,137 bytes for a rewrite of both trace functions at this
+/// repository's comment density. Each move is a claim about headroom, and headroom
+/// is allowed to shrink as the shader legitimately grows, so long as the number
+/// that motivated it is stated beside it.
+///
+/// Raising `max_bytes` instead would enlarge the `Buffer` below, which
+/// `buildPipelines` holds on the stack of whichever thread compiles, and the two
+/// `[max_bytes]u8` locals in `src/smoke.zig`, none of which needs to grow to make
+/// room for prose. That is the change worth making if the file ever heads past
+/// ~30 KiB rather than past 16, and it is a real change to the read path rather
+/// than the one-liner it looks like.
 pub const max_bytes = 64 * 1024;
 
 /// Storage for a resolved path, owned by the caller.
@@ -259,7 +268,7 @@ test "the embedded shader fits the read buffer with room to spare" {
     // through `build.zig`'s anonymous import, so the compiler records a cache
     // dependency and an edited shader rebuilds this binary before it runs.
     try testing.expect(embedded.len > 0);
-    try testing.expect(embedded.len * 4 < max_bytes);
+    try testing.expect(embedded.len * 3 < max_bytes);
 }
 
 test "nothing is read from disk in a test build" {
