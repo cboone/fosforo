@@ -144,14 +144,17 @@ const mtl = struct {
     /// the staging texture `readback` blits into.
     const storage_mode_shared: u64 = 0;
 
-    /// `MTLPrimitiveTypeLineStrip` and `MTLPrimitiveTypeTriangle`. These two were
+    /// `MTLPrimitiveTypeTriangle` and `MTLPrimitiveTypeTriangleStrip`. These were
     /// read out of `MTLRenderCommandEncoder.h` rather than recalled, which is
     /// worth saying in a block whose header admits it has nothing to check itself
     /// against: two independent attempts to remember the line strip's value
     /// produced 5 and 1, and the enum runs point, line, line strip, triangle,
     /// triangle strip from zero.
-    const primitive_type_line_strip: u64 = 2;
+    ///
+    /// The line strip that used to be here went with #57, which made the trace
+    /// geometry. Its value was 2, and the enum order above is why the strip is 4.
     const primitive_type_triangle: u64 = 3;
+    const primitive_type_triangle_strip: u64 = 4;
 
     /// `MTLBlendFactorOne` and `MTLBlendOperationAdd`, which together are the
     /// whole of "additive": source plus destination, unweighted.
@@ -281,6 +284,23 @@ const passes = [_]Pass{ decay_pass, trace_pass, resolve_pass };
 const window_buffer_index: u64 = 0;
 const uniform_buffer_index: u64 = 1;
 
+/// Where `trace_fragment` finds the same uniforms the vertex function reads.
+///
+/// A fourth zero, and the fourth index space: fragment buffers. #57 is what
+/// created it, because a beam shaded by its distance from the centreline needs
+/// the half-width and the density on the side that measures the distance, and
+/// the same struct carries both rather than a second one being invented.
+///
+/// **Named rather than written as a literal at the call site**, which is not
+/// tidiness. The test at the foot of this file walks the named constants, so a
+/// literal here would be the one binding in the shader nothing checks, and the
+/// symptom is what the block above describes: an unbound buffer at draw time,
+/// inside a DAW, with nothing printable. `probe` cannot cover it either, since
+/// building a pipeline validates the *declaration* while a missing bind is a
+/// draw-time error, so `zig build smoke-trace` is the only thing that would see
+/// it at all.
+const beam_uniform_index: u64 = 0;
+
 /// Where the two fullscreen passes find the accumulation and their uniforms.
 ///
 /// Both zero, and colliding with `window_buffer_index` above only in appearance:
@@ -312,17 +332,63 @@ const palette_texture_index: u64 = 1;
 /// notice a field added to one declaration and not the other, and the symptom of
 /// that is a plausible-looking trace at the wrong scale rather than a failure.
 ///
-/// Handed over by `setVertexBytes:`, which copies into the command buffer's own
-/// transient storage at encode time. So this needs none of the slot discipline
-/// `Renderer.window` exists to describe: there is no buffer for the GPU to be
-/// mid-read of. A fourth `MTLBuffer` would also be a fourth resource `leaks`
-/// cannot see, which is a cost this project has already measured once.
+/// Handed over by `setVertexBytes:` and `setFragmentBytes:`, both of which copy
+/// into the command buffer's own transient storage at encode time. So this needs
+/// none of the slot discipline `Renderer.window` exists to describe: there is no
+/// buffer for the GPU to be mid-read of. A fourth `MTLBuffer` would also be a
+/// fourth resource `leaks` cannot see, which is a cost this project has already
+/// measured once.
+///
+/// **The first three fields carry the seam's constants as defaults and the last
+/// four deliberately carry none.** Those four are per-frame measurements, and
+/// `AccumUniforms.decay` already argues the case: a default on a measurement is a
+/// value that compiles into a plausible picture when the measurement is forgotten,
+/// which is the failure this whole struct's layout test exists to catch a
+/// different form of. A test at the foot of this file holds both halves.
 const TraceUniforms = extern struct {
-    /// Vertices in the strip, and the divisor the x mapping uses. Never below
-    /// two; `traceVertices` is what establishes that.
+    /// Samples in the window, and the divisor the x mapping uses. Never below
+    /// two; `traceGeometry` is what establishes that. **No longer the vertex
+    /// count**, which #57 separated from it: the draw is instanced, so the vertex
+    /// count is a literal four and the instance count is one less than this.
     sample_count: u32,
     full_scale: f32 = iface.trace_full_scale,
     rail: f32 = iface.trace_rail,
+
+    /// Half the beam's width, in backing pixels.
+    ///
+    /// `iface.beam_width_points / 2` times the display's scale. In points rather
+    /// than pixels so the rail clearance is scale-free; see that constant.
+    half_width_px: f32,
+
+    /// The accumulation's own size, which is also the viewport's.
+    ///
+    /// Nothing here calls `setViewport:`, so a render pass takes its extent from
+    /// its attachment, and the attachment is the accumulation. The shader needs
+    /// these because a beam's width is isotropic in pixels and anisotropic in
+    /// clip space, so the expansion has to cross the transform and come back.
+    viewport_width: f32,
+    viewport_height: f32,
+
+    /// The segment pitch in backing pixels, clamped so it only attenuates.
+    ///
+    /// **Not velocity weighting, which is #58's.** Quads overlap at every joint,
+    /// so a pixel collects roughly `1 + 1.6 * s` deposits for `s` samples per
+    /// logical point: about 2.6 at one, and 7.4 at four, where a *moving* trace
+    /// saturates to white. Four is reachable at 96 kHz on the smallest editor and
+    /// at 192 kHz on the default one, and phase 3's exit criteria include
+    /// stability under sample-rate change. A line strip had no such term because
+    /// it was idempotent in overdraw, which is what ADR 0013's measured 1.0000
+    /// records.
+    ///
+    /// What makes it not velocity weighting is that it is one number for the whole
+    /// frame, derived from the window length and the drawable width and from
+    /// nothing about the signal. #58's term varies per segment with how fast the
+    /// beam is moving, which is the whole of what the name means.
+    ///
+    /// It also retires an assumption behind `iface.max_window_samples`, which was
+    /// sized on the reasoning that extra samples are free. Under additive quads
+    /// they are not: 8192 samples on a 480-pixel drawable is seventeen per point.
+    density: f32,
 };
 
 /// The pipeline states one render pass runs, in the order `frame` encodes them.
@@ -901,7 +967,7 @@ const Acquired = struct {
 
     /// Hands ownership to the caller, which then owes `release` on any later
     /// failure of its own.
-    fn assemble(self: Acquired, pixels: Pixels, surface: Surface) Renderer {
+    fn assemble(self: Acquired, pixels: Pixels, scale: f64, surface: Surface) Renderer {
         return .{
             .device = self.device,
             .queue = self.queue,
@@ -910,6 +976,7 @@ const Acquired = struct {
             .in_flight = self.in_flight,
             .windows = self.windows,
             .pixels = pixels,
+            .scale = scale,
             .accum = self.accum,
             .palette = self.palette,
         };
@@ -1037,6 +1104,29 @@ pub const Renderer = struct {
     /// half-pixel centre-line bias in `AGENTS.md` was declined for wanting.
     pixels: Pixels,
 
+    /// The display's backing scale factor, as points to backing pixels.
+    ///
+    /// Stored rather than only forwarded because #57 made the beam's width a
+    /// number in points, and points reach the shader only after being multiplied
+    /// by this. `resize` receives it already; what changed is that it now has to
+    /// be kept.
+    ///
+    /// **Assigned above `resize`'s early return, and that placement is the whole
+    /// of what makes it correct.** That return exists because a scale can change
+    /// without the pixel count changing, which is exactly the case this field
+    /// cares about and the pixel count does not: a window dragged between a 1x
+    /// and a 2x display at a size whose backing pixels happen to match would
+    /// otherwise leave the beam drawing at the old display's width forever.
+    ///
+    /// `initOffscreen` leaves it at one. There is no view there whose scale could
+    /// be read, and `src/gpu/iface.zig` argues that inventing a nominal one makes
+    /// every measurement through that constructor a measurement of
+    /// `backingPixels`' rounding; at exactly one that rounding is identity. The
+    /// consequence is worth knowing rather than discovering: `zig build
+    /// smoke-trace` measures a 1.5-pixel half-width and never the 3.0 a 2x host
+    /// draws.
+    scale: f64 = 1.0,
+
     /// The ping-pong pair the beam deposits into, or nothing when the last
     /// attempt to allocate them failed.
     ///
@@ -1131,7 +1221,7 @@ pub const Renderer = struct {
         // Last, so it is the one acquisition needing no `errdefer` of its own.
         const layer = try attachLayer(view, parts.device, size, pixels, scale, diags);
 
-        return parts.assemble(pixels, .{ .layer = layer });
+        return parts.assemble(pixels, scale, .{ .layer = layer });
     }
 
     /// [main-thread] Builds everything the GPU needs and draws into a texture of
@@ -1174,7 +1264,7 @@ pub const Renderer = struct {
 
         const target = try buildTarget(parts.device, pixels, diags);
 
-        return parts.assemble(pixels, .{ .target = target });
+        return parts.assemble(pixels, 1.0, .{ .target = target });
     }
 
     /// [main-thread] Copy the last committed frame's pixels out of an offscreen
@@ -1429,6 +1519,11 @@ pub const Renderer = struct {
         // phosphor away and reallocates tens of megabytes for nothing. A drag
         // delivers a size on very nearly every tick, which is what makes this a
         // cost decision worth making rather than a micro-optimisation.
+        // Above the early return, deliberately: the comment just above is that a
+        // scale can change while the pixel count does not, which is precisely the
+        // case this field exists for and the one the return discards.
+        self.scale = scale;
+
         if (self.accum != null and std.meta.eql(pixels, self.pixels)) return;
 
         // The offscreen target is the resolve's colour attachment and the
@@ -1773,7 +1868,7 @@ pub const Renderer = struct {
         // would time out waiting for it. Skipping it is also not theoretical.
         // `window_len` is zero until the first upload, so an editor opened on a
         // plugin the host has not activated sits here for as long as that lasts.
-        if (traceVertices(self.window_len)) |count| {
+        if (traceGeometry(self.window_len)) |geometry| {
             encoder.msgSend(void, "setRenderPipelineState:", .{pipelines.trace});
 
             // An encoder retains what it binds until its command buffer
@@ -1788,20 +1883,53 @@ pub const Renderer = struct {
 
             // Copied into the command buffer at encode time, so this local dying
             // with `frame` is not a lifetime to reason about. Built from the same
-            // `count` the draw below uses rather than reading `window_len` a
-            // second time: the vertex count and the divisor the shader maps x
-            // with have to be one number, and two reads is how they stop being.
-            const uniforms: TraceUniforms = .{ .sample_count = count };
+            // `geometry` the draw below uses rather than reading `window_len` a
+            // second time: the divisor the shader maps x with and the instance
+            // count have to come from one number, and two reads is how they stop
+            // being. `traceGeometry` is where that is argued.
+            //
+            // The width is halved here rather than in the shader because points
+            // times scale is this side's arithmetic; the shader is handed backing
+            // pixels and measures distances in them. The density is the segment
+            // pitch, clamped so oversampling attenuates and undersampling does
+            // not amplify, and it is the field's own docstring that explains why
+            // it exists at all.
+            const width: f32 = @floatCast(@as(f64, iface.beam_width_points) * self.scale);
+            const span: f32 = @floatFromInt(geometry.instances);
+            const viewport_width: f32 = @floatFromInt(self.pixels.width);
+
+            const uniforms: TraceUniforms = .{
+                .sample_count = geometry.samples,
+                .half_width_px = width / 2.0,
+                .viewport_width = viewport_width,
+                .viewport_height = @floatFromInt(self.pixels.height),
+                .density = @min(1.0, viewport_width / span),
+            };
             encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
                 &uniforms,
                 @as(u64, @sizeOf(TraceUniforms)),
                 uniform_buffer_index,
             });
 
-            encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:", .{
-                mtl.primitive_type_line_strip,
+            // The same bytes again, into the fragment stage's own index space.
+            // `trace_fragment` needs the half-width to normalise the distance it
+            // measures and the density to scale what it deposits, and one struct
+            // carrying both is cheaper to keep in step than a second one would be.
+            encoder.msgSend(void, "setFragmentBytes:length:atIndex:", .{
+                &uniforms,
+                @as(u64, @sizeOf(TraceUniforms)),
+                beam_uniform_index,
+            });
+
+            // Four vertices, one instance per segment. The corners come from
+            // `[[vertex_id]]` and the segment from `[[instance_id]]`, so nothing
+            // describes a vertex to Metal and the buffer bound above is still
+            // exactly the samples `iface.upload` was handed.
+            encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:instanceCount:", .{
+                mtl.primitive_type_triangle_strip,
                 @as(u64, 0),
-                @as(u64, count),
+                @as(u64, 4),
+                @as(u64, geometry.instances),
             });
         }
 
@@ -1985,23 +2113,41 @@ pub const Renderer = struct {
     }
 };
 
-/// Vertices in this frame's line strip, or nothing when there is no line.
+/// What this frame's trace draws, or nothing when there is no segment.
 ///
 /// Three separate reasons land on the same threshold and each would fail
-/// differently. A strip needs two endpoints before it has a segment. Metal
-/// rejects a `vertexCount` of zero outright, which under the validation layer is
-/// a terminated process rather than a dropped draw. And `trace_vertex` divides by
-/// `sample_count - 1`, which is zero at one sample. A window of one is reachable
-/// rather than hypothetical: `gui.windowSamples` returns it for every rate from
-/// 50 to 99 Hz, and `activate` accepts rates from 1 Hz up.
+/// differently. A trace needs two endpoints before it has a segment. Metal
+/// rejects an `instanceCount` of zero outright, which under the validation layer
+/// is a terminated process rather than a dropped draw. And `trace_vertex` divides
+/// by `sample_count - 1`, which is zero at one sample. A window of one is
+/// reachable rather than hypothetical: `gui.windowSamples` returns it for every
+/// rate from 50 to 99 Hz, and `activate` accepts rates from 1 Hz up.
+///
+/// **Two numbers rather than one, and returning them together is the point.**
+/// Under a line strip the vertex count and the divisor the x mapping uses were
+/// the same number, and this function existed partly so they could not be read
+/// twice and drift. Instancing separates them: the vertex count is a literal four,
+/// the instance count is one less than the sample count, and the sample count is
+/// still the divisor. If the instance count and the divisor ever disagree,
+/// `samples[segment + 1]` reads a stale tail from a previous, longer window —
+/// in bounds, no crash, garbage on the right-hand edge.
 ///
 /// The narrowing cast is load-bearing rather than defensive. `upload` is the only
 /// writer of `window_len` and clamps to `max_window_samples` already, so this
 /// cannot truncate; what it does is produce the `uint` MSL reads. Re-clamping
 /// here would state that bound in a third place.
-fn traceVertices(window_len: usize) ?u32 {
+const TraceGeometry = struct {
+    /// The divisor `trace_vertex` maps x with, and `TraceUniforms.sample_count`.
+    samples: u32,
+    /// One per inter-sample segment. Four vertices each, from `[[vertex_id]]`.
+    instances: u32,
+};
+
+fn traceGeometry(window_len: usize) ?TraceGeometry {
     if (window_len < 2) return null;
-    return @intCast(window_len);
+
+    const samples: u32 = @intCast(window_len);
+    return .{ .samples = samples, .instances = samples - 1 };
 }
 
 /// The per-frame window buffers, all of them or none.
@@ -2204,7 +2350,7 @@ fn buildPipelines(device: objc.Object, diags: *iface.Diagnostics) iface.Error!Pi
         // A stack buffer rather than a field, because this is called from three
         // threads and none of them may allocate. 64 KiB against an 8 MiB
         // main-thread stack and a 16 MiB spawned one, for a file currently
-        // fifteen.
+        // twenty-two.
         var buf: shader.Buffer = .{};
 
         if (readShader(&buf)) |source| {
@@ -2806,9 +2952,18 @@ test "every binding the encoder sets is read at the same index in the shader" {
         @as(?u64, window_buffer_index),
         bindingIndexAfter("device const float *samples", "buffer"),
     );
+    // **Both trace stages read `TraceUniforms` since #57, so the parameter names
+    // carry these exactly as the two below do.** Anchoring on `TraceUniforms &`
+    // alone would find the vertex function's binding twice and the fragment's
+    // never, and the fragment's is the one that is new: it is a fourth zero in a
+    // fourth index space, so a bare search proves nothing about it at all.
     try testing.expectEqual(
         @as(?u64, uniform_buffer_index),
-        bindingIndexAfter("TraceUniforms &", "buffer"),
+        bindingIndexAfter("TraceUniforms &uniforms", "buffer"),
+    );
+    try testing.expectEqual(
+        @as(?u64, beam_uniform_index),
+        bindingIndexAfter("TraceUniforms &beam", "buffer"),
     );
     // **Both fullscreen passes read `AccumUniforms` since #60, so the parameter
     // names carry these rather than the type does.** `indexOf` takes the first
@@ -2906,6 +3061,47 @@ fn scalarsAfter(
     return out;
 }
 
+/// How many comma-separated arguments the first `opener` after `anchor` takes.
+///
+/// The arity-only counterpart of `scalarsAfter`, for the case where the argument
+/// is an expression rather than a literal and the thing worth asserting is its
+/// shape. `float4(x)` broadcasts one value to four channels and `float4(x, y, ...)`
+/// does not, which is the entire difference between a colourless deposit and a
+/// tinted one.
+///
+/// **Nesting is tracked, which `scalarsAfter` does not have to do.** That one
+/// stops at the first `)` because a literal cannot contain a call; an expression
+/// routinely can, and `float4(min(a, b))` is one argument rather than two. A comma
+/// inside a nested call is therefore not a separator. Returns null rather than
+/// guessing if the parenthesis never closes.
+fn argumentsAfter(
+    comptime source: []const u8,
+    comptime anchor: []const u8,
+    comptime opener: []const u8,
+) ?usize {
+    const at = std.mem.indexOf(u8, source, anchor) orelse return null;
+    const rest = source[at + anchor.len ..];
+
+    const open = std.mem.indexOf(u8, rest, opener) orelse return null;
+    const body = rest[open + opener.len ..];
+
+    var depth: usize = 0;
+    var count: usize = 1;
+    for (body) |c| switch (c) {
+        '(' => depth += 1,
+        ')' => {
+            if (depth == 0) return count;
+            depth -= 1;
+        },
+        ',' => if (depth == 0) {
+            count += 1;
+        },
+        else => {},
+    };
+
+    return null;
+}
+
 test "the screenshot tool still holds this project's numbers" {
     // `scripts/measure-trace` is the only instrument that answers what the pixels
     // became, which is the gap #51 exists to close and which nothing automated
@@ -2984,16 +3180,22 @@ test "the screenshot tool still holds this project's numbers" {
         }
     }
 
-    // The deposit carries no colour any more, and that is asserted rather than
-    // assumed: a `trace_fragment` that went back to depositing a tint would make
-    // every gradient a tint over a tint, and nothing else here would notice.
-    const deposited = scalarsAfter(
-        shader_source,
-        "fragment float4 " ++ trace_pass.fragment,
-        "float4(",
-        1,
-    ) orelse return error.NotFound;
-    try testing.expectEqual(@as(f64, 1.0), deposited[0]);
+    // The deposit carries no colour, and that is asserted rather than assumed: a
+    // `trace_fragment` that went back to depositing a tint would make every
+    // gradient a tint over a tint, and nothing else here would notice.
+    //
+    // **What is asserted is the arity, not the value, and #57 is why.** This used
+    // to read the literal `1.0` out of `float4(1.0)`, which was exact and is no
+    // longer available: the deposit is now shaped by the beam's profile and
+    // scaled by the sample density, so the argument is an expression. The
+    // property that mattered all along survives it — one value, broadcast to four
+    // channels — and one comma is all it takes to lose it. The magnitude is
+    // `checkDepositIsScalar` in `src/smoke.zig`'s to check, on a rendered frame,
+    // where it can be measured rather than parsed.
+    try testing.expectEqual(
+        @as(?usize, 1),
+        argumentsAfter(shader_source, "fragment float4 " ++ trace_pass.fragment, "float4("),
+    );
 }
 
 test "the shader's look constants and the model's are the same numbers" {
@@ -3044,6 +3246,23 @@ test "the script reader finds nothing rather than guessing" {
     // says so.
     try testing.expect(scalarsAfter(script, "BACKGROUND_BYTES = ", "(", 3) != null);
     try testing.expectEqual(@as(?[4]f64, null), scalarsAfter(script, "BACKGROUND_BYTES = ", "(", 4));
+}
+
+test "the argument counter counts arguments rather than commas" {
+    // The nesting is the whole reason this is not `count(u8, body, ',') + 1`, and
+    // the deposit is exactly the shape that would break that: `float4(` holding a
+    // call is one argument, and a counter that missed it would report the trace
+    // fragment as depositing a colour and fail for a reason that is not true.
+    try testing.expectEqual(@as(?usize, 1), argumentsAfter("f(a)", "f", "("));
+    try testing.expectEqual(@as(?usize, 1), argumentsAfter("f(min(a, b))", "f", "("));
+    try testing.expectEqual(@as(?usize, 2), argumentsAfter("f(min(a, b), c)", "f", "("));
+    try testing.expectEqual(@as(?usize, 4), argumentsAfter("f(a, b, c, d)", "f", "("));
+
+    // The three ways it declines to guess: no anchor, no opener, and a
+    // parenthesis that never closes.
+    try testing.expectEqual(@as(?usize, null), argumentsAfter("f(a)", "no such anchor", "("));
+    try testing.expectEqual(@as(?usize, null), argumentsAfter("f;", "f", "("));
+    try testing.expectEqual(@as(?usize, null), argumentsAfter("f(a", "f", "("));
 }
 
 test "the accumulation's uniforms are laid out the way the shader reads them" {
@@ -3108,9 +3327,24 @@ test "the decay uniform has no default to fall back on" {
     // The counterpart, so this test cannot pass by reading a struct that has no
     // fields at all: `TraceUniforms` still carries two defaults, and they are
     // still how the shader learns the vertical mapping.
+    // Split by what the field *is* rather than by name-that-is-not-sample_count,
+    // which is what this loop used to be and what #57 made too coarse. Two of
+    // them restate the seam's display contract and must carry it as a default, so
+    // `frame` cannot quietly substitute its own; the other five are per-frame
+    // measurements and must carry none, on `AccumUniforms.decay`'s argument that
+    // a default on a measurement is a plausible picture drawn from a value nobody
+    // supplied.
+    const from_the_seam = [_][]const u8{ "full_scale", "rail" };
+
     inline for (@typeInfo(TraceUniforms).@"struct".fields) |trace_field| {
-        if (comptime !std.mem.eql(u8, trace_field.name, "sample_count")) {
+        const inherited = comptime for (from_the_seam) |name| {
+            if (std.mem.eql(u8, trace_field.name, name)) break true;
+        } else false;
+
+        if (inherited) {
             try testing.expect(trace_field.default_value_ptr != null);
+        } else {
+            try testing.expect(trace_field.default_value_ptr == null);
         }
     }
 }
@@ -3136,16 +3370,32 @@ test "every pass names the format it is compiled against" {
 }
 
 test "a window shorter than one segment draws no trace" {
-    try testing.expectEqual(@as(?u32, null), traceVertices(0));
-    try testing.expectEqual(@as(?u32, null), traceVertices(1));
-    try testing.expectEqual(@as(?u32, 2), traceVertices(2));
+    try testing.expectEqual(@as(?TraceGeometry, null), traceGeometry(0));
+    try testing.expectEqual(@as(?TraceGeometry, null), traceGeometry(1));
+    try testing.expectEqual(
+        @as(?TraceGeometry, .{ .samples = 2, .instances = 1 }),
+        traceGeometry(2),
+    );
 }
 
-test "the trace draws one vertex per sample" {
+test "the trace draws one instance per segment" {
     // 960 is `gui.windowSamples(48_000)`, which `src/clap/gui.zig` pins against
     // the default editor width; the bound is what `upload` truncates to.
-    try testing.expectEqual(@as(?u32, 960), traceVertices(960));
-    try testing.expectEqual(@as(?u32, iface.max_window_samples), traceVertices(iface.max_window_samples));
+    //
+    // Both numbers, because the point of returning them together is that they
+    // cannot drift: a divisor that disagreed with the instance count would make
+    // `samples[segment + 1]` read a stale tail, in bounds and without a crash.
+    try testing.expectEqual(
+        @as(?TraceGeometry, .{ .samples = 960, .instances = 959 }),
+        traceGeometry(960),
+    );
+    try testing.expectEqual(
+        @as(?TraceGeometry, .{
+            .samples = iface.max_window_samples,
+            .instances = iface.max_window_samples - 1,
+        }),
+        traceGeometry(iface.max_window_samples),
+    );
 }
 
 test "the trace's uniforms are laid out the way the shader reads them" {
@@ -3154,11 +3404,15 @@ test "the trace's uniforms are laid out the way the shader reads them" {
     // one side only, whose symptom is a trace at a plausible wrong scale rather
     // than anything that fails. Apple's ceiling for `setVertexBytes:` is 4 KiB,
     // and being far under it is the reason this is not a fourth buffer.
-    try testing.expectEqual(@as(usize, 12), @sizeOf(TraceUniforms));
+    try testing.expectEqual(@as(usize, 28), @sizeOf(TraceUniforms));
     try testing.expectEqual(@as(usize, 4), @alignOf(TraceUniforms));
     try testing.expectEqual(@as(usize, 0), @offsetOf(TraceUniforms, "sample_count"));
     try testing.expectEqual(@as(usize, 4), @offsetOf(TraceUniforms, "full_scale"));
     try testing.expectEqual(@as(usize, 8), @offsetOf(TraceUniforms, "rail"));
+    try testing.expectEqual(@as(usize, 12), @offsetOf(TraceUniforms, "half_width_px"));
+    try testing.expectEqual(@as(usize, 16), @offsetOf(TraceUniforms, "viewport_width"));
+    try testing.expectEqual(@as(usize, 20), @offsetOf(TraceUniforms, "viewport_height"));
+    try testing.expectEqual(@as(usize, 24), @offsetOf(TraceUniforms, "density"));
     try testing.expect(@sizeOf(TraceUniforms) <= 4096);
 }
 
@@ -3166,10 +3420,33 @@ test "the trace's uniforms carry the seam's scale rather than a second copy of i
     // The defaults are the whole mechanism by which the shader learns the
     // vertical scale, so a `frame` that filled them in by hand would compile and
     // draw at whatever it chose.
-    const uniforms: TraceUniforms = .{ .sample_count = 2 };
+    //
+    // The four geometry fields are given here rather than defaulted, which is the
+    // other half of the same argument and is asserted directly below.
+    const uniforms: TraceUniforms = .{
+        .sample_count = 2,
+        .half_width_px = 1.5,
+        .viewport_width = 960,
+        .viewport_height = 540,
+        .density = 1.0,
+    };
 
     try testing.expectEqual(iface.trace_full_scale, uniforms.full_scale);
     try testing.expectEqual(iface.trace_rail, uniforms.rail);
+}
+
+test "the beam's half-width clears the rail at the smallest editor" {
+    // The property `trace_rail` is now justified by, stated where the beam's
+    // width lives rather than only in prose. `src/clap/gui.zig` holds the
+    // companion, because that is the file that knows the minimum editor.
+    //
+    // In points on both sides, which is the whole reason the width is in points:
+    // the display's scale cancels, so this holds at 1x and 2x rather than being
+    // an arithmetic accident at one of them.
+    const min_half_height_points: f32 = 270.0 / 2.0;
+    const margin_points = (1.0 - iface.trace_rail) * min_half_height_points;
+
+    try testing.expect(iface.beam_width_points / 2.0 < margin_points);
 }
 
 test "the drawable is sized in backing pixels and the layer in points" {

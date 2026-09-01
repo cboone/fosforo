@@ -19,8 +19,10 @@
 // where the decay and the deposit write the same target, which is why those two
 // are one pass and not two.
 //
-// Phase 3 is not finished here: `trace_fragment` still draws a line strip until
-// #57 makes it geometry. The other two are done. #60 put a tonemap and a palette
+// #57 made the trace geometry: each inter-sample segment is an oriented quad,
+// shaded by its distance from the segment rather than by whether a one-pixel line
+// happened to cover the pixel, which is where the antialiasing and the intensity
+// profile both come from. The other two are done. #60 put a tonemap and a palette
 // lookup in the resolve, and there is no colour left in this file — the gradients
 // are built in `src/gpu/palette.zig` and uploaded, so the GPU and the model that
 // checks it read one table rather than two copies of one formula. #56 made the
@@ -131,9 +133,12 @@ fragment float4 decay_fragment(VertexOut in [[stage_in]],
 // to exactly one at the white point rather than approaching one asymptotically.
 //
 // **Plain Reinhard, e / (1 + e), is the obvious choice and is wrong here.** The
-// attainable domain is (0, 1 / (1 - decay)], which is ten at the factor the Zig
-// side currently applies, because a line strip's x is monotone in `vertex_id` so
-// one frame cannot deposit twice on a pixel. Plain Reinhard returns 0.909 there
+// attainable domain is (0, d / (1 - decay)], where d is the energy one frame
+// deposits on the pixel the beam dwells hardest on. Until #57 that was exactly
+// one, because a line strip's x is monotone in `vertex_id` so one frame could not
+// deposit twice on a pixel; oriented quads overlap at every joint, so it is now
+// about 2.6 and the domain is correspondingly wider. The conclusion survives the
+// premise and is strengthened by it. Plain Reinhard returns 0.909 at ten
 // and needs an energy of 167 to reach byte 255, seventeen times anything this
 // display can produce, so a palette running to white never arrives and the core
 // stays pale green. `1 - exp(-e)` fails from the other side, saturating by five
@@ -212,50 +217,158 @@ fragment float4 resolve_fragment(VertexOut in [[stage_in]],
 // the only thing that would notice a field added or reordered on one side, and
 // the symptom of that is a plausible trace at the wrong scale rather than
 // anything that fails.
+// The last four are per-frame measurements rather than constants, which is why
+// the Zig side gives them no defaults. `viewport` is the accumulation's own size,
+// because nothing here ever calls `setViewport:` and a render pass therefore takes
+// its extent from the attachment; `half_width_px` is the beam's width in points
+// times the display's scale; and `density` is described at `trace_fragment`.
 struct TraceUniforms {
     uint sample_count;
     float full_scale;
     float rail;
+    float half_width_px;
+    float viewport_width;
+    float viewport_height;
+    float density;
 };
 
+// The segment this fragment belongs to, in the same window space `[[position]]`
+// arrives in.
+//
+// **`flat` rather than interpolated, and it is only correct because all four
+// corners compute the same pair.** A triangle strip's two triangles have
+// different provoking vertices, so a `trace_vertex` that derived *this corner's*
+// own endpoint instead would hand the two halves of one quad different segments
+// and draw a discontinuity along its diagonal, with nothing here to fail.
 struct TraceOut {
     float4 position [[position]];
+    float2 p0 [[flat]];
+    float2 p1 [[flat]];
 };
 
-// One vertex per sample, drawn as a line strip. Deliberately crude: aliased, one
-// device pixel wide, no persistence and no reconstruction (plan phase 2, step 4).
+// Clip space to the window space a fragment's `[[position]]` arrives in.
 //
-// The samples arrive oldest first, so `vertex_id` runs left to right and the
-// newest sample lands exactly on the right edge. Dividing by `sample_count - 1`
-// rather than by `sample_count` is what puts it there, and it is why the caller
-// refuses to draw below two samples: at one this divides by zero.
+// **The Y negation belongs to the rasterizer and is restated here, not added.**
+// `trace_vertex` still emits clip space with positive up, which is what the "No Y
+// flip" note below is about; this pair exists because the beam's width is
+// isotropic in pixels and anisotropic in clip space, so the expansion has to
+// happen on this side of the transform and come back. Writing `(y * 0.5 + 0.5)`
+// here instead mirrors the trace against `in.position.y` while still drawing a
+// plausible picture.
+float2 to_window(float2 clip, float2 viewport) {
+    return float2((clip.x + 1.0) * 0.5 * viewport.x, (1.0 - clip.y) * 0.5 * viewport.y);
+}
+
+float2 to_clip(float2 window, float2 viewport) {
+    return float2(2.0 * window.x / viewport.x - 1.0, 1.0 - 2.0 * window.y / viewport.y);
+}
+
+// Distance from a point to a *segment*, not to the line through it.
+//
+// The difference is the whole of what gives the beam round caps, and it buys three
+// things at once. Joints are covered, so there is no wedge gap outside a turn. The
+// first and last samples sit at x = ±1 and their caps have area, which is what
+// #38's 1914-of-1920 edge columns were about. And a degenerate segment collapses
+// to a disk rather than to the NaN `normalize` would hand back.
+float distance_to_segment(float2 p, float2 a, float2 b) {
+    const float2 ab = b - a;
+    const float denom = dot(ab, ab);
+    const float t = denom > 1e-12 ? saturate(dot(p - a, ab) / denom) : 0.0;
+    return distance(p, a + t * ab);
+}
+
+// One instance per inter-sample segment, expanded into an oriented quad.
+//
+// `[[instance_id]]` is the segment and reads the two samples that bound it;
+// `[[vertex_id]]` runs 0..3 and picks a corner. **Nothing describes a vertex to
+// Metal**: there is no `MTLVertexDescriptor`, no buffer of corners, and the only
+// thing crossing `src/gpu/iface.zig` is still a plain `[]const f32`. That file
+// predicted this step would either confirm or falsify that arrangement, and it
+// confirmed it.
+//
+// The samples arrive oldest first, so segments run left to right and the newest
+// sample lands exactly on the right edge. Dividing by `sample_count - 1` rather
+// than by `sample_count` is what puts it there, and it is why the caller refuses
+// to draw below two samples: at one this divides by zero and there is no segment
+// to draw anyway.
 //
 // `device` rather than `constant` for the samples, because `constant` is for
-// values indexed uniformly across a draw and this is indexed by `vertex_id`. The
+// values indexed uniformly across a draw and this is indexed per instance. The
 // window would fit in `constant`'s 64 KiB, so this is a choice rather than a
 // constraint.
 //
-// **No Y flip**, unlike `fullscreen_vertex` above, which negates Y because its
-// uv runs down from the top-left. Here a positive sample is up, which is what a
-// scope means. Arriving from that function it is the absence that surprises.
+// **No Y flip here**, unlike `fullscreen_vertex` above. A positive sample is up,
+// which is what a scope means, and the rasterizer is what turns that into a row
+// counted from the top. `to_window` restates that transform rather than adding
+// one; see its comment, which is where the sign is easy to get backwards.
+//
+// The quad is *oriented*: the segment's own box, extended by the half-width along
+// its direction at both ends and along its normal on both sides, which is the
+// capsule's bounding box with the rounding left to the fragment. Corner selection
+// is the Z order a triangle strip wants, `(-,-) (+,-) (-,+) (+,+)`; the ring
+// order gives a bowtie covering half the quad, and since nothing in this project
+// sets a cull mode or a winding, neither a bowtie nor a mirrored quad announces
+// itself. Note also that `vertex_id & 2u` is 0 or **2** rather than 0 or 1 —
+// `fullscreen_vertex` exploits that deliberately four functions above, so the
+// idiom reads as correct here and would silently double the quad's height.
 //
 // The clamp is the vertical scale's whole policy in one line, and ADR 0017 is
-// why it clamps rather than letting the rasterizer clip: clipping a line strip
-// removes the peaks and keeps the crossings, so an over-scale signal would read
-// as a quieter one with gaps.
+// why it clamps rather than letting the rasterizer clip: clipping removes the
+// peaks and keeps the crossings, so an over-scale signal would read as a quieter
+// one with gaps.
 vertex TraceOut trace_vertex(uint vertex_id [[vertex_id]],
+                             uint segment [[instance_id]],
                              device const float *samples [[buffer(0)]],
                              constant TraceUniforms &uniforms [[buffer(1)]]) {
-    const float x = 2.0 * float(vertex_id) / float(uniforms.sample_count - 1u) - 1.0;
-    const float y = clamp(samples[vertex_id] * uniforms.full_scale, -uniforms.rail, uniforms.rail);
+    const float2 viewport = float2(uniforms.viewport_width, uniforms.viewport_height);
+    const float span = float(uniforms.sample_count - 1u);
+
+    const float y0 = clamp(samples[segment] * uniforms.full_scale, -uniforms.rail, uniforms.rail);
+    const float y1 = clamp(samples[segment + 1u] * uniforms.full_scale, -uniforms.rail, uniforms.rail);
+
+    const float2 a = to_window(float2(2.0 * float(segment) / span - 1.0, y0), viewport);
+    const float2 b = to_window(float2(2.0 * float(segment + 1u) / span - 1.0, y1), viewport);
+
+    const float2 along = b - a;
+    const float len = length(along);
+    const float2 dir = len > 1e-6 ? along / len : float2(1.0, 0.0);
+    const float2 normal = float2(-dir.y, dir.x);
+
+    const float h = uniforms.half_width_px;
+    const float2 corner = float2((vertex_id & 1u) != 0u ? 1.0 : -1.0,
+                                 (vertex_id & 2u) != 0u ? 1.0 : -1.0);
+
+    const float2 at = 0.5 * (a + b) + dir * corner.x * (0.5 * len + h) + normal * corner.y * h;
 
     TraceOut out;
-    out.position = float4(x, y, 0.0, 1.0);
+    out.position = float4(to_clip(at, viewport), 0.0, 1.0);
+    out.p0 = a;
+    out.p1 = b;
     return out;
 }
 
-// One deposit, as a scalar. The colour moved to the palette, which is what this
-// comment used to say #60 would do.
+// One deposit, as a scalar, shaped by the beam's intensity profile. The colour
+// moved to the palette, which is what this comment used to say #60 would do.
+//
+// **The profile is the biweight, `(1 - u²)²`.** It peaks at exactly 1.0 on the
+// centreline, so a single segment still deposits an energy of one at its core and
+// `whitePoint`'s derivation from the dwell asymptote is untouched, and it reaches
+// zero *with zero slope* at the quad's edge, so there is no seam where the
+// geometry ends. Compact support is worth more than it looks: an unlit pixel holds
+// exactly 0.0, which is what lets `checkResolve` keep its background assertions
+// and what lets `src/gpu/measure.zig` sum a whole column for its centroid. A
+// Gaussian is the profile a real beam has and has neither property, on top of
+// putting a transcendental on this path.
+//
+// **`density` is the segment pitch in pixels, clamped to one, and it is not
+// velocity weighting.** Quads overlap at every joint, so a pixel collects roughly
+// `1 + 1.6 * s` deposits where `s` is samples per logical point. At one sample per
+// point that is about 2.6; at four it is 7.4 and a *moving* trace saturates to
+// white, which is reachable at 96 kHz on a small editor and 192 kHz on a default
+// one. The line strip was idempotent in overdraw and had no such term. This factor
+// is identical for every segment in a frame and depends only on the window length
+// and the drawable width, never on the signal, which is exactly what distinguishes
+// it from #58's per-segment term.
 //
 // **All four channels carry the same number**, so whichever one anything reads
 // means the same thing: `resolve_fragment` reads green, `measure.Image.green`
@@ -275,6 +388,11 @@ vertex TraceOut trace_vertex(uint vertex_id [[vertex_id]],
 // blended one-to-one and additive, so where the beam crosses its own path the
 // value climbs past 1.0. That headroom is what the tonemap above wants and it is
 // the reason the accumulation is floating point.
-fragment float4 trace_fragment() {
-    return float4(1.0);
+fragment float4 trace_fragment(TraceOut in [[stage_in]],
+                               constant TraceUniforms &beam [[buffer(0)]]) {
+    const float d = distance_to_segment(in.position.xy, in.p0, in.p1);
+    const float u = min(d / beam.half_width_px, 1.0);
+    const float falloff = 1.0 - u * u;
+
+    return float4(falloff * falloff * beam.density);
 }

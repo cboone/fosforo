@@ -89,18 +89,51 @@ pub const trace_full_scale: f32 = 0.9;
 /// signal with gaps. A scope may say "at or above full scale" and may not say
 /// "quieter than it is".
 ///
-/// Inside the edge, because a one-pixel line whose centre lands on the drawable's
-/// boundary has half its coverage diamond off-screen and may rasterize to
-/// nothing, which would make a railed signal read as an absent one. One percent
-/// is safe at every geometry `gui.clampSize` permits: the smallest editor is 270
-/// points tall, so at a scale of 1 this leaves `(1 - 0.98) * 135`, or 2.7 backing
-/// pixels. `src/clap/gui.zig` holds the test, because that is the file that knows
-/// the minimum.
+/// Inside the edge, because a railed trace that draws nothing reads as an absent
+/// one. **The reason that could happen changed with #57 and the margin did not.**
+/// It used to be the rasterizer's coverage diamond: a one-pixel line centred on
+/// the framebuffer's boundary has half its diamond off-screen and may light no
+/// pixel at all. A quad has area and does not inherit that. What replaces it is
+/// the beam's own half-width, since a profile centred on the boundary loses
+/// whatever falls outside it, and the margin has to hold the whole half-width to
+/// keep the centroid `src/gpu/measure.zig` reads unbiased.
+///
+/// One percent is comfortably safe at every geometry `gui.clampSize` permits, and
+/// **the arithmetic is now scale-free**, which the old form was not. The smallest
+/// editor is 270 points tall, so the margin is `(1 - 0.98) * 135`, or 2.7 points,
+/// against a half-width of `beam_width_points / 2`, or 1.5. Both are in points, so
+/// the display's scale cancels and the guarantee holds at 1x and 2x alike rather
+/// than by arithmetic accident at one of them. `src/clap/gui.zig` holds the test,
+/// because that is the file that knows the minimum.
 ///
 /// Restated in `scripts/measure-trace`, which reports the rail's rows so a peak
 /// sitting on one can be read as "at or above" rather than as a value, and tied
 /// back here alongside `trace_full_scale`.
 pub const trace_rail: f32 = 0.98;
+
+/// How wide the beam draws, in points.
+///
+/// The third of this file's display-contract constants, and the one #57 added.
+/// Before it there was no such number: Metal has no line-width API, so a line
+/// strip rasterized at exactly one device pixel and the width was whatever the
+/// hardware did rather than anything anyone chose.
+///
+/// **Points rather than backing pixels, and that is what makes `trace_rail`'s
+/// clearance provable.** Half of this is 1.5 points against 2.7 points of rail
+/// margin at the smallest editor, both in the same unit, so the display's scale
+/// cancels out of the comparison entirely. Stated in pixels the same guarantee
+/// has to be re-derived per scale factor and then holds at each one separately.
+/// The cost is the one worth knowing: `initOffscreen` has no view whose scale it
+/// could read and uses 1.0, so `zig build smoke-trace` always measures a
+/// 1.5-pixel half-width and never the 3.0 a 2x host runs.
+///
+/// Three points is a decision rather than a derivation. What bounds it from above
+/// is the rail margin; what bounds it from below is that a beam narrower than
+/// about two pixels stops having an interior for the profile to shape, which is
+/// the aliased line this replaced. Restated in `scripts/measure-trace` and tied
+/// back here by the test in `src/gpu/metal/renderer.zig` that reads the script as
+/// text, like the two above.
+pub const beam_width_points: f32 = 3.0;
 
 /// Every way starting a renderer can fail. Each is a real machine condition
 /// rather than a programming error, so each is reported rather than asserted.
@@ -438,14 +471,23 @@ comptime {
     // `[render-thread]` as well, and the reason its parameter is a plain slice
     // of samples: what crosses here is the signal, not the geometry drawn from
     // it. A vertex type would be this seam describing a line strip, which is one
-    // phase's way of drawing a trace rather than the trace itself, and phase 3
-    // replaces it with oriented quads. `[]const f32` names nothing Metal owns
-    // and needs nothing added to this file's vocabulary.
+    // phase's way of drawing a trace rather than the trace itself. `[]const f32`
+    // names nothing Metal owns and needs nothing added to this file's vocabulary.
     //
-    // #38 is the phase that could have falsified that and did not. The trace is
-    // drawn with no `MTLVertexDescriptor` at all, from a plain array indexed by
-    // `[[vertex_id]]`, so the claim held all the way down to the GPU rather than
-    // only as far as this line.
+    // **#57 was the step this claim was written against, and the claim held.**
+    // That paragraph used to end "and phase 3 replaces it with oriented quads",
+    // as a prediction with a stated way of being falsified: if quads could not be
+    // built without a vertex buffer of quads, the seam would have had to grow a
+    // vertex type and this comment would have had to say so. They can. Each
+    // segment is one instance, `[[instance_id]]` selects it and reads the two
+    // samples bounding it, `[[vertex_id]]` picks one of four corners, and the
+    // expansion is arithmetic in the vertex function. There is still no
+    // `MTLVertexDescriptor` anywhere in this project, the buffer this uploads is
+    // still exactly the samples, and nothing was added to this file's vocabulary.
+    //
+    // #38 is the earlier phase that could have falsified it and did not, drawing
+    // a line strip from the same plain array indexed by `[[vertex_id]]`. Between
+    // the two, the claim has now survived both primitives it was ever about.
     assertSignature("upload", @TypeOf(Renderer.upload), fn (*Renderer, []const f32) void);
     assertSignature("frame", @TypeOf(Renderer.frame), fn (*Renderer, u64) Outcome);
     assertSignature("probe", @TypeOf(Renderer.probe), fn (*Diagnostics) Error!void);
