@@ -10,10 +10,12 @@ reports the numbers instead.
 
 Every flag there is load-bearing. `-o` drops the window's drop shadow, which is
 dark with a blue cast over a dark desktop and otherwise reads as more drawable.
-`-t png` forces lossless: a lossy capture smears the one-pixel trace into a halo
-tens of pixels deep, which moved a full-scale signal's measured peak onto the
-rail. `-W` picks the window so the whole editor is in frame; the crop is found
-from the background rather than given.
+`-t png` forces lossless: a lossy capture smears the trace into a halo tens of
+pixels deep, which moved a full-scale signal's measured peak onto the rail. That
+was measured against the one-pixel line #57 replaced, and a beam with its own
+falloff makes the two harder to tell apart by eye, not easier — the colour guard
+below is what separates them now. `-W` picks the window so the whole editor is in
+frame; the crop is found from the background rather than given.
 
 On a Retina display this writes backing pixels, which is the unit the plan's
 tables are in. Terminal needs Screen Recording permission or the capture comes
@@ -60,7 +62,22 @@ from PIL import Image, ImageCms, UnidentifiedImageError
 # comparison cannot catch, so both were renamed and a stale copy of this file now
 # fails the constants test loudly instead.
 FULL_SCALE = 0.9  # iface.trace_full_scale
-RAIL = 0.98  # iface.trace_rail
+RAIL = 0.98
+
+# `iface.beam_width_points`. How wide the beam draws, in points, which becomes
+# backing pixels only after the display's scale is applied — hence `--scale`,
+# which this tool can no more read off a screenshot than it can the refresh rate.
+#
+# Only the trail heuristic uses it. The centroid deliberately does not: a
+# symmetric profile's weighted centre is its centre whatever its width, which is
+# what lets the vertical numbers here stay independent of a value the capture
+# cannot confirm.
+BEAM_WIDTH_POINTS = 3.0
+
+# This machine's panel, on the same footing as DEFAULT_REFRESH_HZ: a screenshot
+# carries neither its display's scale nor its refresh rate, so both are arguments
+# with a local default rather than anything read from the file.
+DEFAULT_SCALE = 2.0  # iface.trace_rail
 BACKGROUND_BYTES = (5.0, 5.0, 8.0)  # palette.background_bytes
 CORE_EXPONENT = 4  # palette.core_exponent
 WHITE_HEADROOM = 0.8  # palette.white_headroom
@@ -562,9 +579,63 @@ def lit_rows(img, threshold, channel):
 
 
 def implied_sample(row, height):
-    """Invert the documented mapping: row -> NDC -> sample value."""
-    y = 1.0 - 2.0 * row / height
+    """Invert the documented mapping: row -> NDC -> sample value.
+
+    The row's *centre*, so `row + 0.5`: a pixel is a square, the mapping is about
+    points, and `[[position]]` in a fragment is window space with pixel centres at
+    half-integers.
+
+    **That term was missing until #57, and the reason it was tolerable is the
+    reason it stopped being.** `src/gpu/measure.zig` always carried it and said so
+    at its own copy, on the grounds that half a pixel sat inside the one-pixel band
+    every assertion was stated in and reconciling the two was nobody's business.
+    The centroid ended that: the harness now asserts silence to a twentieth of a
+    pixel, so a half-pixel offset here is ten times the tolerance on the other side
+    and the two instruments would disagree about a capture they both measured
+    correctly.
+
+    Numbers published before #57 were read off a lit edge, which this term is
+    small against; the ones published after it are comparable with the harness's.
+    """
+    y = 1.0 - 2.0 * (row + 0.5) / height
     return y / FULL_SCALE
+
+
+def centroid_rows(img, channel):
+    """Energy-weighted centre row per column, or NaN where the column is dark.
+
+    The estimator every vertical number below is read from, and #57 is why it
+    exists. Before it the beam was one device pixel, so the topmost lit row *was*
+    the trace. A beam with width and a falloff has an interior, and the topmost
+    lit row is then its threshold contour's upper edge, sitting above the true
+    centreline by the lit half-width.
+
+    **The bias is small and it is not noise**, which is what makes it worth a
+    second estimator rather than a wider tolerance. A 3-point beam on a 2x display
+    is a half-width of 3 backing pixels; at a drawable 1080 rows tall that is
+    three times `pixelTolerance`, the band every assertion in this project is
+    stated in. `src/gpu/measure.zig` made the same move for the same reason, and
+    the two have to agree or this tool stops being that one's counterpart.
+
+    Weighted on the dominant channel's level rather than on energy, because a
+    screenshot is a picture and there is no energy in it. That is enough: the
+    profile is symmetric about the centreline and the mapping from energy to level
+    is monotone, so the weighted centre of a symmetric beam is still its centre.
+    Exact inversion is `src/gpu/measure.zig`'s job, on the linear accumulation.
+
+    The background is subtracted before weighting. It is small, but it is present
+    in every one of a column's ~1000 dark pixels and would otherwise drag every
+    centroid toward the middle of the image.
+    """
+    lead = np.asarray(img.convert("RGB"), dtype=np.float64)[:, :, channel]
+    weight = np.clip(lead - BG8[channel], 0.0, None)
+
+    total = weight.sum(axis=0)
+    rows = np.arange(weight.shape[0], dtype=np.float64)[:, None]
+    moment = (weight * rows).sum(axis=0)
+
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(total > 0, moment / total, np.nan)
 
 
 def main():
@@ -593,6 +664,15 @@ def main():
         help=(
             "refresh rate the capture was taken at, which sets the white point; "
             f"default {DEFAULT_REFRESH_HZ:g} Hz"
+        ),
+    )
+    ap.add_argument(
+        "--scale",
+        type=float,
+        default=DEFAULT_SCALE,
+        help=(
+            "backing scale of the display the capture came from, which sets how "
+            f"many rows deep the beam is; default {DEFAULT_SCALE:g}"
         ),
     )
     ap.add_argument("--periods", action="store_true", help="also count periods")
@@ -722,15 +802,29 @@ def main():
     print(f"{'rgb'[lead]} levels        {shades}")
     print(f"off the curve    {fraction:.2%} of {examined} unsaturated pixels")
     print()
+    # The centroid, not the lit edge. See `centroid_rows`; the short version is
+    # that a beam has width and its edge is that width away from its centre.
+    centres = centroid_rows(img, lead)
+    lit_centres = centres[np.isfinite(centres)]
+    peak_centre = float(lit_centres.min())
+    trough_centre = float(lit_centres.max())
+
     print(
-        f"highest peak     row {peak_top:<6} implies sample {implied_sample(peak_top, height):+.4f}"
+        f"highest peak     row {peak_centre:<6.2f} implies sample {implied_sample(peak_centre, height):+.4f}"
     )
     print(
-        f"lowest trough    row {peak_bottom:<6} implies sample {implied_sample(peak_bottom, height):+.4f}"
+        f"lowest trough    row {trough_centre:<6.2f} implies sample {implied_sample(trough_centre, height):+.4f}"
     )
+    # The lit extremes as well, because the gap between the two is the beam's own
+    # half-width and seeing it is how you tell a wide beam from a lit trail.
+    print(f"lit rows         {peak_top} to {peak_bottom}, against the centroids above")
 
     # A peak sitting on the rail means "at or above" and nothing more precise.
-    if abs(peak_top - rail_row) <= 1.5:
+    #
+    # **Measured from the centroid, which is what lets the window stay tight.**
+    # Against the lit edge this needed 1.5 rows of slack and still moved with the
+    # beam's width; a centroid sits on the rail row itself whatever the width is.
+    if abs(peak_centre - rail_row) <= 1.0:
         print("                 ^ on the rail: at or above +0.74 dBFS, amount unknowable")
 
     plateau = int((top == peak_top).sum())
@@ -760,11 +854,19 @@ def main():
     #
     # Read off the rows since #60, because the level count this used to test can no
     # longer tell a trail from a gradient.
+    # **The floor is the beam's own depth since #57, not a constant.** A beam three
+    # points wide spans several rows in every column whether or not anything is
+    # fading, so the old fixed `> 2.0` would print this on every capture and the
+    # message would stop carrying information. What is compared against is the
+    # beam's width at this capture's scale, plus a row of slack for the profile's
+    # skirt and the sub-pixel phase.
+    beam_rows = BEAM_WIDTH_POINTS * args.scale
+
     spans = bottom[any_lit] - top[any_lit]
-    if spans.size and float(np.median(spans)) > 2.0:
+    if spans.size and float(np.median(spans)) > beam_rows + 1.0:
         print()
-        print("a trail is lit, so the rows above are the envelope over the persistence")
-        print("window rather than this frame's sample")
+        print("a trail is lit, so the lit rows above are the envelope over the")
+        print("persistence window rather than this frame's beam")
 
     if args.periods:
         # One run per period, thresholded well above centre so a steep crossing

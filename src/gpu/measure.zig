@@ -261,9 +261,13 @@ pub fn maxChannel(image: Image, c: usize) f32 {
 /// The row's *centre* rather than its edge, since a pixel is a square and the
 /// mapping is about points: `[[position]]` in a fragment is window space with
 /// pixel centres at half-integers, and a row therefore stands for `row + 0.5`.
-/// `scripts/measure-trace` omits that term, which puts the two half a pixel
-/// apart; both are inside the one-pixel band every assertion here is stated in,
-/// and reconciling them is not this file's business.
+///
+/// **`scripts/measure-trace` used to omit that term and no longer does**, which
+/// #57 forced rather than tidied. The two were half a pixel apart, and that was
+/// defensible while every assertion here was stated in a one-pixel band; the
+/// centroid took this side's tolerance to a twentieth of a pixel, at which point
+/// the offset was ten times the tolerance and the two instruments disagreed about
+/// captures they had both measured correctly.
 pub fn impliedSample(row: usize, height: usize) f32 {
     return impliedSampleAt(@floatFromInt(row), height);
 }

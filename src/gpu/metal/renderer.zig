@@ -3129,9 +3129,13 @@ test "the screenshot tool still holds this project's numbers" {
     // takes the first match: a `TRACE_FULL_SCALE` declared above `FULL_SCALE`
     // would silently repoint the assertion above at a different number and pass.
     // Counted rather than trusted to a convention nobody can see from here.
+    const beam_width = scalarAfter(script, "BEAM_WIDTH_POINTS = ") orelse return error.NotFound;
+    try testing.expectEqual(iface.beam_width_points, @as(f32, @floatCast(beam_width)));
+
     for ([_][]const u8{
         "FULL_SCALE = ",
         "RAIL = ",
+        "BEAM_WIDTH_POINTS = ",
         "BACKGROUND_BYTES = ",
         "CORE_EXPONENT = ",
         "WHITE_HEADROOM = ",
