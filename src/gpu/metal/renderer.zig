@@ -1953,12 +1953,35 @@ pub const Renderer = struct {
     /// is somehow not the one `buildWindows` made. Skipping the copy leaves the
     /// previous window in place, which is the same outcome a torn read produces
     /// and is preferable to writing through null.
+    ///
+    /// **A non-finite sample is replaced with silence here, and this is the last
+    /// place it can be.** Nothing upstream checks the audio: `plugin.activate`
+    /// bounds the sample *rate* for finiteness and no code anywhere inspects the
+    /// signal, so a host handing over a NaN reaches the GPU buffer intact.
+    ///
+    /// Under a line strip that was survivable and self-healing. `clamp(NaN, ...)`
+    /// leaves a non-finite clip position, the rasterizer drops the primitive, and
+    /// the cost is one missing segment for one frame. Oriented quads remove both
+    /// halves of that. A NaN carried into the fragment as an interpolated endpoint
+    /// produces a NaN coverage value, and `float4(NaN)` blended additively into
+    /// `RGBA16Float` is **permanent**: `NaN * decay` is NaN, on both halves of the
+    /// ping-pong, for the life of the accumulation. That is exactly the ruined
+    /// screen `clearAccumulation` exists to prevent, reached through a door that
+    /// clearing cannot close, and recoverable only by a resize.
+    ///
+    /// It cannot be done in MSL. `buildPipelinesFromSource` passes no
+    /// `MTLCompileOptions`, so fast math is on, and under it `isfinite` and
+    /// `x != x` are both free to fold to a constant. So the guard is here, on the
+    /// one pass that already touches every sample, where it costs a compare
+    /// against work already being done.
     fn writeWindow(self: *Renderer) void {
         const target = self.windows[self.slot];
         const contents = target.msgSend(?*anyopaque, "contents", .{}) orelse return;
 
         const dst: [*]f32 = @ptrCast(@alignCast(contents));
-        @memcpy(dst[0..self.window_len], self.window[0..self.window_len]);
+        for (dst[0..self.window_len], self.window[0..self.window_len]) |*out, sample| {
+            out.* = if (std.math.isFinite(sample)) sample else 0.0;
+        }
     }
 };
 
