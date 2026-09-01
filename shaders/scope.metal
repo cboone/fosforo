@@ -267,7 +267,8 @@ float2 to_clip(float2 window, float2 viewport) {
 //
 // The difference is the whole of what gives the beam round caps, and it buys three
 // things at once. Joints are covered, so there is no wedge gap outside a turn. The
-// first and last samples sit at x = ±1 and their caps have area, which is what
+// first and last samples sit at x = ±1 and the quad containing them has area,
+// which is what
 // #38's 1914-of-1920 edge columns were about. And a degenerate segment collapses
 // to a disk rather than to the NaN `normalize` would hand back.
 float distance_to_segment(float2 p, float2 a, float2 b) {

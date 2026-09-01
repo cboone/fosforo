@@ -257,3 +257,51 @@ The last two are deliberately included expecting an asymmetric result, and recor
 7. `docs: record that the seam's raw-samples claim held (#57)` — `iface.zig`'s verdict, `gui.zig`'s rail bound, the two ADR amendments, ADR 0019's superseded mechanism, `AGENTS.md`, README, CHANGELOG, CI's recorded numbers, the build plan.
 
 Each builds and is `zig build test`-clean. Commit 2 stands alone because the guard is correct and worth having whether or not the rest lands.
+
+## What happened
+
+Seven commits, in the planned order, with one inserted: the non-finite guard became its own commit ahead of the geometry rather than a line inside it, because the hazard it closes is created by the geometry and a guard that lands with the thing it guards cannot be shown to have been needed.
+
+### The acceptance test reads exactly zero
+
+`silence: centroid row 269.500, implying a sample of 0.00000`, at 960x540. The centre-line half pixel #38 left open is answered, and **the answer is that no bias was ever needed**. The geometry was right the whole time; `extremes(...).top` was reading the beam's top edge, which a one-pixel line does not have and a beam does. Every other vertical number moved with it: four of the seven levels now read exact, the other three are within 0.00022, symmetry is 121.50 against 121.50, and the rail lands on 4.872 against a predicted 4.9.
+
+### Three predictions in this plan were wrong
+
+**The caps are not what fixes the edge columns.** The plan, ADR 0007's amendment and the CHANGELOG all said the endpoints at `x = ±1` are covered "because the cap has area". Planting butt joints — no extension along the segment at all — still reads 960 of 960. What covers column zero is the quad's *body*: the first segment spans a whole pixel horizontally and therefore contains its centre, where a line's endpoint was a point that had to exit a diamond to light anything. All four places carrying the claim were corrected. The fix is that a quad has area at all, which is weaker and more robust than what was written.
+
+**An over-large quad is harmless.** `vertex_id & 2` read as 0-or-1 was planted expecting `checkBeamProfile` to catch a doubled height. Nothing caught it, and nothing should have: the fragment clamps `u` to 1, so geometry beyond the half-width deposits exactly zero and the picture is bit-identical. The failure mode is an *under*-sized quad, which clips the profile; planted that way it fails `RailMisplaced`.
+
+**Two plants were caught by an earlier check than predicted.** The inverted Y flip was expected at `checkSymmetry` and fails `checkLevels`; the clip-space half-width was expected at `checkBeamProfile` and fails `checkSaturation`. Both because the centroid made the earlier checks exact, which is the change's own doing.
+
+### The shader budget cost more than the plan allowed for
+
+The plan set the headroom factor to 3, from a file of 15,247 bytes against a fourfold ceiling of 16,384. The rewrite took it to **22,050**, which overshoots a threefold ceiling of 21,845 by 205 bytes. The factor went to 2 instead, with the real number recorded beside it, and `src/gpu/metal/shader.zig` now says plainly that this is the last honest move of the factor: at 32,768 against 22,050, the next thing to add ten kilobytes has to move `Buffer` off the stack and raise the bound.
+
+### A half-pixel disagreement had to be settled that the plan did not mention
+
+`scripts/measure-trace` omitted the pixel-centre term `src/gpu/measure.zig` has always carried, and both files said so and called reconciling them nobody's business. That was defensible while every assertion was stated in a one-pixel band. The centroid took the harness's tolerance to a twentieth of a pixel, at which point the two instruments disagreed by ten times it about captures they had both measured correctly: the same synthetic trace read `+0.5021` from the script and `+0.5000` from the harness. The script now carries the term and both read `+0.5000`.
+
+### Planted defects
+
+| Plant | Caught by | Reading |
+| --- | --- | --- |
+| The quad too small to hold its profile | `checkSaturation` | `RailMisplaced` |
+| Corners in ring order, giving a bowtie | `checkHorizontalMapping` | `TraceStartsLate` |
+| The Y flip's sign inverted | `checkLevels` | `LevelMisplaced` |
+| The half-width applied in clip space | `checkSaturation` | `RailMisplaced` |
+| The centroid computed unweighted | `checkSaturation` | `RailMisplaced` |
+| The last segment dropped from the draw | `checkHorizontalMapping` | `TraceEndsEarly` |
+| A NaN in the window, guard removed | `checkSilence` | `TraceNotFlat` |
+| A NaN in the window, guard in place | — | passes, reading 0.00000 |
+| Distance to the infinite line | **nothing** | square caps rather than round; unchanged |
+| Butt joints, no cap at all | **nothing** | 960 of 960 columns still lit |
+| The density scale dropped | **nothing** | unchanged at this geometry |
+
+The last three are the honest rows. The first two are why the edge-column claim above was corrected. The third is structural and not fixable here: the harness runs 960 samples across 960 pixels, so `density` is exactly 1.0 and a dropped scale is a no-op. **Only a host at a sample rate above 48 kHz can see it**, which is why the sample-rate pass is in the verification section and why it is the one thing here no automated check covers.
+
+The NaN pair is a control rather than a single plant, for the reason `scripts/ring-race-check` exists: an absence has to be told apart from an instrument that was never running.
+
+### What is left
+
+The host verification has not been run. Everything above is `zig build smoke-trace`, which renders a window it supplied itself and says nothing about the audio path, the ring, the display link or the compositor. The bash block in the verification section is what remains, and the sample-rate arm of it is the only check on `density` that exists.

@@ -860,10 +860,17 @@ fn traceHalf() !void {
 /// accumulated picture cannot tell an intermittent dropout from a fixed one.
 ///
 /// This can, because it drives one deposit into a cleared accumulation. And the
-/// answer is structural rather than measured: a round cap has area, so the beam
-/// covers the pixel its endpoint lands on rather than needing to exit a diamond
-/// inside it. The level is the one that failed, so this is that case and not a
+/// answer is structural rather than measured: a quad has area, so the first
+/// segment spans a whole pixel horizontally and contains that pixel's centre,
+/// where a line's endpoint was a point that had to exit a diamond to light
+/// anything. The level is the one that failed, so this is that case and not a
 /// nearby one.
+///
+/// **The round caps are not what does it, which planting established.** Cutting
+/// them off entirely — butt joints, no extension along the segment — still reads
+/// 960 of 960 here. So this check is weaker than it looks against the cap
+/// geometry and exactly as strong as it should be against the thing that
+/// actually failed.
 fn checkEdgeColumns(energy: []f32, picture: []u8, window: []f32) !void {
     var probe = try Probe.init(energy, picture);
     defer probe.deinit();
@@ -1136,7 +1143,7 @@ fn checkHorizontalMapping(energy: []f32, picture: []u8) !void {
     // **Exactly the edge columns, with no slack, and #57 is what removed it.**
     // The one column either side used to be for the diamond-exit rule, under
     // which a line strip's final endpoint need not light the pixel it lands on. A
-    // round cap has area and does light it, which `checkEdgeColumns` asserts at
+    // quad has area and does light it, which `checkEdgeColumns` asserts at
     // the level that actually failed in #38; keeping a tolerance here after that
     // would be carrying a defect's allowance past the fix for it.
     if (span.first != 0) return error.TraceStartsLate;
