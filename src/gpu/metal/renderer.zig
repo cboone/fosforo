@@ -3048,9 +3048,11 @@ test "a frame both dims what is there and shows what is left" {
         try testing.expect(decay <= 1.0);
     }
 
-    // A zero interval reaches exactly 1.0, which is the first frame of a renderer
-    // whose accumulation was just cleared, and anything that is really an interval
-    // is below it.
+    // A zero interval reaches exactly 1.0, and anything that is really an interval
+    // is below it. `frame` never asks for one: the first committed frame stands in
+    // `palette.decay_reference_frame_nanos` and every later one is the difference
+    // between two distinct clock readings, which is what keeps a decay of 1.0 and
+    // the 8e5 white point it implies out of the render loop.
     //
     // A microsecond rather than a nanosecond, and the difference is a fact about
     // `f32` worth knowing rather than a tolerance being dodged. `exp(-1 / 1.58e8)`

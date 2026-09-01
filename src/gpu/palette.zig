@@ -429,12 +429,23 @@ pub fn whitePoint(decay: f32) f32 {
     // without a conditional. A decay of exactly 1 is a phosphor that never fades,
     // whose steady state is unbounded; the clamp sends the white point to 8e5,
     // which makes the shoulder term vanish and leaves plain Reinhard rather than
-    // a division by zero. That case is unreachable through `decayOver`, whose
-    // argument would have to be zero nanoseconds for it to arise, and reachable
-    // through a hot-reloaded shader reading an unbound buffer, which is what it is
-    // guarded for. A zero interval does happen, on the first frame after a
-    // renderer is built; it lands on a cleared accumulation where there is nothing
-    // to fade and one deposit resolves within a percent of its usual value.
+    // a division by zero.
+    //
+    // **Reachable through this file and not through the render loop**, which is
+    // worth separating because the two answers differ. `decayOver(0)` is exactly
+    // 1.0, so any caller holding an interval of zero lands here. `Renderer.frame`
+    // is not such a caller: the first committed frame of a renderer's life stands
+    // in `decay_reference_frame_nanos` rather than a zero interval, precisely
+    // because this clamp would otherwise set that frame's white point, and every
+    // later frame is the difference between two distinct readings of a clock with
+    // nanosecond resolution.
+    //
+    // What it is really guarded for is the shader's copy of this arithmetic, where
+    // a hot-reloaded source can leave a fragment uniform unbound and the value is
+    // then whatever the buffer held. `shaders/scope.metal` carries the other half
+    // of that argument, including the opposite end: at a decay of zero the white
+    // point falls to `white_headroom` and everything above one deposit blows out
+    // white, which is loud and is the right failure.
     return white_headroom / @max(1.0 - decay, 1e-6);
 }
 
