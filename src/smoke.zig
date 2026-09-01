@@ -942,8 +942,8 @@ fn checkBeamProfile(energy: []f32, picture: []u8, window: []f32) !void {
 
     if (@abs(total - want) > want * 0.05) return error.BeamWidthWrong;
 
-    // And it is symmetric about that centre, which is what a bowtie from a
-    // mis-ordered strip or a mirrored corner would not be. Compared as the two
+    // And it is symmetric about that centre, which is what a bowtie from a strip
+    // whose corners run the wrong way, or a mirrored quad, would not be. Compared as the two
     // halves' energy rather than pixel by pixel, so it says nothing about the
     // profile's shape that the integral above has not already said.
     var left: f32 = 0;
