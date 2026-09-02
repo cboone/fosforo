@@ -197,12 +197,20 @@ Then by hand, because `smoke-trace` renders a window it supplied itself and says
 
 ```bash
 zig build install-clap
-CLAP_PATH="$PWD/zig-out" /Applications/REAPER.app/Contents/MacOS/REAPER
+/Applications/REAPER.app/Contents/MacOS/REAPER 2>&1 | grep --line-buffered fosforo
 ```
 
-Play `sine-100-0.500.wav`, capture by window id, and run `scripts/measure-trace --refresh 120`. The guard's off-ray fraction must stay well under `MAX_OFF_RAY`, since an antialiased beam puts many more pixels in the gradient's toe where quantization is worst and the recorded 0.02% was measured against a one-pixel trace. Then the level sweep at 1.000, 1.050, 1.089 and 2.000, watching for the peak to stop climbing rather than for a flat top.
+**Arm 1, the trace's position.** Play `sine-100hz-0.5.wav`, capture the plugin's window, and run `scripts/measure-trace --refresh 120 verification/shot.png`. The peak and trough must invert to ±0.5000, and the guard's off-ray fraction must stay under `MAX_OFF_RAY`. **Done**: reads `+0.5000` and `-0.5000` at 0.26%.
 
-**And a sample-rate pass, which is new and is the density scale's whole justification.** Run the same material at 48, 96 and 192 kHz at both the default and the minimum editor, and confirm the moving trace's brightness does not track the rate.
+**Arm 2, the rail.** The level sweep at 1.000, 1.050, 1.089 and 2.000. The centroid inverts straight to a sample value, so the criterion is that the implied sample tracks the level and then *stops*: +1.0000, +1.0500, +1.0889, +1.0889. Watching for a flat top is the wrong test, as `AGENTS.md` records; the peak ceasing to climb is the whole of what ADR 0017 means by refusing to say how far over a signal is. **Partly done**: `level-2.000` reads `+1.0893` against a predicted 1.08889 and prints the "on the rail" line. 1.000, 1.050 and 1.089 remain.
+
+**Arm 3, sample rate, which is the density scale's whole justification and the only check on it anywhere.** Change REAPER's **device** rate in preferences, not the files: `gui.windowSamples` is `sample_rate * 0.020`, so the negotiated rate is what sets the window length and the files stay 48 kHz throughout. Play `sine-100hz-0.5.wav` at 48, 96 and 192 kHz, at the default editor and at the minimum, and read the `deposits` figure `measure-trace` prints for the brightest pixel.
+
+**The criterion is a direction, not a magnitude.** Predicted single-frame energy at a 960-point editor is 2.60, 2.10 and 1.85 deposits, which is the offscreen sweep re-measured through the host's own persistence, so the printed number will be larger than those and should *fall* by roughly a third across the range. What must not happen is a rise: before the density scale was corrected to points, a 2x display went 2.60 at 48 kHz to 3.70 at 192, and the minimum editor at 192 kHz was worse still. That case is the sharpest test here, because 480 points at 3840 samples is eight samples per point.
+
+Two cautions. Use the sine rather than `level-2.000`, whose brightest pixel reads "at or above the white point" and yields no number at all. And take more than one capture per rate: the sweep is free-running, so peak dwell swings about ±35% between frames depending on where the phase lands, which ADR 0019 records from #60's session.
+
+**Arm 4, by eye.** The beam is visibly wider and smoother with no seam where the geometry ends, and a transport stop still draws the bright vertical line [#79](https://github.com/cboone/fosforo/issues/79) describes, which is #58's to remove rather than this issue's.
 
 ### Numbers to record rather than predict
 
