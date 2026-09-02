@@ -331,6 +331,8 @@ Filed against the [Phase 3 milestone](https://github.com/cboone/fosforo/mileston
 
 **Exit criteria:** looks like hardware; stable under resize, sample-rate change, and multiple instances.
 
+**"Stable under sample-rate change" is [#62](https://github.com/cboone/fosforo/issues/62)**, and saying so is what stops that issue reading as optional. At 96 kHz the 20 ms window holds 1920 samples against a 960-point default editor, so without min/max decimation the display invents structure that is not in the signal — which for a measurement instrument is the same category of lie [ADR 0017](../../adr/0017-absolute-vertical-axis.md) refuses on the vertical axis. It is not one of the nine numbered steps and it is still an exit criterion, which is the clearest case for the milestone rule stated above.
+
 ### Working order, and what can run beside what
 
 **Each issue is one complete piece of work: the code and its verification land together, in one branch and one PR.** No issue is written now and verified later, and no issue is split into halves that land at different times.
