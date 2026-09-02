@@ -305,3 +305,33 @@ The NaN pair is a control rather than a single plant, for the reason `scripts/ri
 ### What is left
 
 The host verification has not been run. Everything above is `zig build smoke-trace`, which renders a window it supplied itself and says nothing about the audio path, the ring, the display link or the compositor. The bash block in the verification section is what remains, and the sample-rate arm of it is the only check on `density` that exists.
+
+## The density scale was wrong, and answering "what does host verification need" is what found it
+
+Not a plant and not a review finding: it fell out of working through the sample-rate arm of the verification above, which is the one thing here no automated check covers.
+
+**The corrector was scale-dependent while the thing it corrects is not.** Overlap depends on `half_width / pitch`; the half-width is `beam_width_points * scale` and the pitch in pixels is `points * scale / instances`, so the scale cancels and overlap is a function of samples per logical *point* alone. `min(1, viewport_width / span)` was computed in **backing pixels**, which does not cancel. Measured offscreen at a 960-point editor by forcing both scales:
+
+| Session | 1x | 2x, before | 2x, after |
+| --- | --- | --- | --- |
+| 48 kHz, 960 samples | 2.6133 | 2.4434 | 2.4434 |
+| 192 kHz, 3840 samples | 1.8486 | **3.4531** | **1.7266** |
+
+At 48 kHz the two scales already agreed within 7%. At 192 kHz they were a factor of **1.87** apart, in opposite directions from their own baselines — 1x fading 29% and 2x brightening 41%. Afterwards they agree to 7%, the same as at 48 kHz. [ADR 0019](../../adr/0019-brightness-is-a-fixed-transfer-function.md) makes brightness a function of accumulated energy and of nothing else, and a term tracking the backing scale is exactly what that forbids, so this was a defect rather than an imprecision.
+
+**`zig build smoke-trace` could not have caught it**, and that is the structural limit this plan already recorded as a coverage gap turning out to be a correctness gap: `initOffscreen` always passes a scale of 1.0, so the harness measures one side of a two-sided defect and reads it as *dimmer* where the shipping display reads *brighter*. The answer is that the arithmetic moved into `beamDensity`, a pure function with no GPU anywhere near it, and two tests assert the property directly.
+
+### Planted defects, second round
+
+| Plant | Caught by | Reading |
+| --- | --- | --- |
+| The pitch computed in pixels, `scale` unused | the compiler | `unused function parameter` |
+| The scale multiplied rather than divided | `"the beam's density does not depend on the display's scale"` | 1 against 0.50026 |
+| The clamp dropped, so undersampling amplifies | `"…attenuates oversampling and never amplifies"` | 2.0042 against 1 |
+| The zero-instance guard dropped | **nothing** | unchanged |
+
+The first is the better outcome ADR 0013 records for the accumulation-texture plant: a defect that does not compile beats one a test catches. The last is honest and is now stated at the guard itself — `points / 0.0` is `inf` and `@min(1.0, inf)` is `1.0`, so the guard changes no result and is kept for the reader rather than for the arithmetic.
+
+### What this does not change
+
+Every number in the sections above was measured at one sample per logical point, where `density` is exactly 1.0 by construction, so `smoke-trace`'s output is byte-identical before and after. The host pass is still what settles the density arm, and it is now worth running.

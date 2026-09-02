@@ -2185,6 +2185,13 @@ fn traceGeometry(window_len: usize) ?TraceGeometry {
 /// Clamped at one so undersampling never *amplifies*. Below one sample per point
 /// the segments have stopped overlapping, the product above is already near one
 /// deposit, and scaling up would invent energy the beam never deposited.
+///
+/// **The zero guard below is redundant and is kept anyway**, which planting
+/// established rather than assuming: `points / 0.0` is `inf` under IEEE and
+/// `@min(1.0, inf)` is `1.0`, so removing it changes no result and fails no test.
+/// It stays because a reader should not have to reason about infinity propagating
+/// through a `@min` to see that a degenerate draw is answered, and `traceGeometry`
+/// already refuses to produce one. Do not read the test for it as covering it.
 fn beamDensity(viewport_width: u32, scale: f64, instances: u32) f32 {
     if (instances == 0) return 1.0;
 
@@ -3492,8 +3499,10 @@ test "the beam's density attenuates oversampling and never amplifies" {
         1e-6,
     );
 
-    // A degenerate draw never reaches the shader, but a divisor of zero would be
-    // an inf rather than a refusal, so it is answered here.
+    // A degenerate draw never reaches the shader, because `traceGeometry` refuses
+    // to produce one. Asserted anyway, and **this does not cover the guard**: it
+    // passes with the guard removed, because `inf` through `@min` gives the same
+    // answer. See the docstring.
     try testing.expectEqual(@as(f32, 1.0), beamDensity(960, 1.0, 0));
 }
 
