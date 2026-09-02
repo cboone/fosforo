@@ -19,7 +19,7 @@ The product thesis is that analysis tools are a market failure rather than a har
 Everything below was verified empirically (Zig 0.16.0, Apple M5 Max, macOS 26.5.2, Xcode 26.6) rather than taken from the handoff on faith. Several findings contradict it.
 
 | Finding                                                                                        | Evidence                                                                                                  | Consequence                                                      |
-|------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------|------------------------------------------------------------------|
+| ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
 | `clap-zig-bindings` is **LGPLv3**, covers CLAP **1.2.2**, and **fails to compile on Zig 0.16** | Cloned; `zig build test` fails on the removed `std.testing.refAllDeclsRecursive`                          | Rejected. The handoff called it "the cleanest binding path"      |
 | Zig 0.16 **removed `@Type`**                                                                   | `@Type` reports `invalid builtin function`                                                                | The classic comptime `objc_msgSend` cast pattern no longer works |
 | `zig-objc` migrated to the replacement `@Fn`/`@Tuple` builtins, is **MIT**, and passes on 0.16 | Cloned; `zig build test` exits 0                                                                          | Viable dependency, contrary to the handoff's "hand-roll it"      |
@@ -35,7 +35,7 @@ The full chain is proven working: `translate-c` over normalized CLAP 1.2.10 head
 ### Environment status
 
 | Tool             | Status                                                                            |
-|------------------|-----------------------------------------------------------------------------------|
+| ---------------- | --------------------------------------------------------------------------------- |
 | Zig 0.16.0       | Installed. Current stable, released 2026-04-13                                    |
 | CMake 4.4.x      | Installed. The below-3.5 policy risk did not materialize                          |
 | Metal toolchain  | Installed. Needed `xcrun --kill-cache` before `xcrun` would resolve it            |
@@ -48,7 +48,7 @@ The full chain is proven working: `translate-c` over normalized CLAP 1.2.10 head
 Each becomes an ADR under `docs/adr/`.
 
 | ADR  | Decision                                                                                                                     |
-|------|------------------------------------------------------------------------------------------------------------------------------|
+| ---- | ---------------------------------------------------------------------------------------------------------------------------- |
 | 0001 | Mac-first, Apple Silicon primary. One audio-thread contract, one SIMD target, unified memory                                 |
 | 0002 | Zig, pinned to 0.16.0 via `minimum_zig_version`. Compiler bumps are scheduled work, never incidental                         |
 | 0003 | Author CLAP once; project outward with `clap-wrapper`. Never author AU or VST3 directly                                      |
@@ -67,7 +67,7 @@ phase reached a question this plan had not asked. They are listed here so the se
 is complete in one place; [`docs/adr/README.md`](../../adr/README.md) is the index.
 
 | ADR  | Decision                                                                                          | Decided in |
-|------|---------------------------------------------------------------------------------------------------|------------|
+| ---- | ------------------------------------------------------------------------------------------------- | ---------- |
 | 0013 | The GUI smoke harness is an executable behind its own build steps, never part of `zig build test` | Phase 1    |
 | 0014 | Distribute as one signed, notarized, stapled `.pkg` placing both bundles                          | Phase 1    |
 | 0015 | Adopt `std.Io` through the single `init_single_threaded` instance in `src/platform/io.zig`        | Phase 2    |
@@ -159,7 +159,7 @@ src/dsp/
 ## Phase 0: repository foundation (complete)
 
 | Step | Work                                                                           | Status |
-|------|--------------------------------------------------------------------------------|--------|
+| ---- | ------------------------------------------------------------------------------ | ------ |
 | 0.1  | Install `clap-validator` from git                                              | Done   |
 | 0.2  | Scaffold README, CHANGELOG, `.gitignore`, agent config, `docs/plans/`          | Done   |
 | 0.3  | Move the source brainstorm to `docs/design/scope-plugin-handoff.md`, verbatim  | Done   |
@@ -187,7 +187,7 @@ Phase 0 also absorbed work scheduled for Phase 1: the CMake integration builds `
 Steps 1 and 3 of the original plan (the static library and the clap-wrapper integration) landed in Phase 0, so what remained was tracked as issues under the [Phase 1 milestone](https://github.com/cboone/fosforo/milestone/1), all five now closed:
 
 | Issue                                            | Work                                                                      | Status |
-|--------------------------------------------------|---------------------------------------------------------------------------|--------|
+| ------------------------------------------------ | ------------------------------------------------------------------------- | ------ |
 | [#2](https://github.com/cboone/fosforo/issues/2) | Plugin factory and descriptor. **Chooses the permanent CLAP plugin `id`** | Done   |
 | [#3](https://github.com/cboone/fosforo/issues/3) | Stereo `audio-ports`, pass-through `process`, `state`, `log`              | Done   |
 | [#4](https://github.com/cboone/fosforo/issues/4) | CLAP GUI extension: `NSView` hosting a `CAMetalLayer`                     | Done   |
@@ -199,7 +199,7 @@ Steps 1 and 3 of the original plan (the static library and the clap-wrapper inte
 Met, with one criterion retired rather than satisfied:
 
 | Criterion                           | Result                                                                                                                                                                                                                                     |
-|-------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Loads in REAPER and Logic           | Passed in both, and the Audio Unit's first presented frame was confirmed by sampling a pixel rather than by eye                                                                                                                            |
 | `clap-validator` beyond 3 tests     | 21 passed, 0 failed, against **both** bundles in CI                                                                                                                                                                                        |
 | `auval -v aufx Fsfr Ctmn`           | **Retired as untestable.** `auval` and `AudioComponentFindNext` enumerate only Apple's built-in components on this OS, while Logic sees the plugin. A null result there is not evidence, so loading in Logic is the check that replaced it |
@@ -259,7 +259,7 @@ places #69.
 Filed against the [Phase 2 milestone](https://github.com/cboone/fosforo/milestone/2), one issue per step, sequenced so each depends only on the one above it:
 
 | Issue                                              | Step | Work                                                                                                                                                                                                                                                                                                                                                                                                                  | Status |
-|----------------------------------------------------|------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------|
+| -------------------------------------------------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
 | [#35](https://github.com/cboone/fosforo/issues/35) | 1    | `src/dsp/ring.zig`, the buffer alone with no caller. The only part of the phase needing no GPU, no window, and no host, which is why it is separate                                                                                                                                                                                                                                                                   | Done   |
 | [#36](https://github.com/cboone/fosforo/issues/36) | 2    | `process` writes the tapped **left output** channel into the ring. Sized in `activate` from the sample rate and freed in `deactivate` as this landed; #37 moved both to `create` and `destroy`, for the reason in its row below                                                                                                                                                                                       | Done   |
 | [#37](https://github.com/cboone/fosforo/issues/37) | 3    | The trailing-window read in `Editor.tick`, a per-frame buffer ring behind the seam, and `upload` on `gpu/iface.zig`. **Resolved the `deactivate` race by giving the ring the instance's lifetime**, since a host may deactivate with the editor open and no gate covers that path; capacity is a fixed constant as a consequence. Raw samples cross the seam rather than a vertex format, which phase 3 would replace | Done   |
@@ -289,7 +289,7 @@ zero and a window frozen seconds ago both survive being looked at.
 **Two open chores are folded into this phase** rather than left to drift, both moved onto the milestone:
 
 | Issue                                              | Work                                                                   | Status | Why here                                                                                                                                                                                                                                                                                                                                                                   |
-|----------------------------------------------------|------------------------------------------------------------------------|--------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| -------------------------------------------------- | ---------------------------------------------------------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [#22](https://github.com/cboone/fosforo/issues/22) | Make dev builds identifiable and stop worktrees overwriting each other | Done   | This is the first phase whose results can only be judged in a running host, which is exactly where an ambiguous installed build does damage. It has already voided two verification runs, and nearly voided a third: verifying #37 in Logic found a two-week-old Audio Unit installed from another branch, which [#43](https://github.com/cboone/fosforo/issues/43) covers |
 | [#29](https://github.com/cboone/fosforo/issues/29) | Decide how to handle the primitives Zig 0.16 moved behind `std.Io`     | Done   | The issue predicts a fourth local workaround will be added by whoever next needs a timer or a lock. Step 3's `deactivate` race is that moment, so the convention should be settled just before it rather than just after                                                                                                                                                   |
 
@@ -368,7 +368,7 @@ Two orderings follow from the rule, and both were reasoned about before it was a
 Merge order is a separate question from run order, and only two things constrain it. **Every issue here is an ordinary branch off `main`, and none needs another's unfinished work:**
 
 | Constraint                   | Where it applies                                                 | What it actually requires                                                                                   |
-|------------------------------|------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------|
+| ---------------------------- | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
 | **Code dependency**          | #56, #57 and #60 needed #55; #58 and #59 need #57; #83 needs #58 | Wait for the PR to merge, then branch from `main` as usual                                                  |
 | **Merge conflict**           | #80 against #58, both editing `src/smoke.zig`                    | Nothing, strictly. Whichever lands second rebases. Different lanes, so they can still be in flight together |
 | **Machine and install path** | The verification half of #58, #59, #79, #83 and #34              | Do not *run* two issues at the same moment. No effect on what may be branched, reviewed or merged           |
@@ -420,7 +420,7 @@ Recorded so these read as deliberate omissions rather than oversights:
 ## Risks
 
 | Risk                                                                    | Status and mitigation                                                                                                                                                                                                                                                                                                                                                     |
-|-------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Linking a Zig static archive from CMake was unproven                    | **Retired.** Both AUv2 and CLAP build through clap-wrapper and pass `clap-validator`                                                                                                                                                                                                                                                                                      |
 | CMake 4.4 rejects `cmake_minimum_required` below 3.5                    | **Did not materialize.** Escape hatch if a future dependency trips it: `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`                                                                                                                                                                                                                                                               |
 | Zig `translate-c` `#pragma once` bug                                    | **Worked around** by preprocessing with `zig cc -E`. Worth reporting upstream, though `ziglang/zig` is not your repository                                                                                                                                                                                                                                                |
@@ -435,7 +435,7 @@ Recorded so these read as deliberate omissions rather than oversights:
 ## Verification
 
 | Layer       | Check                                                                                                                                                            |
-|-------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Build       | `zig build` produces `Fosforo.clap`; `zig fmt --check` clean                                                                                                     |
 | Bindings    | Comptime `@sizeOf` and `@offsetOf` assertions for every CLAP struct crossing the ABI                                                                             |
 | Shaders     | `zig build validate-shaders` pipes each shader through `metal -fsyntax-only`. Deliberately not in `zig build test` (ADR 0009)                                    |
@@ -464,7 +464,7 @@ Worth stating explicitly, because these look interchangeable and are not. Some a
 **Permanent once released.** Changing any of these makes the plugin read as missing in projects that used it, orphaning automation and settings. There is no redirect mechanism.
 
 | Identifier           | Value                   | Where                  | Who persists it                |
-|----------------------|-------------------------|------------------------|--------------------------------|
+| -------------------- | ----------------------- | ---------------------- | ------------------------------ |
 | AU type              | `aufx`                  | `cmake/CMakeLists.txt` | Every AU host, including Logic |
 | AU subtype           | `Fsfr`                  | `cmake/CMakeLists.txt` | Every AU host, including Logic |
 | AU manufacturer code | `Ctmn`                  | `cmake/CMakeLists.txt` | Every AU host, including Logic |

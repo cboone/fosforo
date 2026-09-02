@@ -15,7 +15,7 @@ What does not work yet: the beam's brightness does not vary with how fast it swe
 Six phases. [The build plan](./docs/plans/todo/2026-07-25-repo-foundation-and-phased-build-plan.md) holds the reasoning, the sequencing and the exit criteria for each; [the design brainstorm](./docs/design/scope-plugin-handoff.md) is the background it came from. Issues are filed one phase at a time, so a phase marked planned deliberately has none yet.
 
 | Phase | Scope                                                                       | Status      |
-|-------|-----------------------------------------------------------------------------|-------------|
+| ----- | --------------------------------------------------------------------------- | ----------- |
 | 0     | Repository foundation, build skeleton, ADRs                                 | Complete    |
 | 1     | Walking skeleton: loads in a host and renders a cleared drawable            | Complete    |
 | 2     | Signal path: history buffer, audio tap, trailing-window read, a crude trace | Complete    |
