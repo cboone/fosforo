@@ -369,7 +369,12 @@ const TraceUniforms = extern struct {
     viewport_width: f32,
     viewport_height: f32,
 
-    /// The segment pitch in backing pixels, clamped so it only attenuates.
+    /// The segment pitch in **points**, clamped so it only attenuates.
+    ///
+    /// Points rather than backing pixels, and `beamDensity` is where that is
+    /// argued and measured: the overlap this corrects depends only on samples per
+    /// logical point, so a correction computed in pixels makes brightness track
+    /// the display's backing scale, which ADR 0019 forbids.
     ///
     /// **Not velocity weighting, which is #58's.** Quads overlap at every joint,
     /// so a pixel collects roughly `1 + 1.6 * s` deposits for `s` samples per
@@ -1890,12 +1895,10 @@ pub const Renderer = struct {
             //
             // The width is halved here rather than in the shader because points
             // times scale is this side's arithmetic; the shader is handed backing
-            // pixels and measures distances in them. The density is the segment
-            // pitch, clamped so oversampling attenuates and undersampling does
-            // not amplify, and it is the field's own docstring that explains why
-            // it exists at all.
+            // pixels and measures distances in them. The density comes from
+            // `beamDensity`, which is a separate function so the property that
+            // matters about it can be asserted without a GPU.
             const width: f32 = @floatCast(@as(f64, iface.beam_width_points) * self.scale);
-            const span: f32 = @floatFromInt(geometry.instances);
             const viewport_width: f32 = @floatFromInt(self.pixels.width);
 
             const uniforms: TraceUniforms = .{
@@ -1903,7 +1906,7 @@ pub const Renderer = struct {
                 .half_width_px = width / 2.0,
                 .viewport_width = viewport_width,
                 .viewport_height = @floatFromInt(self.pixels.height),
-                .density = @min(1.0, viewport_width / span),
+                .density = beamDensity(self.pixels.width, self.scale, geometry.instances),
             };
             encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
                 &uniforms,
@@ -2148,6 +2151,47 @@ fn traceGeometry(window_len: usize) ?TraceGeometry {
 
     const samples: u32 = @intCast(window_len);
     return .{ .samples = samples, .instances = samples - 1 };
+}
+
+/// How much of a segment's deposit survives, given how densely the samples fall.
+///
+/// Oriented quads overlap at every joint, so a pixel collects roughly
+/// `1 + (16/15) * half_width / pitch` deposits. This attenuates by the pitch so
+/// that product stays put, which is what stops a moving trace saturating to white
+/// at a high sample rate; `TraceUniforms.density` carries the rest of the
+/// argument, including why this is not #58's velocity weighting.
+///
+/// **The pitch is in points, not backing pixels, and that is the whole of what
+/// this function exists to get right.** The overlap it corrects depends on
+/// `half_width / pitch`; the half-width is `beam_width_points * scale` and the
+/// pitch in pixels is `points * scale / instances`, so the scale cancels and the
+/// overlap is a function of samples per logical *point* alone. A correction
+/// computed in pixels does not cancel, and the mismatch is a brightness that
+/// depends on the display.
+///
+/// That was not hypothetical and it is why this is a function rather than an
+/// expression. Measured offscreen at a 960-point editor, at both scales, before
+/// the division by `scale` was here: at 48 kHz the two agreed within 7%, and at
+/// 192 kHz a 1x display read **1.8486** while a 2x display read **3.4531** — a
+/// factor of 1.87, in opposite directions from their own baselines. ADR 0019
+/// makes brightness a function of accumulated energy and of nothing else, and a
+/// term tracking the backing scale is exactly what that forbids.
+///
+/// `zig build smoke-trace` could not have caught it: `initOffscreen` has no view
+/// whose scale it could read and always passes 1.0, so the harness measures one
+/// side of a two-sided defect. The tests below are the answer to that, and they
+/// need no GPU.
+///
+/// Clamped at one so undersampling never *amplifies*. Below one sample per point
+/// the segments have stopped overlapping, the product above is already near one
+/// deposit, and scaling up would invent energy the beam never deposited.
+fn beamDensity(viewport_width: u32, scale: f64, instances: u32) f32 {
+    if (instances == 0) return 1.0;
+
+    const points = @as(f64, @floatFromInt(viewport_width)) / @max(scale, std.math.floatEps(f64));
+    const pitch = points / @as(f64, @floatFromInt(instances));
+
+    return @floatCast(@min(1.0, pitch));
 }
 
 /// The per-frame window buffers, all of them or none.
@@ -3400,6 +3444,57 @@ test "the trace draws one instance per segment" {
         }),
         traceGeometry(iface.max_window_samples),
     );
+}
+
+test "the beam's density does not depend on the display's scale" {
+    // **The property the shipped defect broke.** A 960-point editor is 960 pixels
+    // at 1x and 1920 at 2x, and the overlap being corrected is identical in both,
+    // because the half-width scales with the pitch. So the correction has to be
+    // identical too, and computing it in backing pixels made it differ by 2x.
+    //
+    // Every window a host can plausibly negotiate at 20 ms: 48 kHz is 960 samples
+    // and 192 kHz is 3840. `gui.windowSamples` is what ties those to a rate.
+    for ([_]u32{ 480, 960, 1920, 3840, 8192 }) |samples| {
+        const instances = samples - 1;
+
+        const at_1x = beamDensity(960, 1.0, instances);
+        const at_2x = beamDensity(1920, 2.0, instances);
+        const at_3x = beamDensity(2880, 3.0, instances);
+
+        try testing.expectApproxEqRel(at_1x, at_2x, 1e-6);
+        try testing.expectApproxEqRel(at_1x, at_3x, 1e-6);
+    }
+}
+
+test "the beam's density attenuates oversampling and never amplifies" {
+    // One sample per point is the reference and must be untouched, because every
+    // number `zig build smoke-trace` prints is measured there and would otherwise
+    // move for a reason that has nothing to do with the shader.
+    try testing.expectApproxEqAbs(@as(f32, 1.0), beamDensity(960, 1.0, 959), 2e-3);
+
+    // Oversampling attenuates, monotonically, and in proportion: four samples per
+    // point is a quarter.
+    try testing.expectApproxEqAbs(@as(f32, 0.25), beamDensity(960, 1.0, 3839), 1e-3);
+    try testing.expect(beamDensity(960, 1.0, 3839) < beamDensity(960, 1.0, 1919));
+    try testing.expect(beamDensity(960, 1.0, 1919) < beamDensity(960, 1.0, 959));
+
+    // Undersampling is clamped rather than amplified. Below one sample per point
+    // the segments have stopped overlapping, so there is nothing to correct and
+    // scaling up would invent energy the beam never deposited.
+    try testing.expectEqual(@as(f32, 1.0), beamDensity(960, 1.0, 479));
+    try testing.expectEqual(@as(f32, 1.0), beamDensity(960, 1.0, 1));
+
+    // The smallest editor `gui.clampSize` permits, at both scales, which is where
+    // samples per point is worst for any given rate.
+    try testing.expectApproxEqRel(
+        beamDensity(480, 1.0, 3839),
+        beamDensity(960, 2.0, 3839),
+        1e-6,
+    );
+
+    // A degenerate draw never reaches the shader, but a divisor of zero would be
+    // an inf rather than a refusal, so it is answered here.
+    try testing.expectEqual(@as(f32, 1.0), beamDensity(960, 1.0, 0));
 }
 
 test "the trace's uniforms are laid out the way the shader reads them" {

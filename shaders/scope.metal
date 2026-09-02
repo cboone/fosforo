@@ -361,8 +361,11 @@ vertex TraceOut trace_vertex(uint vertex_id [[vertex_id]],
 // Gaussian is the profile a real beam has and has neither property, on top of
 // putting a transcendental on this path.
 //
-// **`density` is the segment pitch in pixels, clamped to one, and it is not
-// velocity weighting.** Quads overlap at every joint, so a pixel collects roughly
+// **`density` is the segment pitch in points, clamped to one, and it is not
+// velocity weighting.** Points rather than backing pixels: the Zig side computes
+// it in `beamDensity`, where the reasoning and the measurement live, and the
+// short form is that the overlap it corrects depends only on samples per logical
+// point, so a pitch in pixels would make brightness track the display's scale. Quads overlap at every joint, so a pixel collects roughly
 // `1 + 1.6 * s` deposits where `s` is samples per logical point. At one sample per
 // point that is about 2.6; at four it is 7.4 and a *moving* trace saturates to
 // white, which is reachable at 96 kHz on a small editor and 192 kHz on a default
