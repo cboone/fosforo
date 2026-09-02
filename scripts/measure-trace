@@ -278,34 +278,37 @@ LEAD_WINDOW = 1
 # beam with a falloff skirt puts about one percent of the drawable in the
 # gradient's toe, where the sRGB curve is coarsest — `src/gpu/palette.zig` records
 # 3294.6 bytes per unit linear there — and quantization in that region reaches
-# three levels where a one-pixel trace only ever reached two. Measured on a 100 Hz
-# sine at 0.5, captured in REAPER at 1920x1080 and read after `to_srgb`, against
-# the same picture recompressed:
+# three levels where a one-pixel trace only ever reached two. Re-derived on the
+# same two captures the rows above use, both taken in REAPER at 1920x1080 and read
+# after `to_srgb`, each against itself recompressed:
 #
-#                      lossless   JPEG q95   q80      q60
-#   tolerance 2          1.29%     38.18%   45.85%   42.61%
-#   tolerance 3          0.26%     35.30%   43.37%   40.09%
+#                    sine 0.5                      level 2.000
+#              lossless  q95     q80     q60   lossless  q95     q80     q60
+#   tolerance 2   1.29%  38.18%  45.85%  42.61%   0.71%  76.56%  83.99%  86.32%
+#   tolerance 3   0.26%  35.30%  43.37%  40.09%   0.15%  68.63%  77.62%  78.70%
 #
-# At 2 the good capture sits *above* MAX_OFF_RAY and is refused. At 3 it passes
-# with 1.9x of margin while the worst recompression is 87x above the line, and the
-# separation between a good capture and a lossy one is still 135x.
-#
-# **This rests on one capture where the values above it rest on two**, and that is
-# a weakness rather than a footnote: the pre-#57 pair included a level-2.000 sine,
-# which stresses the saturated end where SATURATED starts excluding pixels. Re-run
-# both against a beam before treating the 1.9x margin as settled.
+# **At 2 both good captures sit above MAX_OFF_RAY and are refused**, which is not
+# a marginal call: 1.29% and 0.71% against a 0.5% line. At 3 they read 0.26% and
+# 0.15%, so the threshold sits 1.9x and 3.3x above them and 137x below the worst
+# recompression, and good against lossy is 135x and 457x. The same three orders of
+# magnitude the pre-#57 pair had, which is what keeps this needing no calibration
+# against the machine it runs on.
 RAY_TOLERANCE = 3
 MAX_OFF_RAY = 0.005
 
-# The exclusion is nearly inert today and is kept for when it is not.
+# The exclusion stopped being inert at #57, which is what it was kept for.
 #
-# **Measured before #60 it removed 3774 pixels of a capture; measured after, two.**
-# The premise has not changed — the dominant channel saturates first and a
-# saturated pixel carries no usable `t`, because the others keep climbing behind
-# one that cannot — but almost nothing now reaches the white point, so there is
-# almost nothing to exclude. That is a fact about `white_headroom` being
-# provisional rather than about this constant: #58 widens the dwell range, the
-# headroom is re-judged against it, and pixels start saturating again.
+# The premise has never changed: the dominant channel saturates first, and a
+# saturated pixel carries no usable `t` because the others keep climbing behind
+# one that cannot. What changed is how much there is to exclude. Before #60 it
+# removed 3774 pixels of a capture; after #60, **two**, because almost nothing
+# reached the white point. After #57 a level-2.000 capture has **8338** of
+# 2,073,600 excluded, because overlap at the joints of a wide beam reaches the
+# white point where a one-pixel line did not.
+#
+# So the note that used to sit here — that this was a fact about `white_headroom`
+# being provisional, and that #58 would make it matter again — was right about the
+# direction and wrong about which issue. #58 will widen it further.
 SATURATED = 250
 
 # The energy at which a pixel counts as lit, and the reason `--threshold` is
@@ -841,12 +844,29 @@ def main():
 
     peak_top = int(top[any_lit].min())
     peak_bottom = int(bottom[any_lit].max())
-    rail_row = (1.0 - RAIL) * height / 2
+    # The rail's two rows, as row *indices*, so they are comparable with the
+    # centroids below and with `measure.railRow` on the Zig side.
+    #
+    # **The `- 0.5` is the pixel-centre term, and it was missing here until a
+    # level-2.000 capture made it visible.** A row index stands for the point
+    # `row + 0.5` in window space, which is the same correction `implied_sample`
+    # carries; without it these printed 10.8 / 1069.2 at 1080 rows where
+    # `src/gpu/measure.zig` computes 10.3 / 1068.7. Half a pixel was invisible
+    # while the trace was one pixel wide and both numbers were read off a lit
+    # edge. It stopped being invisible when the centroid arrived: the measured
+    # trough sits on 1068.68, which is the corrected value and not the old one.
+    #
+    # The bottom is derived from the same expression rather than as
+    # `height - rail_row`, which would put the correction on the wrong side and
+    # give 1069.7.
+    rail_inset = (1.0 - RAIL) * height / 2
+    rail_row = rail_inset - 0.5
+    rail_row_bottom = height - rail_inset - 0.5
 
     print(f"image            {width} x {height}")
     print(f"columns lit      {int(any_lit.sum())} of {width}")
     print(f"centre row       {height / 2:.1f}")
-    print(f"rail rows        {rail_row:.1f} / {height - rail_row:.1f}")
+    print(f"rail rows        {rail_row:.1f} / {rail_row_bottom:.1f}")
     # Kept visible rather than dropped with the guard it used to gate. It is the
     # number every pre-#55 measurement was taken under, so anyone holding #38's
     # tables can see at a glance which regime a capture is in, and it is the tell
