@@ -299,8 +299,10 @@ for w in Quartz.CGWindowListCopyWindowInfo(opts, Quartz.kCGNullWindowID):
     b = w["kCGWindowBounds"]
     print(w["kCGWindowNumber"], int(b["Width"]), int(b["Height"]), w.get("kCGWindowName", ""))'
 
-  screencapture -o -x -t png -l <id> shot.png
+  screencapture -o -x -t png -l <id> verification/shot.png
   ```
+
+  **Captures go in `verification/`**, which is tracked through a `.gitkeep` so the path always exists, with its contents gitignored. They are working artifacts of one session: frequent, a couple of megabytes each, and superseded by the next build. What belongs in the repository is the *numbers* `scripts/measure-trace` reads out of them, recorded in the issue or the plan. One capture reached a commit before that rule existed, and removing it meant rewriting three commits.
 
   **The editor is not its own window.** It is an `NSView` REAPER embeds in its FX window, so the id to capture belongs to a window whose title starts `FX:`, and the main window titled after the project is the wrong one. That is also why the capture needs cropping at all. Read `--explain` before recapturing: a high refusal with a zero median is a crop, and a high refusal with a high median is the lossy capture the message describes.
 - **`zig build smoke-trace` is the only instrument that can see frame-rate independence, and the reason no screenshot can is structural.** Every other case there measures one frame, or a run at one rate; this is a claim about how successive frames *differ*, which is why #56's body expected it to be checked by pinning a display to 60 Hz in System Settings and judging a fade by eye. `checkDecayIsInRealTime` fades the same 96 ms as twelve 8 ms steps and as six 16 ms ones and asserts the two agree: 0.5430 and 0.5439 against a predicted 0.5451, 0.18% apart, where a per-frame factor would give 0.2824 and 0.5314. **Two traps if you touch it.** The span is 96 ms rather than 100 so both arms divide it into whole nanoseconds and cover the identical interval. And the expectation is composed per step rather than asked of the span, because `palette.max_elapsed_nanos` is 41.7 ms and `decayOver(96 ms)` clamps: it predicts 0.7684 against a true 0.5451, which is the first thing this check caught and it was in the check itself.
