@@ -37,18 +37,18 @@ Read these before editing, so the pass does not re-fix them:
 
 `docs/plans/todo/2026-07-25-repo-foundation-and-phased-build-plan.md`.
 
-| What is wrong                                                                                               | Fix                                                                                                                                                                                     |
-| ----------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| "Five more were decided during execution", table stops at 0017                                              | "Seven more"; add 0018 (Phase 2) and 0019 (Phase 3), matching `docs/adr/README.md`, which is already correct                                                                             |
-| "Seven open issues sit on no milestone", then names #34, #30, #51, #65, #53, #69, #72                       | Five: #69, #65, #53, plus #34 and #30 in the risks table. #51 and #72 closed; #83 and #84 acquire milestones under this plan                                                             |
-| "Phase 3's issues are filed, #55 through #62"                                                               | The set is no longer a range. Name it, and say that #77, #79, #80 and #83 were filed during the phase rather than at its start                                                          |
-| Phase 3 heading reads "(next)"                                                                              | "(in progress)"                                                                                                                                                                         |
-| Issue table has no rows for #79, #80, #83                                                                   | Add three rows with step "none", following #77's and #62's existing shape                                                                                                              |
-| "The consequence is that this phase runs serially"                                                          | Replace with the lane table below. The following paragraph already explains why #22 made this untrue for the CLAP; the two currently contradict each other                              |
-| Resource table names #55, #63 and #64, all closed, and omits #65                                            | Name the live occupants of each resource, and add #65, which needs Logic but not the install path                                                                                       |
-| "#30, which touches no code and runs nothing on this machine"                                               | The conclusion is right and the reason is wrong: #30 re-runs the three release scripts, including notarization. It contends for none of this phase's resources, which is the actual point |
-| Exit criteria say "stable under sample-rate change" with no issue attached                                  | Say that #62 is what closes it, which is also what places #62 in the working order                                                                                                     |
-| Working order omits #62, #77, #79, #80 and #83                                                              | Extend it per the sequence below                                                                                                                                                        |
+| What is wrong                                                                         | Fix                                                                                                                                                                                       |
+|---------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| "Five more were decided during execution", table stops at 0017                        | "Seven more"; add 0018 (Phase 2) and 0019 (Phase 3), matching `docs/adr/README.md`, which is already correct                                                                              |
+| "Seven open issues sit on no milestone", then names #34, #30, #51, #65, #53, #69, #72 | Five: #69, #65, #53, plus #34 and #30 in the risks table. #51 and #72 closed; #83 and #84 acquire milestones under this plan                                                              |
+| "Phase 3's issues are filed, #55 through #62"                                         | The set is no longer a range. Name it, and say that #77, #79, #80 and #83 were filed during the phase rather than at its start                                                            |
+| Phase 3 heading reads "(next)"                                                        | "(in progress)"                                                                                                                                                                           |
+| Issue table has no rows for #79, #80, #83                                             | Add three rows with step "none", following #77's and #62's existing shape                                                                                                                 |
+| "The consequence is that this phase runs serially"                                    | Replace with the lane table below. The following paragraph already explains why #22 made this untrue for the CLAP; the two currently contradict each other                                |
+| Resource table names #55, #63 and #64, all closed, and omits #65                      | Name the live occupants of each resource, and add #65, which needs Logic but not the install path                                                                                         |
+| "#30, which touches no code and runs nothing on this machine"                         | The conclusion is right and the reason is wrong: #30 re-runs the three release scripts, including notarization. It contends for none of this phase's resources, which is the actual point |
+| Exit criteria say "stable under sample-rate change" with no issue attached            | Say that #62 is what closes it, which is also what places #62 in the working order                                                                                                        |
+| Working order omits #62, #77, #79, #80 and #83                                        | Extend it per the sequence below                                                                                                                                                          |
 
 Two of these are worth stating as findings rather than as edits, because they change what the phase's remaining work is:
 
@@ -69,11 +69,11 @@ Per the decision that a milestone marks what must close before the phase's exit 
 
 This is the substantive deliverable. Replace the serial claim with three lanes plus a sequence.
 
-| Lane                        | What it needs                            | Open issues                        |
-| --------------------------- | ---------------------------------------- | ---------------------------------- |
-| Host, GPU and window server | REAPER or Logic, plus `smoke-appkit`     | #58, #59, #79, #83, #53, #34, #69 |
-| Device, no window           | `smoke-gpu` and `smoke-trace` only       | #77, #80                           |
-| Neither                     | Compiling and `zig build test`           | #62, #30                           |
+| Lane                        | What it needs                        | Open issues                       |
+|-----------------------------|--------------------------------------|-----------------------------------|
+| Host, GPU and window server | REAPER or Logic, plus `smoke-appkit` | #58, #59, #79, #83, #53, #34, #69 |
+| Device, no window           | `smoke-gpu` and `smoke-trace` only   | #77, #80                          |
+| Neither                     | Compiling and `zig build test`       | #62, #30                          |
 
 `#65` is its own case and should be recorded as one: its decisive check is a positive control on other vendors' Audio Units in Logic, which needs Logic but never loads this plugin, so it does not contend for the install path.
 
@@ -136,6 +136,20 @@ Then read for the three claims this pass exists to fix, since no tool checks the
 **Never run `markdownlint --fix` here.** It ignores its file argument and rewrites every Markdown file in the tree, and it has previously edited a completed plan under `docs/plans/done/` unasked. Fix findings by hand.
 
 The CI jobs that matter are `typos`, which has no `paths-ignore` and so actually runs on documentation, and nothing else: `ci.yml` ignores `*.md` and `docs/**` on both triggers, so a docs-only branch dispatches almost no work.
+
+## What this landed
+
+Everything above, plus two things the pass found rather than planned.
+
+**The build plan.** The ADR table completed to seven with 0018 and 0019; the milestone rule restated as *what must close before the phase's exit criteria are met*, which is what makes #62, #77, #79 and #80 legible on the milestone; the non-milestone set corrected from a stale seven to six, its composition rebuilt; the "#55 through #62" range replaced; the heading moved to "(in progress)"; three rows added to the phase 3 table; "stable under sample-rate change" attached to #62; and the "runs serially" claim replaced by three lanes plus a sequence that places every open issue. Verified mechanically: every open phase 3 issue now appears in both the issue table and the working order, which none of #62, #79, #80 or #83 did before.
+
+**The tracker.** #83 to Phase 3, #84 to Phase 4. Six issue bodies rewritten with the marker (#58, #59, #62, #77, #83, #84). The Phase 3 milestone reads 8 open and will read 7 when #57's PR closes it, matching the table.
+
+**Two findings.** #59 quoted a row-104 measurement taken with the topmost-lit-pixel estimator #57 replaced, so it is half a pixel from comparable; the body now says to re-measure, and records that the point it was making survives because it is about sample values rather than rasterization. And #62 gained a third interaction that did not exist when it was filed: `TraceUniforms.density` derives from the raw sample count, decimation changes exactly that count, and the two corrections would otherwise fight over the same high-sample-rate case.
+
+**`AGENTS.md`** gained bullets for the sample-rate alias and the transport-stop line, neither of which had one, plus the `markdownlint` invocation and its `--fix` trap.
+
+**[#85](https://github.com/cboone/fosforo/issues/85), filed.** `.markdownlint-cli2.jsonc` pins `MD060` to `aligned` and nothing runs it: 0 findings on `main` against 129 on a branch in flight, all table alignment. That is the state `typos.toml` was in before #28. The two findings in the build plan itself were fixed here as a side effect of re-padding tables this pass was already editing; the rest belong to the branch that introduced them.
 
 ## Out of scope
 
