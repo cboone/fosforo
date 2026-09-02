@@ -62,7 +62,7 @@ Each becomes an ADR under `docs/adr/`.
 | 0011 | AUv2 first. AUv3, VST3, AAX, and iPad remain later toggles with no bearing on output quality                                 |
 | 0012 | First deliverable is the phosphor oscilloscope only. Alignment and Family B lenses are deferred                              |
 
-Five more were decided during execution rather than in this pass, each because a
+Seven more were decided during execution rather than in this pass, each because a
 phase reached a question this plan had not asked. They are listed here so the set
 is complete in one place; [`docs/adr/README.md`](../../adr/README.md) is the index.
 
@@ -73,6 +73,8 @@ is complete in one place; [`docs/adr/README.md`](../../adr/README.md) is the ind
 | 0015 | Adopt `std.Io` through the single `init_single_threaded` instance in `src/platform/io.zig`        | Phase 2    |
 | 0016 | Verify the ring's release/acquire pairing with Thread Sanitizer, plus a source canary             | Phase 2    |
 | 0017 | The vertical axis is absolute: no rescaling to the signal, and over-scale rails visibly           | Phase 2    |
+| 0018 | Stamp the branch and commit into every binary; leave the plugin's identity unnamespaced           | Phase 2    |
+| 0019 | Brightness is a fixed transfer function of accumulated energy, and white is that axis's rail      | Phase 3    |
 
 ## Build architecture
 
@@ -212,11 +214,11 @@ This document holds the reasoning, architecture, and sequencing. GitHub issues h
 
 Issues are filed **just in time**, for whichever phase is next, rather than up front for all six. Phases 4 onward deliberately have no issues yet: ADR 0012 defers those decisions until the phosphor scope ships and gets reassessed, and filing them now would manufacture a backlog of choices that have not been made. File a phase's issues when it becomes the next phase, and link them back here.
 
-Phase 2's issues were filed on that rule when phase 1 closed, and phase 3's when phase 2 closed. Phase 4's are not filed and should not be until phase 3 closes.
+Phase 2's issues were filed on that rule when phase 1 closed, and phase 3's when phase 2 closed. **Phase 4 carries exactly one issue and is otherwise unfiled, which is not an exception.** [#84](https://github.com/cboone/fosforo/issues/84) was filed from a finding while #57 and #60 were being verified, rather than by sitting down to plan phase 4. The rule forbids manufacturing a backlog of choices nobody has made; it does not require discarding something the work turned up.
 
-**Seven open issues sit on no milestone, and that is deliberate.** None of them
-is a step of any phase, so putting one on a milestone would misreport that
-phase's remaining work.
+**A milestone marks what has to close before that phase's exit criteria are met, not what is one of its numbered steps.** Those are different sets, and the difference is why four issues on the phase 3 milestone carry a step of "none": [#62](https://github.com/cboone/fosforo/issues/62) is what makes "stable under sample-rate change" true, [#77](https://github.com/cboone/fosforo/issues/77) closes a gap [#61](https://github.com/cboone/fosforo/issues/61) opened by making the shader reloadable, and [#79](https://github.com/cboone/fosforo/issues/79) and [#80](https://github.com/cboone/fosforo/issues/80) both came out of verifying [#60](https://github.com/cboone/fosforo/issues/60). Reading a milestone as a list of steps understates a phase's remaining work by exactly the issues its own verification produced, which in this phase is most of them.
+
+**Five open issues sit on no milestone, and that is deliberate.** No phase's exit criteria depend on any of them.
 
 **Two are carried in the risks table below instead**, which is where a reader who
 does not open the tracker will find them:
@@ -224,26 +226,21 @@ does not open the tracker will find them:
 phase 1, and [#30](https://github.com/cboone/fosforo/issues/30) is certificate
 maintenance for a release that is several phases out.
 
-**The other five arrived while phase 3 was under way, and are deferred questions
-rather than risks to this plan**, which is why they are not in that table.
-[#51](https://github.com/cboone/fosforo/issues/51) and
-[#65](https://github.com/cboone/fosforo/issues/65) are verification the phase
-wanted and could not close in place: the first because nothing here answers what
-the pixels became, the second because the evidence points at Logic rather than at
-this project. **#51 is done**, as `zig build smoke-trace`, a third smoke half
-required in CI beside `smoke-gpu`; it landed early rather than at its filed
-position because #56, #57, #58 and #60 all want it more than it wants any of
-them, and #58 in particular has no other way to be measured at all.
-[#53](https://github.com/cboone/fosforo/issues/53) is a feature #55
+**The other three are deferred questions rather than risks to this plan**, which
+is why they are not in that table.
+[#65](https://github.com/cboone/fosforo/issues/65) is verification phase 3 wanted
+and could not close in place, because the evidence points at Logic rather than at
+this project. [#53](https://github.com/cboone/fosforo/issues/53) is a feature #55
 made worth having, since a bypassed plugin keeps drawing the last window it read
-with nothing to say the picture is stale. And
-[#69](https://github.com/cboone/fosforo/issues/69) and
-[#72](https://github.com/cboone/fosforo/issues/72) were two questions about the
-`smoke` job that #63 split out rather than answered. **#72 is answered**: the
+with nothing to say the picture is stale; it should be read together with #79,
+which reaches the same misleading picture by a different route and may answer part
+of it. And [#69](https://github.com/cboone/fosforo/issues/69) is the surviving half
+of two questions about the `smoke` job that #63 split out rather than answered.
+**Its sibling [#72](https://github.com/cboone/fosforo/issues/72) is answered**: the
 AppKit half is required, on 65 runs in which it never failed, and the leak half
 stays advisory because it is the one step there whose verdict depends on the
 runner's own AppKit chatter rather than on this project. The working order below
-places #69; the rest slot in wherever their subject does.
+places #69.
 
 ## Phase 2: signal path (complete)
 
@@ -299,9 +296,9 @@ zero and a window frozen seconds ago both survive being looked at.
 
 Of the two chores folded onto the milestone, [#29](https://github.com/cboone/fosforo/issues/29) landed as [ADR 0015](../../adr/0015-adopt-std-io-single-instance.md) and [#22](https://github.com/cboone/fosforo/issues/22) as [ADR 0018](../../adr/0018-stamp-provenance-without-namespacing-identity.md). Neither was an exit criterion.
 
-**Phase 3's issues are filed**, [#55](https://github.com/cboone/fosforo/issues/55) through [#62](https://github.com/cboone/fosforo/issues/62) on the [Phase 3 milestone](https://github.com/cboone/fosforo/milestone/3). The just-in-time rule above is why they did not exist until now: this phase closing is what permitted them.
+**Phase 3's issues were filed** as [#55](https://github.com/cboone/fosforo/issues/55) through [#62](https://github.com/cboone/fosforo/issues/62) on the [Phase 3 milestone](https://github.com/cboone/fosforo/milestone/3). The just-in-time rule above is why they did not exist until now: this phase closing is what permitted them. **The milestone is no longer that range**, and the difference is the phase reporting on itself: [#77](https://github.com/cboone/fosforo/issues/77), [#79](https://github.com/cboone/fosforo/issues/79), [#80](https://github.com/cboone/fosforo/issues/80) and [#83](https://github.com/cboone/fosforo/issues/83) were all filed from verifying the issues above them, which is the mechanism the working order's opening rule exists to produce.
 
-## Phase 3: the phosphor renderer (next)
+## Phase 3: the phosphor renderer (in progress)
 
 **Goal:** the moat. Sequenced so every step is independently visible and yields a better screenshot.
 
