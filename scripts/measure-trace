@@ -270,12 +270,31 @@ LEAD_WINDOW = 1
 # makes the threshold need no calibration against the machine it runs on: it sits
 # 25x above a good capture and 1100x below a recompressed one.
 #
-# **A tolerance of 1 is what makes 2 a floor rather than a preference**, and the
-# curve tightened that argument rather than loosening it. At 1 a good capture reads
-# 2.01% and 3.49%, both above the threshold, so it would refuse the very pictures
-# this tool exists to measure; at 2 the same captures read 0.019% and 0.021%. Three
-# and four buy 0.005 of a percentage point between them.
-RAY_TOLERANCE = 2
+# **A tolerance of 1 is what makes this a floor rather than a preference.** At 1 a
+# good pre-#57 capture read 2.01% and 3.49%, both above the threshold, so it would
+# refuse the very pictures this tool exists to measure.
+#
+# **#57 moved it from 2 to 3, and the old value was refusing good captures.** A
+# beam with a falloff skirt puts about one percent of the drawable in the
+# gradient's toe, where the sRGB curve is coarsest — `src/gpu/palette.zig` records
+# 3294.6 bytes per unit linear there — and quantization in that region reaches
+# three levels where a one-pixel trace only ever reached two. Measured on a 100 Hz
+# sine at 0.5, captured in REAPER at 1920x1080 and read after `to_srgb`, against
+# the same picture recompressed:
+#
+#                      lossless   JPEG q95   q80      q60
+#   tolerance 2          1.29%     38.18%   45.85%   42.61%
+#   tolerance 3          0.26%     35.30%   43.37%   40.09%
+#
+# At 2 the good capture sits *above* MAX_OFF_RAY and is refused. At 3 it passes
+# with 1.9x of margin while the worst recompression is 87x above the line, and the
+# separation between a good capture and a lossy one is still 135x.
+#
+# **This rests on one capture where the values above it rest on two**, and that is
+# a weakness rather than a footnote: the pre-#57 pair included a level-2.000 sine,
+# which stresses the saturated end where SATURATED starts excluding pixels. Re-run
+# both against a beam before treating the 1.9x margin as settled.
+RAY_TOLERANCE = 3
 MAX_OFF_RAY = 0.005
 
 # The exclusion is nearly inert today and is kept for when it is not.
@@ -601,8 +620,8 @@ def implied_sample(row, height):
     return y / FULL_SCALE
 
 
-def centroid_rows(img, channel):
-    """Energy-weighted centre row per column, or NaN where the column is dark.
+def centroid_rows(img, channel, threshold):
+    """Centre row of a column's first and last lit runs, or NaN where it is dark.
 
     The estimator every vertical number below is read from, and #57 is why it
     exists. Before it the beam was one device pixel, so the topmost lit row *was*
@@ -626,16 +645,57 @@ def centroid_rows(img, channel):
     The background is subtracted before weighting. It is small, but it is present
     in every one of a column's ~1000 dark pixels and would otherwise drag every
     centroid toward the middle of the image.
+
+    **Weighted over one contiguous run of lit pixels, not over the column, and
+    that distinction is the whole difference between this and its Zig
+    counterpart.** `src/gpu/measure.zig` sums whole columns because the harness
+    drives a single deposit into a cleared accumulation, so a column holds one
+    beam and nothing else. A host screenshot holds a *trail*: the same column
+    carries every position the beam occupied over the persistence window, and
+    averaging all of it returns the centre of the fade rather than the beam.
+
+    Measured, because the first version of this function did exactly that. On a
+    100 Hz sine at 0.5 captured in REAPER at 1920x1080, whole-column centroids
+    reported a peak of +0.0359 and a trough of -0.0357 — a signal reading as
+    silence — while the lit rows either side implied ±0.505 correctly. Taking the
+    topmost and bottommost runs instead recovers the envelope the tool is for.
+
+    `top` is the centroid of each column's **first** lit run and `bottom` of its
+    **last**, so the two bracket the trace the way `lit_rows` does, with the beam's
+    own width divided out rather than left in.
     """
     lead = np.asarray(img.convert("RGB"), dtype=np.float64)[:, :, channel]
     weight = np.clip(lead - BG8[channel], 0.0, None)
+    lit = lead > threshold
 
-    total = weight.sum(axis=0)
-    rows = np.arange(weight.shape[0], dtype=np.float64)[:, None]
-    moment = (weight * rows).sum(axis=0)
+    height = lit.shape[0]
+    rows = np.arange(height, dtype=np.float64)
 
-    with np.errstate(invalid="ignore", divide="ignore"):
-        return np.where(total > 0, moment / total, np.nan)
+    top = np.full(lit.shape[1], np.nan)
+    bottom = np.full(lit.shape[1], np.nan)
+
+    for x in range(lit.shape[1]):
+        column = lit[:, x]
+        if not column.any():
+            continue
+
+        # Run boundaries. Padding with a dark row at each end is what makes this
+        # correct without special cases: every run then has both a rising and a
+        # falling edge, including one that touches the top or bottom of the image,
+        # and `flatnonzero` returns integer indices so the slices below are valid.
+        padded = np.concatenate(([False], column, [False]))
+        step = np.diff(padded.astype(np.int8))
+        starts = np.flatnonzero(step == 1)
+        ends = np.flatnonzero(step == -1)
+
+        w = weight[:, x]
+        for slot, (lo, hi) in ((top, (starts[0], ends[0])), (bottom, (starts[-1], ends[-1]))):
+            span = w[lo:hi]
+            mass = span.sum()
+            if mass > 0:
+                slot[x] = float((span * rows[lo:hi]).sum() / mass)
+
+    return top, bottom
 
 
 def main():
@@ -804,10 +864,9 @@ def main():
     print()
     # The centroid, not the lit edge. See `centroid_rows`; the short version is
     # that a beam has width and its edge is that width away from its centre.
-    centres = centroid_rows(img, lead)
-    lit_centres = centres[np.isfinite(centres)]
-    peak_centre = float(lit_centres.min())
-    trough_centre = float(lit_centres.max())
+    centre_top, centre_bottom = centroid_rows(img, lead, threshold)
+    peak_centre = float(np.nanmin(centre_top))
+    trough_centre = float(np.nanmax(centre_bottom))
 
     print(
         f"highest peak     row {peak_centre:<6.2f} implies sample {implied_sample(peak_centre, height):+.4f}"
