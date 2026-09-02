@@ -56,11 +56,11 @@ The fix is one scalar in `TraceUniforms`, computed once per frame: `min(1, viewp
 
 The published *values* do move, because overlap raises a moving trace from one deposit to about 2.6. Worked through `palette.zig`'s own arithmetic at `whitePoint(0.9) = 8.0`:
 
-| | today, e = 1.0 | after, e ≈ 2.6 |
-| --- | --- | --- |
+|          | today, e = 1.0     | after, e ≈ 2.6       |
+| -------- | ------------------ | -------------------- |
 | resolved | `RGB(75, 189, 96)` | `RGB(144, 225, 155)` |
-| red gap | 114 | 81 |
-| blue gap | 93 | 70 |
+| red gap  | 114                | 81                   |
+| blue gap | 93                 | 70                   |
 
 `MovingTraceTooDim` needs the lead channel at 128 or above and gets 225 rather than 189, so it gains margin. `MovingTraceNotTinted` needs 24 levels and gets 70 at the tightest channel. It would fire at about 5.8 deposits, which the density scale is what keeps out of reach.
 
@@ -131,15 +131,15 @@ The file is **15,247 bytes** against a ceiling of 16,384, which is `embedded.len
 
 ### `src/smoke.zig` — five checks re-derived, two added
 
-| Check | Change |
-| --- | --- |
-| `checkSilence` | Centroid for `CentreLineWrong`, exact rather than within a pixel. `TraceNotFlat` becomes a parity-dependent range: an even height lights 2 rows, an odd one 3, and 1440x407 is already a test geometry |
-| `checkLevels` | Centroid against `expectedRow`; the systematic bias is gone rather than tolerated |
-| `checkSaturation` | Centroid against `railRow`; `RailNotSaturated`'s pixel-identity assertion is unaffected |
-| `checkSymmetry` | Centroid for both arms, so the bias cancels instead of doubling |
-| `checkHorizontalMapping` | The one-column slack existed for the diamond-exit rule; tighten to columns 0 and `width - 1` |
-| `checkBeamProfile` (new) | The cross-section at one column matches the biweight, and the width is in pixel space rather than NDC, which is the only thing that would catch an elliptical beam |
-| `checkEdgeColumns` (new) | Every column lit at a railed level, on a single frame, which is #57's edge-column question asked of something persistence cannot mask |
+| Check                    | Change                                                                                                                                                                                                 |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `checkSilence`           | Centroid for `CentreLineWrong`, exact rather than within a pixel. `TraceNotFlat` becomes a parity-dependent range: an even height lights 2 rows, an odd one 3, and 1440x407 is already a test geometry |
+| `checkLevels`            | Centroid against `expectedRow`; the systematic bias is gone rather than tolerated                                                                                                                      |
+| `checkSaturation`        | Centroid against `railRow`; `RailNotSaturated`'s pixel-identity assertion is unaffected                                                                                                                |
+| `checkSymmetry`          | Centroid for both arms, so the bias cancels instead of doubling                                                                                                                                        |
+| `checkHorizontalMapping` | The one-column slack existed for the diamond-exit rule; tighten to columns 0 and `width - 1`                                                                                                           |
+| `checkBeamProfile` (new) | The cross-section at one column matches the biweight, and the width is in pixel space rather than NDC, which is the only thing that would catch an elliptical beam                                     |
+| `checkEdgeColumns` (new) | Every column lit at a railed level, on a single frame, which is #57's edge-column question asked of something persistence cannot mask                                                                  |
 
 `trace_threshold` stays at 0.5 and its justification is restated. It was "half of one deposit, and one deposit is 1.0"; it becomes the biweight's half-intensity contour at `u = 0.541` of the half-width, which makes it the constant that sets every geometric measurement's effective beam width.
 
@@ -155,18 +155,18 @@ Row reading moves to the centroid, or the script stops agreeing with `measure.zi
 
 ### Tests
 
-| File | Test |
-| --- | --- |
-| `renderer.zig` | `TraceUniforms` layout, size 28 and seven offsets |
-| `renderer.zig` | The defaults loop, restructured: `full_scale` and `rail` carry the seam's constants; the four geometry fields deliberately carry none |
-| `renderer.zig` | `"the trace's uniforms carry the seam's scale"` constructs `TraceUniforms{ .sample_count = 2 }` and stops compiling; it needs the four new fields |
-| `renderer.zig` | `bindingIndexAfter` needles renamed to `"TraceUniforms &uniforms"` and `"TraceUniforms &beam"`, on the `AccumUniforms &uniforms` / `&phosphor` precedent |
-| `renderer.zig` | The deposit scrape, rewritten to assert `float4(` takes one argument rather than one literal `1.0` |
-| `renderer.zig` | `traceVertices` at 2, 960 and `max_window_samples`, asserting both numbers; `"the trace draws one vertex per sample"` is retitled because the title becomes false |
-| `renderer.zig` | `beam_width_points` added to the `measure-trace` constants test, with the occurrence count the "no name ends with another's" rule requires |
-| `iface.zig` | The beam's half-width fits the rail margin at the smallest editor |
-| `measure.zig` | The centroid of a symmetric profile is its centre, including the boundary-straddling case that makes silence exactly zero |
-| `measure.zig` | `"a flat window lights every column on one row"` asserts `top == bottom` and is false at any width; `"a sine below the visibility floor"` moves from 1 row to 2 or 3; `"a plateau says nothing about level"` needs its direction re-checked |
+| File           | Test                                                                                                                                                                                                                                        |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `renderer.zig` | `TraceUniforms` layout, size 28 and seven offsets                                                                                                                                                                                           |
+| `renderer.zig` | The defaults loop, restructured: `full_scale` and `rail` carry the seam's constants; the four geometry fields deliberately carry none                                                                                                       |
+| `renderer.zig` | `"the trace's uniforms carry the seam's scale"` constructs `TraceUniforms{ .sample_count = 2 }` and stops compiling; it needs the four new fields                                                                                           |
+| `renderer.zig` | `bindingIndexAfter` needles renamed to `"TraceUniforms &uniforms"` and `"TraceUniforms &beam"`, on the `AccumUniforms &uniforms` / `&phosphor` precedent                                                                                    |
+| `renderer.zig` | The deposit scrape, rewritten to assert `float4(` takes one argument rather than one literal `1.0`                                                                                                                                          |
+| `renderer.zig` | `traceVertices` at 2, 960 and `max_window_samples`, asserting both numbers; `"the trace draws one vertex per sample"` is retitled because the title becomes false                                                                           |
+| `renderer.zig` | `beam_width_points` added to the `measure-trace` constants test, with the occurrence count the "no name ends with another's" rule requires                                                                                                  |
+| `iface.zig`    | The beam's half-width fits the rail margin at the smallest editor                                                                                                                                                                           |
+| `measure.zig`  | The centroid of a symmetric profile is its centre, including the boundary-straddling case that makes silence exactly zero                                                                                                                   |
+| `measure.zig`  | `"a flat window lights every column on one row"` asserts `top == bottom` and is false at any width; `"a sine below the visibility floor"` moves from 1 row to 2 or 3; `"a plateau says nothing about level"` needs its direction re-checked |
 
 Deliberately not written: anything asserting `primitive_type_triangle_strip != primitive_type_line_strip`, which asserts that the code says what it says; and any test that constructs a `Renderer`, because `zig build test` acquires no GPU. Note that `mtl.primitive_type_line_strip` goes unreferenced with no compile error.
 
@@ -215,16 +215,16 @@ Play `sine-100-0.500.wav`, capture by window id, and run `scripts/measure-trace 
 
 Each planted on a passing run, committed first so `git restore` cannot revert the fix with the plant, and with an unconditional trigger.
 
-| Plant | Must be caught by |
-| --- | --- |
-| Distance to the infinite line rather than the segment | `checkEdgeColumns`, and visibly by gaps at turns |
-| `vertex_id & 2` used as 0-or-1 | `checkBeamProfile`, since the quad doubles in height |
-| Ring corner order, giving a bowtie | `checkSilence`'s `litColumns` |
-| The y flip's sign inverted | `checkSymmetry`'s `TraceInverted` |
-| `half_width` applied in NDC rather than pixels | `checkBeamProfile`, since the beam becomes elliptical |
-| The density scale dropped | The 192 kHz arm of the host pass, and nothing automated |
-| A NaN injected into the uploaded window | Nothing yet; this is what the `writeWindow` guard is for, and the plant is how the guard is shown to work |
-| The centroid computed unweighted | `checkLevels`, but **not** `checkSilence`, since at silence the two agree |
+| Plant                                                 | Must be caught by                                                                                         |
+| ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Distance to the infinite line rather than the segment | `checkEdgeColumns`, and visibly by gaps at turns                                                          |
+| `vertex_id & 2` used as 0-or-1                        | `checkBeamProfile`, since the quad doubles in height                                                      |
+| Ring corner order, giving a bowtie                    | `checkSilence`'s `litColumns`                                                                             |
+| The y flip's sign inverted                            | `checkSymmetry`'s `TraceInverted`                                                                         |
+| `half_width` applied in NDC rather than pixels        | `checkBeamProfile`, since the beam becomes elliptical                                                     |
+| The density scale dropped                             | The 192 kHz arm of the host pass, and nothing automated                                                   |
+| A NaN injected into the uploaded window               | Nothing yet; this is what the `writeWindow` guard is for, and the plant is how the guard is shown to work |
+| The centroid computed unweighted                      | `checkLevels`, but **not** `checkSilence`, since at silence the two agree                                 |
 
 The last two are deliberately included expecting an asymmetric result, and recording which check separates them is the point.
 
@@ -284,19 +284,19 @@ The plan set the headroom factor to 3, from a file of 15,247 bytes against a fou
 
 ### Planted defects
 
-| Plant | Caught by | Reading |
-| --- | --- | --- |
-| The quad too small to hold its profile | `checkSaturation` | `RailMisplaced` |
-| Corners in ring order, giving a bowtie | `checkHorizontalMapping` | `TraceStartsLate` |
-| The Y flip's sign inverted | `checkLevels` | `LevelMisplaced` |
-| The half-width applied in clip space | `checkSaturation` | `RailMisplaced` |
-| The centroid computed unweighted | `checkSaturation` | `RailMisplaced` |
-| The last segment dropped from the draw | `checkHorizontalMapping` | `TraceEndsEarly` |
-| A NaN in the window, guard removed | `checkSilence` | `TraceNotFlat` |
-| A NaN in the window, guard in place | — | passes, reading 0.00000 |
-| Distance to the infinite line | **nothing** | square caps rather than round; unchanged |
-| Butt joints, no cap at all | **nothing** | 960 of 960 columns still lit |
-| The density scale dropped | **nothing** | unchanged at this geometry |
+| Plant                                  | Caught by                | Reading                                  |
+| -------------------------------------- | ------------------------ | ---------------------------------------- |
+| The quad too small to hold its profile | `checkSaturation`        | `RailMisplaced`                          |
+| Corners in ring order, giving a bowtie | `checkHorizontalMapping` | `TraceStartsLate`                        |
+| The Y flip's sign inverted             | `checkLevels`            | `LevelMisplaced`                         |
+| The half-width applied in clip space   | `checkSaturation`        | `RailMisplaced`                          |
+| The centroid computed unweighted       | `checkSaturation`        | `RailMisplaced`                          |
+| The last segment dropped from the draw | `checkHorizontalMapping` | `TraceEndsEarly`                         |
+| A NaN in the window, guard removed     | `checkSilence`           | `TraceNotFlat`                           |
+| A NaN in the window, guard in place    | —                        | passes, reading 0.00000                  |
+| Distance to the infinite line          | **nothing**              | square caps rather than round; unchanged |
+| Butt joints, no cap at all             | **nothing**              | 960 of 960 columns still lit             |
+| The density scale dropped              | **nothing**              | unchanged at this geometry               |
 
 The last three are the honest rows. The first two are why the edge-column claim above was corrected. The third is structural and not fixable here: the harness runs 960 samples across 960 pixels, so `density` is exactly 1.0 and a dropped scale is a no-op. **Only a host at a sample rate above 48 kHz can see it**, which is why the sample-rate pass is in the verification section and why it is the one thing here no automated check covers.
 
@@ -312,9 +312,9 @@ Not a plant and not a review finding: it fell out of working through the sample-
 
 **The corrector was scale-dependent while the thing it corrects is not.** Overlap depends on `half_width / pitch`; the half-width is `beam_width_points * scale` and the pitch in pixels is `points * scale / instances`, so the scale cancels and overlap is a function of samples per logical *point* alone. `min(1, viewport_width / span)` was computed in **backing pixels**, which does not cancel. Measured offscreen at a 960-point editor by forcing both scales:
 
-| Session | 1x | 2x, before | 2x, after |
-| --- | --- | --- | --- |
-| 48 kHz, 960 samples | 2.6133 | 2.4434 | 2.4434 |
+| Session               | 1x     | 2x, before | 2x, after  |
+| --------------------- | ------ | ---------- | ---------- |
+| 48 kHz, 960 samples   | 2.6133 | 2.4434     | 2.4434     |
 | 192 kHz, 3840 samples | 1.8486 | **3.4531** | **1.7266** |
 
 At 48 kHz the two scales already agreed within 7%. At 192 kHz they were a factor of **1.87** apart, in opposite directions from their own baselines — 1x fading 29% and 2x brightening 41%. Afterwards they agree to 7%, the same as at 48 kHz. [ADR 0019](../../adr/0019-brightness-is-a-fixed-transfer-function.md) makes brightness a function of accumulated energy and of nothing else, and a term tracking the backing scale is exactly what that forbids, so this was a defect rather than an imprecision.
@@ -323,12 +323,12 @@ At 48 kHz the two scales already agreed within 7%. At 192 kHz they were a factor
 
 ### Planted defects, second round
 
-| Plant | Caught by | Reading |
-| --- | --- | --- |
-| The pitch computed in pixels, `scale` unused | the compiler | `unused function parameter` |
-| The scale multiplied rather than divided | `"the beam's density does not depend on the display's scale"` | 1 against 0.50026 |
-| The clamp dropped, so undersampling amplifies | `"…attenuates oversampling and never amplifies"` | 2.0042 against 1 |
-| The zero-instance guard dropped | **nothing** | unchanged |
+| Plant                                         | Caught by                                                     | Reading                     |
+| --------------------------------------------- | ------------------------------------------------------------- | --------------------------- |
+| The pitch computed in pixels, `scale` unused  | the compiler                                                  | `unused function parameter` |
+| The scale multiplied rather than divided      | `"the beam's density does not depend on the display's scale"` | 1 against 0.50026           |
+| The clamp dropped, so undersampling amplifies | `"…attenuates oversampling and never amplifies"`              | 2.0042 against 1            |
+| The zero-instance guard dropped               | **nothing**                                                   | unchanged                   |
 
 The first is the better outcome ADR 0013 records for the accumulation-texture plant: a defect that does not compile beats one a test catches. The last is honest and is now stated at the guard itself — `points / 0.0` is `inf` and `@min(1.0, inf)` is `1.0`, so the guard changes no result and is kept for the reader rather than for the arithmetic.
 
