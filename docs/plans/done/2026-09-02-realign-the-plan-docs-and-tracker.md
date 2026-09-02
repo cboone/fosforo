@@ -38,7 +38,7 @@ Read these before editing, so the pass does not re-fix them:
 `docs/plans/todo/2026-07-25-repo-foundation-and-phased-build-plan.md`.
 
 | What is wrong                                                                         | Fix                                                                                                                                                                                       |
-|---------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| ------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | "Five more were decided during execution", table stops at 0017                        | "Seven more"; add 0018 (Phase 2) and 0019 (Phase 3), matching `docs/adr/README.md`, which is already correct                                                                              |
 | "Seven open issues sit on no milestone", then names #34, #30, #51, #65, #53, #69, #72 | Five: #69, #65, #53, plus #34 and #30 in the risks table. #51 and #72 closed; #83 and #84 acquire milestones under this plan                                                              |
 | "Phase 3's issues are filed, #55 through #62"                                         | The set is no longer a range. Name it, and say that #77, #79, #80 and #83 were filed during the phase rather than at its start                                                            |
@@ -70,7 +70,7 @@ Per the decision that a milestone marks what must close before the phase's exit 
 This is the substantive deliverable. Replace the serial claim with three lanes plus a sequence.
 
 | Lane                        | What it needs                        | Open issues                       |
-|-----------------------------|--------------------------------------|-----------------------------------|
+| --------------------------- | ------------------------------------ | --------------------------------- |
 | Host, GPU and window server | REAPER or Logic, plus `smoke-appkit` | #58, #59, #79, #83, #53, #34, #69 |
 | Device, no window           | `smoke-gpu` and `smoke-trace` only   | #77, #80                          |
 | Neither                     | Compiling and `zig build test`       | #62, #30                          |
