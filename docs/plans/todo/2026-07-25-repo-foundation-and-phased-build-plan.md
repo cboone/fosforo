@@ -218,7 +218,7 @@ Phase 2's issues were filed on that rule when phase 1 closed, and phase 3's when
 
 **A milestone marks what has to close before that phase's exit criteria are met, not what is one of its numbered steps.** Those are different sets, and the difference is why four issues on the phase 3 milestone carry a step of "none": [#62](https://github.com/cboone/fosforo/issues/62) is what makes "stable under sample-rate change" true, [#77](https://github.com/cboone/fosforo/issues/77) closes a gap [#61](https://github.com/cboone/fosforo/issues/61) opened by making the shader reloadable, and [#79](https://github.com/cboone/fosforo/issues/79) and [#80](https://github.com/cboone/fosforo/issues/80) both came out of verifying [#60](https://github.com/cboone/fosforo/issues/60). Reading a milestone as a list of steps understates a phase's remaining work by exactly the issues its own verification produced, which in this phase is most of them.
 
-**Five open issues sit on no milestone, and that is deliberate.** No phase's exit criteria depend on any of them.
+**Six open issues sit on no milestone, and that is deliberate.** No phase's exit criteria depend on any of them.
 
 **Two are carried in the risks table below instead**, which is where a reader who
 does not open the tracker will find them:
@@ -226,8 +226,13 @@ does not open the tracker will find them:
 phase 1, and [#30](https://github.com/cboone/fosforo/issues/30) is certificate
 maintenance for a release that is several phases out.
 
-**The other three are deferred questions rather than risks to this plan**, which
+**The other four are deferred questions rather than risks to this plan**, which
 is why they are not in that table.
+[#85](https://github.com/cboone/fosforo/issues/85) is the newest and the most
+mechanical: `.markdownlint-cli2.jsonc` pins a table style that nothing enforces,
+which is the state `typos.toml` was in before #28, measured at 0 findings on
+`main` against 129 on a branch in flight. It reads with #69, since both are
+questions about what CI is obliged to check rather than about the renderer.
 [#65](https://github.com/cboone/fosforo/issues/65) is verification phase 3 wanted
 and could not close in place, because the evidence points at Logic rather than at
 this project. [#53](https://github.com/cboone/fosforo/issues/53) is a feature #55
@@ -347,7 +352,7 @@ So there are three lanes. **The first admits one issue at a time, by rule rather
 | ------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
 | **Host, GPU and window server** | REAPER or Logic, plus `smoke-appkit` and `smoke-leaks`    | One issue at a time, by rule. Two harnesses cannot both open windows and time each other's frames, and the project settled on one host stream against one installed build | #58, #59, #79, #83, #53, #34, #69 |
 | **Device, no window**           | `smoke-gpu` and `smoke-trace`                             | Nothing. Both acquire a device and neither opens a window, which is exactly what makes them the cheap checks to run while something holds a window open                   | #77, #80                          |
-| **Neither**                     | Compiling, `zig build test`, `zig build validate-shaders` | Nothing                                                                                                                                                                   | #62, #30                          |
+| **Neither**                     | Compiling, `zig build test`, `zig build validate-shaders` | Nothing                                                                                                                                                                   | #62, #30, #85                     |
 
 [#30](https://github.com/cboone/fosforo/issues/30) sits in the last lane despite re-running the three release scripts and reaching Apple's notary service. What puts it there is that it contends for none of the resources above, not that it does nothing on this machine, which is what this paragraph used to claim.
 
