@@ -83,14 +83,16 @@ comptime {
 
 A new `// Tests` banner and section, matching the three-line box the other files use, holding the text canary:
 
-| Assertion                                                                 | What it refuses                                    |
-| ------------------------------------------------------------------------- | -------------------------------------------------- |
-| `stated(code, "const backend_init: std.Io.Threaded = .init_single_threaded;") == 1` | The constructor changing                  |
-| `stated(code, "var backend: std.Io.Threaded = backend_init;") == 1`       | The instance being initialized some other way      |
-| `mentions(code, "Threaded.init") == 0`                                     | The restructure into a runtime `setup`             |
-| `mentions(code, "std.Io.Threaded") == 2`                                   | A second instance arriving beside the first        |
+| Assertion                                                                           | What it refuses                               |
+| ----------------------------------------------------------------------------------- | --------------------------------------------- |
+| `stated(code, "const backend_init: std.Io.Threaded = .init_single_threaded;") == 1` | The constructor changing                      |
+| `stated(code, "var backend: std.Io.Threaded = backend_init;") == 1`                 | The instance being initialized some other way |
+| `mentions(code, "Threaded.init") == 0`                                              | The restructure into a runtime `setup`        |
+| `mentions(code, "std.Io.Threaded") == 2`                                            | A second instance arriving beside the first   |
+| `stated(code, "return backend.io();") == 1`                                         | `get` handing back a different instance       |
+| `mentions(code, "backend =") == 0`                                                  | The restructure, from the assignment side     |
 
-The third is only possible because comments do not count. It pins one spelling: writing the const as `std.Io.Threaded.init_single_threaded` would trip it, which is the canary contract rather than a false positive.
+Split across two tests, so a failure says whether the constructor moved or the instance did. The third is possible only because comments do not count. It pins one spelling: writing the const as `std.Io.Threaded.init_single_threaded` would trip it, which is the canary contract rather than a false positive. The last does not match the declaration itself, which reads `backend:` before its `=`.
 
 ### `src/clap/gui.zig`
 
@@ -146,23 +148,30 @@ The program plan is not edited: it tracks eleven issues and moves to `done/` as 
 
 Each canary is verified by planting the edit it refuses, confirming `zig build test` fails naming the line, then reverting. **Commit the canary before planting against it**, so `git restore` reverts the plant and not the check it was testing.
 
-| Plant                                                                   | Site                        | Expected to fail                          |
-| ----------------------------------------------------------------------- | --------------------------- | ----------------------------------------- |
-| `backend` restructured to `undefined` plus a `setup` calling `.init`     | `platform/io.zig`           | `stated`/`mentions` on `Threaded.init`    |
-| `backend_init` given a real allocator                                    | `platform/io.zig`           | the comptime block, at build time         |
-| `.init_single_threaded` to `.init`, as the issue words it                | `platform/io.zig`           | **compile error** — record, do not "fix"  |
-| `Gate.enter`'s `fetchAdd(one_tick, .acquire)` to `.monotonic`            | `clap/gui.zig`              | the `fetchAdd` statement                  |
-| `Gate.leave`'s `fetchSub` to `.monotonic`                                | `clap/gui.zig`              | the count of 2 falling to 1               |
-| `Pending.post`'s `store(..., .release)` to `.monotonic`                  | `clap/gui.zig`              | the `self.slot.store` statement           |
-| `Editor.setWindow`'s `store(..., .release)` to `.monotonic`              | `clap/gui.zig`              | the `self.window.store` statement         |
-| `Mailbox.publish`'s `store(.full, .release)` to `.monotonic`             | `gpu/metal/renderer.zig`    | the statement and `statedBefore`          |
-| `Mailbox.take`'s two lines swapped                                       | `gpu/metal/renderer.zig`    | `statedBefore` only                       |
-| `Watcher.halt` split into a `bool` and a separate futex word             | `gpu/metal/renderer.zig`    | the declaration and the count of 4        |
-| `ring.zig`'s release store to `.monotonic`, as a control on the migration | `dsp/ring.zig`             | the `self.cursor.store` statement         |
-| A statement re-indented into an `if` block, no semantic change           | any                         | **nothing** — the first flaw, fixed       |
-| A doc comment naming `self.cursor.load` added above the banner           | `dsp/ring.zig`              | **nothing** — the second flaw, fixed      |
+All eleven were planted and reverted. **Result column is what happened, not what was expected.**
 
-The last two rows are the flaws the issue names, verified as absences rather than asserted.
+| Plant                                                                  | Site                     | Result                                                |
+| ---------------------------------------------------------------------- | ------------------------ | ----------------------------------------------------- |
+| `.init_single_threaded` to `.init`, as the issue words it              | `platform/io.zig`        | **compile error**, `comptime call of extern function` |
+| `backend` restructured to `undefined` plus a `setup` calling `.init`   | `platform/io.zig`        | both tests, at `io.zig:85` and `io.zig:115`           |
+| `have_signal_handler` set true on the initializer                      | `platform/io.zig`        | the comptime block, at build time, `io.zig:67`        |
+| `Gate.enter`'s `fetchAdd(one_tick, .acquire)` to `.monotonic`          | `clap/gui.zig`           | `gui.zig:1177`                                        |
+| `Gate.leave`'s `fetchSub` to `.monotonic`, one of the two              | `clap/gui.zig`           | `gui.zig:1183`, the count of 2 falling to 1           |
+| `Pending.post`'s `store(..., .release)` to `.monotonic`                | `clap/gui.zig`           | `gui.zig:1170`                                        |
+| `Editor.setWindow`'s `store(..., .release)` to `.monotonic`            | `clap/gui.zig`           | `gui.zig:1210`                                        |
+| `Mailbox.publish`'s `store(.full, .release)` to `.monotonic`           | `gpu/metal/renderer.zig` | `renderer.zig:3645`                                   |
+| `Mailbox.take`'s two lines swapped, both still correct                 | `gpu/metal/renderer.zig` | `renderer.zig:3657`, `statedBefore` alone             |
+| `Watcher.halt` split into a `bool` and a separate futex word           | `gpu/metal/renderer.zig` | `renderer.zig:3686`                                   |
+| `ring.zig`'s release store to `.monotonic`, a control on the migration | `dsp/ring.zig`           | `ring.zig:736`                                        |
+
+Two negative controls, where **passing is the result**, because they are the flaws the issue names and an assertion about them would be a description:
+
+| Control                                                        | Site           | Result                             |
+| -------------------------------------------------------------- | -------------- | ---------------------------------- |
+| A statement re-indented into an `if` block, no semantic change | `dsp/ring.zig` | green — the eight-space flaw, gone |
+| A doc comment naming `self.cursor.load` added above the banner | `dsp/ring.zig` | green — the count flaw, gone       |
+
+The `Mailbox.take` row is the one worth reading twice: it fails `statedBefore` and **nothing else**. Every count and every `stated` assertion passes with those two statements reversed, which is the hole the helper was added to close.
 
 Then `zig fmt --check build.zig src/` and `markdownlint-cli2` in check mode only, never `--fix`, which ignores its file argument and rewrites every file in the tree.
 
