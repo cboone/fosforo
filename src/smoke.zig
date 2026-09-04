@@ -821,8 +821,11 @@ const Worker = struct {
 /// never reaches the seam, so `iface.zig`'s "there is exactly one clock" is a
 /// statement about `frame`'s parameter and is untouched by this.
 ///
-/// One `clock_gettime` per presented frame, since the reading at the top is the
-/// only one a frame that gets its slot immediately pays for.
+/// **One `clock_gettime` for a frame that takes its slot on the first attempt,
+/// and one more for every retry after that.** The reading at the top is all the
+/// common case pays; the retry path re-reads on each turn deliberately, because a
+/// deadline consulted once and then trusted is a count again, which is the whole
+/// of what #89 removed.
 fn driveFrame(renderer: *gpu.Renderer, now_nanos: u64) !void {
     const started = nowNanos();
     var attempts: u64 = 0;
