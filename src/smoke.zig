@@ -578,11 +578,29 @@ const trace_height: u32 = 540;
 
 /// Energy above which a pixel counts as lit.
 ///
-/// One deposit is the beam's green, which is 1.0, and the accumulation is linear
-/// and unclipped, so half of one deposit is an unambiguous floor. This is not
-/// `measure-trace`'s 64-of-255: that tool reads an 8-bit picture through a
-/// display's colour space, and this reads the float the shader wrote.
+/// One segment deposits 1.0 at its core, the accumulation is linear and
+/// unclipped, and this is half of that. This is not `measure-trace`'s 64-of-255:
+/// that tool reads an 8-bit picture through a display's colour space, and this
+/// reads the float the shader wrote.
+///
+/// **What it means changed with #57 and the number did not.** It used to be a
+/// floor between "a deposit landed here" and "nothing did", because a one-pixel
+/// line deposited 1.0 or nothing at all. A beam has a falloff, so this is now an
+/// iso-intensity contour of that falloff: the biweight reaches 0.5 at
+/// `u = 0.5412`, so the lit band is 54% of the half-width either side of the
+/// centreline. Every geometric measurement below is therefore stated at that
+/// contour rather than at the beam's full width, which is what makes this the
+/// constant that sets the effective beam width for the whole file.
 const trace_threshold: f32 = 0.5;
+
+/// Half the beam's width, in backing pixels, at this harness's geometry.
+///
+/// `initOffscreen` has no view whose scale it could read and uses 1.0, so points
+/// and backing pixels are the same number here. That is a real limit rather than
+/// a convenience: this half always measures a 1.5-pixel half-width and never the
+/// 3.0 a 2x host draws, and the rail clearance and the row spans are both
+/// tightest at 2x. `src/gpu/iface.zig` carries the same warning at the constant.
+const beam_half_width_px: f32 = gpu.beam_width_points / 2.0;
 
 /// The interval between frames on this half's synthetic clock.
 ///
@@ -817,12 +835,134 @@ fn traceHalf() !void {
     try checkSaturation(energy, picture, window);
     try checkSymmetry(energy, picture, window);
     try checkHorizontalMapping(energy, picture);
+    try checkEdgeColumns(energy, picture, window);
+    try checkBeamProfile(energy, picture, window);
     try checkPeriods(energy, picture, window);
     try checkDepositIsScalar(energy, picture, window);
     try checkResolve(energy, picture, window);
     try checkHotCore(energy, picture, window);
     try checkDecay(energy, picture, window);
     try checkDecayIsInRealTime(energy, picture, window);
+}
+
+/// A railed trace lights every column, including the two on the edges.
+///
+/// **#38's open question, asked of a single frame for the first time.** Its level
+/// sweep found `level-1.089.wav` lighting 1914 of 1920 columns where every other
+/// level lit all of them, and named the likely cause: the first and last vertices
+/// sit at `x = ±1` exactly, where half a one-pixel line's coverage diamond is
+/// off-screen and the rasterizer may light nothing.
+///
+/// Re-run against #55's accumulation the count came back clean at every level,
+/// and #57's own comment refused to read that as the defect having gone: a lit
+/// pixel survives roughly 28 frames of persistence, so a column this frame's
+/// coverage dropped is still lit from an earlier one, and a screenshot of an
+/// accumulated picture cannot tell an intermittent dropout from a fixed one.
+///
+/// This can, because it drives one deposit into a cleared accumulation. And the
+/// answer is structural rather than measured: a quad has area, so the first
+/// segment spans a whole pixel horizontally and contains that pixel's centre,
+/// where a line's endpoint was a point that had to exit a diamond to light
+/// anything. The level is the one that failed, so this is that case and not a
+/// nearby one.
+///
+/// **The round caps are not what does it, which planting established.** Cutting
+/// them off entirely — butt joints, no extension along the segment — still reads
+/// 960 of 960 here. So this check is weaker than it looks against the cap
+/// geometry and exactly as strong as it should be against the thing that
+/// actually failed.
+fn checkEdgeColumns(energy: []f32, picture: []u8, window: []f32) !void {
+    var probe = try Probe.init(energy, picture);
+    defer probe.deinit();
+
+    measure.constant(window, gpu.trace_rail / gpu.trace_full_scale);
+    try probe.run(window, 1, 1);
+
+    const image = probe.image();
+    const lit = measure.litColumns(image, trace_threshold);
+    const span = measure.litSpan(image, trace_threshold) orelse return error.TraceNotDrawn;
+
+    say("  railed: {d} of {d} columns lit, spanning {d} to {d}", .{
+        lit,
+        trace_width,
+        span.first,
+        span.last,
+    });
+
+    if (span.first != 0 or span.last != trace_width - 1) return error.EdgeColumnDark;
+    if (lit != trace_width) return error.ColumnDropped;
+}
+
+/// The beam has the width it was asked for, measured in pixels rather than in
+/// clip space.
+///
+/// **The probe is a near-vertical segment, and that is the whole design.** A
+/// horizontal beam's cross-section is the sum of several overlapping capsules,
+/// since consecutive samples advance about one pixel and the half-width is 1.5,
+/// so its shape is a convolution rather than the profile. One steep segment has
+/// no such neighbours: the window steps from +0.9 to -0.9 at its midpoint, and at
+/// a row halfway down the drawable the only thing depositing is that one rod.
+///
+/// What is asserted is the cross-section's **integral**, not its lit extent. The
+/// biweight integrates to `16/15` of the half-width, which is 1.6 pixels here,
+/// and an integral is robust where a thresholded width is not: at these
+/// dimensions the lit band is under two pixels, so quantization is the same size
+/// as the quantity, and a check on it would be measuring rounding.
+///
+/// **It is the only check here that can see clip space mistaken for pixels.** The
+/// drawable is 960x540, so expanding by a half-width in NDC rather than in pixels
+/// makes the beam elliptical — 1.78 times wider one way than the other — which
+/// every other check in this file reads as a slightly different row and passes.
+fn checkBeamProfile(energy: []f32, picture: []u8, window: []f32) !void {
+    var probe = try Probe.init(energy, picture);
+    defer probe.deinit();
+
+    // One step, at the midpoint. Both halves are inside the rail, so the segment
+    // between them is a full-height rod rather than a clamped one.
+    for (window, 0..) |*slot, i| slot.* = if (i < window.len / 2) 0.9 else -0.9;
+    try probe.run(window, 1, 1);
+
+    const image = probe.image();
+    const row = trace_height / 2;
+
+    var total: f32 = 0;
+    var moment: f32 = 0;
+    var x: usize = 0;
+    while (x < trace_width) : (x += 1) {
+        const e = image.green(x, row);
+        total += e;
+        moment += e * @as(f32, @floatFromInt(x));
+    }
+
+    if (total <= 0) return error.TraceNotDrawn;
+
+    // `16/15` is `∫(1 - u²)² du` over the profile's support, which is what makes
+    // this a statement about the biweight rather than about any curve of roughly
+    // the right size.
+    const want = beam_half_width_px * 16.0 / 15.0;
+    const centre = moment / total;
+    say("  beam: cross-section integrates to {d:.4}, expected {d:.4}, centred on column {d:.2}", .{
+        total,
+        want,
+        centre,
+    });
+
+    if (@abs(total - want) > want * 0.05) return error.BeamWidthWrong;
+
+    // And it is symmetric about that centre, which is what a bowtie from a strip
+    // whose corners run the wrong way, or a mirrored quad, would not be. Compared as the two
+    // halves' energy rather than pixel by pixel, so it says nothing about the
+    // profile's shape that the integral above has not already said.
+    var left: f32 = 0;
+    var right: f32 = 0;
+    x = 0;
+    while (x < trace_width) : (x += 1) {
+        const e = image.green(x, row);
+        const d = @as(f32, @floatFromInt(x)) - centre;
+        if (d < 0) left += e else if (d > 0) right += e;
+    }
+
+    if (@abs(left - right) > total * 0.05) return error.BeamNotSymmetric;
 }
 
 /// A window of zeros draws one flat line through the centre.
@@ -844,20 +984,36 @@ fn checkSilence(energy: []f32, picture: []u8, window: []f32) !void {
 
     const seen = measure.extremes(image, trace_threshold) orelse return error.TraceNotDrawn;
 
-    // One row of slack, and it is the centre line rather than the signal. At an
-    // even height the centre falls on an exact pixel boundary, so both candidate
-    // rows exist and the rasterizer picks one; what would be worth investigating
-    // is the line *flickering* between them, which is the tie-break going
-    // unstable rather than this.
-    if (seen.bottom - seen.top > 1) {
+    // **The bound is the beam's own depth now, and it is parity-dependent.**
+    // Before #57 this was one row of slack for the centre line falling on a pixel
+    // boundary; a beam has width, so what is being checked is that the beam is
+    // flat rather than that it is thin. At an even height the centreline sits on
+    // the boundary and the profile straddles it symmetrically; at an odd one it
+    // sits on a pixel centre and lights one more row. `1440x407` is already a
+    // geometry this project tests, so the odd case is not hypothetical.
+    const parity: usize = if (trace_height % 2 == 0) 0 else 1;
+    const deepest = 2 * @as(usize, @intFromFloat(@ceil(beam_half_width_px))) + parity;
+
+    if (seen.bottom - seen.top > deepest) {
         say("  silence spans rows {d} to {d}", .{ seen.top, seen.bottom });
         return error.TraceNotFlat;
     }
 
-    const implied = measure.impliedSample(seen.top, trace_height);
-    say("  silence: row {d}, implying a sample of {d:.5}", .{ seen.top, implied });
+    // **The centroid rather than the topmost lit row, and the difference is the
+    // whole of what #38 left open here.** A symmetric profile centred on the
+    // boundary between two rows weights them equally, so its energy-weighted
+    // centre is that boundary exactly, and the mapping inverts it to exactly
+    // zero. The `+0.0021` #38 measured in REAPER was never the geometry being
+    // off by a fifth of a pixel; it was an estimator reading an edge. No
+    // corrective bias was needed and none is applied.
+    const centre = measure.centres(image) orelse return error.TraceNotDrawn;
+    const implied = measure.impliedSampleAt(centre.top, trace_height);
+    say("  silence: centroid row {d:.3}, implying a sample of {d:.5}", .{ centre.top, implied });
 
-    if (@abs(implied) > measure.pixelTolerance(trace_height)) return error.CentreLineWrong;
+    // A twentieth of a pixel rather than a whole one. `pixelTolerance` is what an
+    // edge estimator needed; asserting the old bound here would pass on a beam
+    // sitting a pixel high and is exactly the slack this check exists to remove.
+    if (@abs(implied) > measure.pixelTolerance(trace_height) / 20.0) return error.CentreLineWrong;
 }
 
 /// Each level lands where the constants say, inside one pixel.
@@ -874,11 +1030,16 @@ fn checkLevels(energy: []f32, picture: []u8, window: []f32) !void {
         try probe.run(window, 1, 1);
 
         const image = probe.image();
-        const seen = measure.extremes(image, trace_threshold) orelse return error.TraceNotDrawn;
 
-        const implied = measure.impliedSample(seen.top, trace_height);
+        // The centroid, for the reason `checkSilence` gives: a beam's top edge is
+        // biased above its centre by the lit half-width, identically at every
+        // level, and a systematic error with one sign is precisely what a
+        // one-pixel tolerance must not be asked to absorb.
+        const seen = measure.centres(image) orelse return error.TraceNotDrawn;
+
+        const implied = measure.impliedSampleAt(seen.top, trace_height);
         const off = @abs(implied - level);
-        say("  level {d: >6.3}: row {d: >3}, implying {d: >8.5}, off by {d:.5}", .{
+        say("  level {d: >6.3}: centroid row {d: >7.2}, implying {d: >8.5}, off by {d:.5}", .{
             level,
             seen.top,
             implied,
@@ -891,7 +1052,7 @@ fn checkLevels(energy: []f32, picture: []u8, window: []f32) !void {
 
 /// Every level at or above the rail lands on exactly the same row.
 fn checkSaturation(energy: []f32, picture: []u8, window: []f32) !void {
-    var railed: ?usize = null;
+    var railed: ?f32 = null;
 
     // 1.111 is `1 / trace_full_scale`, where the trace would reach the drawable's
     // edge if nothing clamped. It is unreachable because `trace_rail` clamps
@@ -907,19 +1068,22 @@ fn checkSaturation(energy: []f32, picture: []u8, window: []f32) !void {
         measure.constant(window, over);
         try probe.run(window, 1, 1);
 
-        const seen = measure.extremes(probe.image(), trace_threshold) orelse
-            return error.TraceNotDrawn;
+        const seen = measure.centres(probe.image()) orelse return error.TraceNotDrawn;
 
         if (railed) |first| {
+            // Bit-identical rather than within a tolerance, which the centroid
+            // makes available and the edge estimator did not: these are the same
+            // clamped geometry drawn twice, so anything but equality is a defect
+            // rather than a rounding.
             if (seen.top != first) {
-                say("  {d} railed on row {d}, not {d}", .{ over, seen.top, first });
+                say("  {d} railed on centroid row {d:.3}, not {d:.3}", .{ over, seen.top, first });
                 return error.RailNotSaturated;
             }
         } else {
             railed = seen.top;
             const expected = measure.railRow(trace_height);
-            say("  rail: row {d}, expected {d:.1}", .{ seen.top, expected });
-            if (@abs(@as(f32, @floatFromInt(seen.top)) - expected) > 1.0) return error.RailMisplaced;
+            say("  rail: centroid row {d:.3}, expected {d:.1}", .{ seen.top, expected });
+            if (@abs(seen.top - expected) > 0.1) return error.RailMisplaced;
         }
     }
 }
@@ -935,21 +1099,28 @@ fn checkSymmetry(energy: []f32, picture: []u8, window: []f32) !void {
         measure.constant(window, level);
         try probe.run(window, 1, 1);
 
-        const seen = measure.extremes(probe.image(), trace_threshold) orelse
-            return error.TraceNotDrawn;
-        rows[i] = @floatFromInt(seen.top);
+        const seen = measure.centres(probe.image()) orelse return error.TraceNotDrawn;
+        rows[i] = seen.top;
     }
 
     const centre = measure.centreRow(trace_height);
     const above = centre - rows[0];
     const below = rows[1] - centre;
-    say("  symmetry: +0.5 sits {d:.1} above centre, -0.5 sits {d:.1} below", .{ above, below });
+    say("  symmetry: +0.5 sits {d:.2} above centre, -0.5 sits {d:.2} below", .{ above, below });
 
+    // **This is the check the edge estimator broke worst, and the reason is worth
+    // keeping.** Both arms read `top`, so a beam of half-width `h` moved both
+    // edges up: `above` grew by `h` and `below` shrank by it, and the quantity
+    // asserted on here was `2h`. It failed at a half-width over half a pixel, for
+    // a reason that had nothing to do with symmetry, and no tolerance wide enough
+    // to pass would have been measuring anything. A centroid is unbiased in both
+    // directions, so the two arms cancel and the slack drops to a tenth of a
+    // pixel.
+    //
     // A Y flip would put both on the same side; an asymmetric clamp would leave
-    // them at different distances. One pixel of slack covers the tie-break at the
-    // centre and nothing else.
+    // them at different distances.
     if (above <= 0 or below <= 0) return error.TraceInverted;
-    if (@abs(above - below) > 1.0) return error.TraceAsymmetric;
+    if (@abs(above - below) > 0.1) return error.TraceAsymmetric;
 }
 
 /// The first and last samples land on the drawable's edges.
@@ -969,11 +1140,14 @@ fn checkHorizontalMapping(energy: []f32, picture: []u8) !void {
     const span = measure.litSpan(image, trace_threshold) orelse return error.TraceNotDrawn;
     say("  three samples span columns {d} to {d} of {d}", .{ span.first, span.last, trace_width - 1 });
 
-    // One column of slack at each end, for the diamond-exit rule: a line strip's
-    // final endpoint need not light the pixel it lands on. Against an error of a
-    // third of the width, one column is not a tolerance that could hide anything.
-    if (span.first > 1) return error.TraceStartsLate;
-    if (span.last < trace_width - 2) return error.TraceEndsEarly;
+    // **Exactly the edge columns, with no slack, and #57 is what removed it.**
+    // The one column either side used to be for the diamond-exit rule, under
+    // which a line strip's final endpoint need not light the pixel it lands on. A
+    // quad has area and does light it, which `checkEdgeColumns` asserts at
+    // the level that actually failed in #38; keeping a tolerance here after that
+    // would be carrying a defect's allowance past the fix for it.
+    if (span.first != 0) return error.TraceStartsLate;
+    if (span.last != trace_width - 1) return error.TraceEndsEarly;
 
     // And the vertical, which the same window checks for free: the ramp runs from
     // -1 at the left to +1 at the right, so the corners are the extremes.
@@ -1175,15 +1349,30 @@ fn checkResolve(energy: []f32, picture: []u8, window: []f32) !void {
     // 12.92 x 255, which puts one level at 3.0e-4 of linear energy. Widening this
     // pre-emptively would be widening the one assertion that would have caught
     // #55. Read the printed number first.
+    //
+    // **#57 spent most of the slack that was here and did not need more.** It was
+    // off by zero across 518,400 pixels with 2412 lit; a beam with a falloff lights
+    // 4853 and puts most of the new ones in the gradient's toe, where the sRGB
+    // curve is 3294.6 bytes per unit linear and a rounding boundary is a whole
+    // level. The worst channel is now off by one. If it ever reaches two, the
+    // question to ask is whether the toe moved, not whether the tonemap did.
     if (@abs(worst) > 1) return error.ResolveNotTheTonemap;
 }
 
 /// Both ends of the ten-to-one range the accumulation produces are legible.
 ///
 /// **The claim #60 exists to make, and the one nothing else here can see.** A
-/// moving trace never lights a pixel twice, so it gets one deposit and stays at an
-/// energy of one; a stationary one re-deposits every frame and converges on
-/// `1 / (1 - decay)`. #55 measured both ways of getting that wrong: a unit gain
+/// moving trace deposits once per frame on any given pixel and stays near that
+/// energy; a stationary one re-deposits every frame and converges on
+/// `1 / (1 - decay)` times it.
+///
+/// **"Once" stopped meaning "an energy of one" at #57, and the ratio is what
+/// survived.** A line strip's x was monotone in `vertex_id`, so one frame could
+/// not cover a pixel twice and a moving trace sat at exactly 1.0. Oriented quads
+/// overlap at every joint, so a moving trace now measures about 2.6; the dwell
+/// asymptote scales with it and the ten-to-one range this check is named for is
+/// unchanged. That is why both arms below are read against `whitePoint` and
+/// against each other rather than against the beam's literal. #55 measured both ways of getting that wrong: a unit gain
 /// clips a dwelt trace to white and loses the colour, and a gain of `1 - decay`
 /// renders a moving one at green 53 of 255, which reads as a black display.
 ///
@@ -1283,12 +1472,19 @@ fn checkDecay(energy: []f32, picture: []u8, window: []f32) !void {
             first = peak;
             say("  decay: one deposit peaks at {d:.4}", .{peak});
 
-            // Reported rather than asserted, and deliberately. Whether a line
-            // strip's shared vertices deposit twice under Metal's diamond-exit
-            // rule is not documented anywhere this project can cite, so the
-            // number is a finding rather than a claim: one deposit of the beam's
-            // green would be 1.0, and anything above that is coverage counted
-            // more than once.
+            // Reported rather than asserted, and deliberately. It used to read
+            // exactly 1.0000, which settled a question this project could not
+            // cite an answer to: whether a line strip's shared vertices deposit
+            // twice under Metal's diamond-exit rule. They did not.
+            //
+            // **#57 replaced the primitive that question was about, and the
+            // answer with it.** Quads overlap at every joint by construction, so
+            // this is now about 2.61 at one sample per point, and that is the
+            // design rather than a suspicion: a pixel the beam sweeps over more
+            // than once in a frame receives more than one deposit. It stays a
+            // finding rather than an assertion because the value tracks the
+            // sample density, which is a property of the session and not of the
+            // shader; `TraceUniforms.density` is what keeps it bounded.
             continue;
         }
 
