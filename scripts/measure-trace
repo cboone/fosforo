@@ -293,6 +293,14 @@ LEAD_WINDOW = 1
 # recompression, and good against lossy is 135x and 457x. The same three orders of
 # magnitude the pre-#57 pair had, which is what keeps this needing no calibration
 # against the machine it runs on.
+#
+# **Four captures rather than two, since the level sweep landed.** The lossless
+# figures at tolerance 3 are 0.30%, 0.30%, 0.28% and 0.14% across level-1.000,
+# level-1.050, level-1.089 and level-2.000, against 0.26% for the 0.5 sine. So the
+# worst good capture leaves 1.7x of margin under MAX_OFF_RAY where the pre-#57 pair
+# implied 25x, and the separation from a recompression is 117x rather than 1100x.
+# The tolerance is still right and the margin is simply thinner than the old
+# numbers suggested; re-read this if a capture ever passes 0.4%.
 RAY_TOLERANCE = 3
 MAX_OFF_RAY = 0.005
 

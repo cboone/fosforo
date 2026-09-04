@@ -343,3 +343,30 @@ The first is the better outcome ADR 0013 records for the accumulation-texture pl
 ### What this does not change
 
 Every number in the sections above was measured at one sample per logical point, where `density` is exactly 1.0 by construction, so `smoke-trace`'s output is byte-identical before and after. The host pass is still what settles the density arm, and it is now worth running.
+
+## What the host settled, arms 1 and 2
+
+Captured in REAPER 7.79 at the default editor on a 2x display, 1920x1080 drawable, measured with `--refresh 120`.
+
+### Arm 1: the trace's position
+
+`sine-100hz-0.5.wav` inverts to **+0.5000 and -0.5000**, exactly. That is the centre-line and level mapping confirmed through the whole chain the harness cannot see: the audio path, the ring, the display link and the compositor.
+
+Getting there found two defects in the screenshot tool, both introduced by this issue and both invisible offscreen. The centroid was taken over the whole **column**, which under persistence averages the trail rather than the beam and reported that same sine as **+0.0359** — silence — while the lit rows either side implied ±0.505 correctly; it now reads a column's first and last contiguous lit *run*. And `rail_row` was missing the pixel-centre term, the same half-pixel the `implied_sample` fix had just corrected in one place and left in another; a level-2.000 capture exposed it, because its trough centroid landed on 1068.68 against a printed 1069.2 and a Zig-side 1068.7.
+
+### Arm 2: the rail
+
+| file | predicted | peak | trough | error | on the rail |
+| ----------- | -------- | ------- | ------- | ------- | ----------- |
+| level-1.000 | +1.0000  | +0.9991 | -0.9991 | 0.44 px | no          |
+| level-1.050 | +1.0500  | +1.0504 | -1.0504 | 0.19 px | no          |
+| level-1.089 | +1.0889  | +1.0894 | -1.0895 | 0.24 px | yes         |
+| level-2.000 | +1.0889  | +1.0894 | -1.0894 | 0.24 px | yes         |
+
+Both halves of ADR 0017 hold. Below the rail the values are distinct and each equals its own file; at and above it they are identical, from peak rows 10.04 and 10.06 — a fiftieth of a pixel apart. Every error is inside one backing pixel, and peak matches trough to four decimals throughout.
+
+Three observations from the sweep. **The plateau width is non-monotonic**, 2, 220, 171 and 1920 columns, so 1.050 has a wider top than 1.089 despite being quieter; `AGENTS.md` predicted exactly that and it is why nothing asserts on the number. **1.089 and 2.000 saturate to white where 1.000 and 1.050 read 6.80 and 6.05 deposits**, which is dwell at the rail — a clamped trace holds the same rows for a long stretch of each cycle — and it is why `SATURATED` excluded 7805 pixels at 2.000. And **the colour guard now rests on four captures rather than two**, reading 0.30%, 0.30%, 0.28% and 0.14%: all pass, but 0.30% leaves 1.7x of margin under `MAX_OFF_RAY` where the pre-#57 pair suggested 25x. The separation from a recompressed capture is still 117x at worst, so a tolerance of 3 is right; the margin is simply thinner than the old numbers implied and should be re-read if a future capture pushes past 0.4%.
+
+### Still open
+
+Arm 3, the sample-rate pass, which is the only check on `TraceUniforms.density` anywhere. Arm 4, the visual pass.
