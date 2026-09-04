@@ -350,6 +350,7 @@ fn coherent(snapshot: u64, now: u64, capacity: usize, copied: usize) bool {
 // ---------------------------------------------------------------------------
 
 const testing = std.testing;
+const canary = @import("../canary.zig");
 
 /// A monotonically increasing signal, so the order samples come back in is
 /// checkable rather than merely plausible.
@@ -707,23 +708,6 @@ test "the coherence check is exact at its boundary" {
     try testing.expect(coherent(100, 108, 8, 0));
 }
 
-/// Everything above this line, so the canary cannot read its own string
-/// literals and count them as code. The marker is the section heading that is
-/// already there rather than a new one, so there is nothing extra to keep in
-/// step.
-fn implementation() []const u8 {
-    const source = @embedFile("ring.zig");
-    const marker = "\n// Tests\n";
-    return source[0 .. std.mem.indexOf(u8, source, marker) orelse source.len];
-}
-
-/// Whether `line`, indented as a statement inside a method, appears exactly once.
-fn statedOnce(text: []const u8, line: []const u8) bool {
-    var buffer: [160]u8 = undefined;
-    const statement = std.fmt.bufPrint(&buffer, "\n        {s}\n", .{line}) catch return false;
-    return std.mem.count(u8, text, statement) == 1;
-}
-
 // The canary.
 //
 // `zig build ring-race` is what verifies the release/acquire pairing, and it
@@ -736,29 +720,34 @@ fn statedOnce(text: []const u8, line: []const u8) bool {
 // what its name says out loud so it cannot be mistaken for the thing that does.
 // A passing canary means these lines are unchanged, not that they are correct.
 //
+// This was the first of these and its two helpers now live in `src/canary.zig`,
+// where four more mechanisms reach them and where the two flaws they carried are
+// fixed once rather than copied five times. The `@embedFile` stays here, because
+// it resolves relative to the importing file.
+//
 // It costs the shipped binary nothing: Zig analyses `test` declarations only in
-// a test build, so neither `@embedFile` nor the two helpers above are ever
-// reached by `zig build`.
+// a test build, so neither `@embedFile` nor `canary` is ever reached by
+// `zig build`.
 test "the atomics are still the atomics, read as text because no test here can read them as behaviour" {
-    const code = implementation();
+    const code = canary.implementation(@embedFile("ring.zig"));
 
     // The publication, and the half a simplifier reaches for first. This is the
     // exact line `ring-race`'s weakened arm models the absence of.
-    try testing.expect(statedOnce(code, "self.cursor.store(at + input.len, .release);"));
+    try testing.expectEqual(1, canary.stated(code, "self.cursor.store(at + input.len, .release);"));
 
     // The three acquire loads, each by its whole statement, so moving one
     // between methods reads as a change rather than as a wash.
-    try testing.expect(statedOnce(code, "return self.cursor.load(.acquire);"));
-    try testing.expect(statedOnce(code, "const at = self.cursor.load(.acquire);"));
-    try testing.expect(statedOnce(code, "return coherent(at, self.cursor.load(.acquire), cap, copied);"));
+    try testing.expectEqual(1, canary.stated(code, "return self.cursor.load(.acquire);"));
+    try testing.expectEqual(1, canary.stated(code, "const at = self.cursor.load(.acquire);"));
+    try testing.expectEqual(1, canary.stated(code, "return coherent(at, self.cursor.load(.acquire), cap, copied);"));
 
     // The producer's own unsynchronised read, safe only because it is the only
     // writer of the cursor.
-    try testing.expect(statedOnce(code, "const at = self.cursor.load(.monotonic);"));
+    try testing.expectEqual(1, canary.stated(code, "const at = self.cursor.load(.monotonic);"));
 
     // And that those five are all of them. Without this the checks above are
     // satisfied by a file that also acquired a sixth operation somewhere else,
     // which is the shape a seqlock retry loop would arrive in, and `read`'s
     // docstring says why this is not that.
-    try testing.expectEqual(5, std.mem.count(u8, code, "self.cursor."));
+    try testing.expectEqual(5, canary.mentions(code, "self.cursor."));
 }

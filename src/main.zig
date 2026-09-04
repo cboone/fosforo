@@ -68,8 +68,15 @@ test {
     _ = @import("gpu/metal/renderer.zig");
     _ = @import("gpu/metal/shader.zig");
     _ = @import("platform/displaylink.zig");
+    _ = @import("platform/io.zig");
     _ = @import("platform/objc.zig");
     _ = @import("platform/view.zig");
+
+    // Reached only from the `test` blocks of the five files it guards, so no
+    // import chain from `plugin` runs through it and its own tests would
+    // otherwise not be collected. It is what those five canaries rest on, which
+    // makes a bug in it five checks silently passing.
+    _ = @import("canary.zig");
 
     // Not reached from the plugin at all: it reads a rendered trace back as
     // numbers, and its one caller is `src/smoke.zig`. Named here for the reason
