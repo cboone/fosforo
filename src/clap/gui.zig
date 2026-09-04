@@ -1020,6 +1020,7 @@ const Meter = struct {
 // ---------------------------------------------------------------------------
 
 const testing = std.testing;
+const canary = @import("../canary.zig");
 
 // Every test here stops short of `setParent`, which is the one method that
 // reaches AppKit, CoreVideo, and Metal. That boundary is why this file exists
@@ -1144,6 +1145,85 @@ test "close waits for a tick that is already inside" {
     gate.leave();
     gate.close();
     try testing.expectEqual(Gate.closed, gate.state.load(.acquire));
+}
+
+// The canaries.
+//
+// The two tests above are honest about what they do not do, and what they do not
+// do is the whole risk here: the first closes an uncontended gate, so `close`'s
+// spin body never executes, and the second produces "the state a tick mid-frame
+// leaves behind" by calling `fetchOr` in the test body. **There is no second
+// thread anywhere in this file**, so every ordering below is invisible to all 44
+// tests beside it and a `.release` simplified to `.monotonic` passes every one.
+//
+// That is the same argument ADR 0016 makes about the ring, one layer up, and it
+// has the same answer for now: read the source as text, which proves nothing
+// about behaviour and fails immediately on the machine of whoever weakened it.
+// #91 is the Thread Sanitizer arm that would prove the behaviour, and it needs a
+// Linux host; these fire on any.
+test "the gate and the size mailbox still state their orderings, read as text because no test here has a second thread" {
+    const code = canary.implementation(@embedFile("gui.zig"));
+
+    // `Pending`. One release store out on the main thread, one acquiring swap in
+    // on the render thread, and the swap is what makes a size acted on exactly
+    // once however many times it was posted.
+    try testing.expectEqual(1, canary.stated(code, "self.slot.store(@bitCast(message), .release);"));
+    try testing.expectEqual(1, canary.stated(code, "const raw = self.slot.swap(empty, .acquire);"));
+    try testing.expectEqual(2, canary.mentions(code, "self.slot."));
+
+    // `Gate`. The claim, which learns whether the gate was open in the same
+    // operation that takes a place, because reading the flag first and
+    // incrementing second is exactly the race this type exists to close.
+    try testing.expectEqual(1, canary.stated(code, "const previous = self.state.fetchAdd(one_tick, .acquire);"));
+
+    // Both ways back out, stated identically in `enter`'s refusal path and in
+    // `leave`. A count rather than "exactly once" is the whole reason
+    // `canary.stated` returns one: either of these weakened alone takes this to
+    // 1, and both weakened takes it to 0.
+    try testing.expectEqual(2, canary.stated(code, "_ = self.state.fetchSub(one_tick, .release);"));
+
+    // The close and its spin, which is what stands between a host's main thread
+    // and a tick still touching the device `destroy` is about to release.
+    try testing.expectEqual(1, canary.stated(code, "_ = self.state.fetchOr(closed, .acquire);"));
+    try testing.expectEqual(1, canary.stated(code, "while (self.state.load(.acquire) != closed) {"));
+
+    // And that those five are all of them, so the checks above cannot be
+    // satisfied by a file that also acquired a sixth operation somewhere else.
+    try testing.expectEqual(5, canary.mentions(code, "self.state."));
+}
+
+test "the editor's counters still state their orderings" {
+    const code = canary.implementation(@embedFile("gui.zig"));
+
+    // These cross the same two threads as `Gate` and `Pending` and carry
+    // something less costly: a weakened one is a wrong `rendering at N Hz` rather
+    // than a use-after-free. They are here anyway, because the render meter is
+    // the only positive statement this project has that frames are being
+    // presented at all, and a diagnostic nobody can trust is worse than none.
+    try testing.expectEqual(1, canary.stated(code, "if (renderer.frame(now).drew()) _ = self.presented.fetchAdd(1, .release);"));
+    try testing.expectEqual(1, canary.stated(code, "return self.presented.load(.acquire);"));
+    try testing.expectEqual(2, canary.mentions(code, "self.presented."));
+
+    // Three rather than two, because `report` reads the window inside a
+    // multi-line `l.print` call, whose statement line carries a trailing comma.
+    try testing.expectEqual(1, canary.stated(code, "const want = self.window.load(.acquire);"));
+    try testing.expectEqual(1, canary.stated(code, "self.window.store(@min(samples, gpu.max_window_samples), .release);"));
+    try testing.expectEqual(1, canary.stated(code, "self.window.load(.acquire),"));
+    try testing.expectEqual(3, canary.mentions(code, "self.window."));
+
+    try testing.expectEqual(1, canary.stated(code, "_ = self.uploaded.fetchAdd(1, .release);"));
+    try testing.expectEqual(1, canary.stated(code, "return self.uploaded.load(.acquire);"));
+    try testing.expectEqual(2, canary.mentions(code, "self.uploaded."));
+
+    try testing.expectEqual(1, canary.stated(code, "_ = self.torn.fetchAdd(1, .release);"));
+    try testing.expectEqual(1, canary.stated(code, "return self.torn.load(.acquire);"));
+    try testing.expectEqual(2, canary.mentions(code, "self.torn."));
+
+    // The one that is a handshake rather than a counter: the host's main thread
+    // asks for a reset and the render thread takes it, once, with a swap.
+    try testing.expectEqual(1, canary.stated(code, "self.meter_reset.store(true, .release);"));
+    try testing.expectEqual(1, canary.stated(code, "return self.meter_reset.swap(false, .acquire);"));
+    try testing.expectEqual(2, canary.mentions(code, "self.meter_reset."));
 }
 
 test "each axis is clamped against the minimum independently" {
