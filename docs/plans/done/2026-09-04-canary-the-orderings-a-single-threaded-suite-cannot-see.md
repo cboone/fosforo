@@ -1,6 +1,6 @@
 # Canary the std.Io constructor and the orderings a single-threaded suite cannot see
 
-Issue: [#90](https://github.com/cboone/fosforo/issues/90). Type: `test:`. Item 2 of [the verification-gap program](2026-09-04-close-the-verification-gaps-in-the-test-suite.md).
+Issue: [#90](https://github.com/cboone/fosforo/issues/90). Type: `test:`. Item 2 of [the verification-gap program](../todo/2026-09-04-close-the-verification-gaps-in-the-test-suite.md), which stays in `todo/` until the other ten land.
 
 ## Context
 
