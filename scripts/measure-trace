@@ -62,7 +62,7 @@ from PIL import Image, ImageCms, UnidentifiedImageError
 # comparison cannot catch, so both were renamed and a stale copy of this file now
 # fails the constants test loudly instead.
 FULL_SCALE = 0.9  # iface.trace_full_scale
-RAIL = 0.98
+RAIL = 0.98  # iface.trace_rail
 
 # `iface.beam_width_points`. How wide the beam draws, in points, which becomes
 # backing pixels only after the display's scale is applied — hence `--scale`,
@@ -77,7 +77,7 @@ BEAM_WIDTH_POINTS = 3.0
 # This machine's panel, on the same footing as DEFAULT_REFRESH_HZ: a screenshot
 # carries neither its display's scale nor its refresh rate, so both are arguments
 # with a local default rather than anything read from the file.
-DEFAULT_SCALE = 2.0  # iface.trace_rail
+DEFAULT_SCALE = 2.0
 BACKGROUND_BYTES = (5.0, 5.0, 8.0)  # palette.background_bytes
 CORE_EXPONENT = 4  # palette.core_exponent
 WHITE_HEADROOM = 0.8  # palette.white_headroom
