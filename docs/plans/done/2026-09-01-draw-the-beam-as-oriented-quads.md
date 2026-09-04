@@ -1,6 +1,6 @@
 # Draw the beam as oriented quads rather than a line strip
 
-Issue [#57](https://github.com/cboone/fosforo/issues/57). Branch `feature/beam-as-quads`. Phase 3, step 4 of [the build plan](2026-07-25-repo-foundation-and-phased-build-plan.md). Depends on [#55](https://github.com/cboone/fosforo/issues/55), which gave it somewhere to deposit, and on [#51](https://github.com/cboone/fosforo/issues/51), which gave it the only instrument that can see a single frame. [#58](https://github.com/cboone/fosforo/issues/58) and [#59](https://github.com/cboone/fosforo/issues/59) sit behind it.
+Issue [#57](https://github.com/cboone/fosforo/issues/57). Branch `feature/beam-as-quads`. Phase 3, step 4 of [the build plan](../todo/2026-07-25-repo-foundation-and-phased-build-plan.md). Depends on [#55](https://github.com/cboone/fosforo/issues/55), which gave it somewhere to deposit, and on [#51](https://github.com/cboone/fosforo/issues/51), which gave it the only instrument that can see a single frame. [#58](https://github.com/cboone/fosforo/issues/58) and [#59](https://github.com/cboone/fosforo/issues/59) sit behind it.
 
 ## Context
 
