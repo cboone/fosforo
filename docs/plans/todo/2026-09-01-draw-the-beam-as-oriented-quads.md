@@ -204,11 +204,9 @@ zig build install-clap
 
 **Arm 2, the rail.** The level sweep at 1.000, 1.050, 1.089 and 2.000. The centroid inverts straight to a sample value, so the criterion is that the implied sample tracks the level and then *stops*: +1.0000, +1.0500, +1.0889, +1.0889. Watching for a flat top is the wrong test, as `AGENTS.md` records; the peak ceasing to climb is the whole of what ADR 0017 means by refusing to say how far over a signal is. **Partly done**: `level-2.000` reads `+1.0893` against a predicted 1.08889 and prints the "on the rail" line. 1.000, 1.050 and 1.089 remain.
 
-**Arm 3, sample rate, which is the density scale's whole justification and the only check on it anywhere.** Change REAPER's **device** rate in preferences, not the files: `gui.windowSamples` is `sample_rate * 0.020`, so the negotiated rate is what sets the window length and the files stay 48 kHz throughout. Play `sine-100hz-0.5.wav` at 48, 96 and 192 kHz, at the default editor and at the minimum, and read the `deposits` figure `measure-trace` prints for the brightest pixel.
+**Arm 3, sample rate.** Change REAPER's **device** rate in preferences, not the files: `gui.windowSamples` is `sample_rate * 0.020`, so the negotiated rate is what sets the window length and the files stay 48 kHz throughout. Play `sine-100hz-0.5.wav` at 48, 96 and 192 kHz and confirm the peak still inverts to +0.5000 at every rate. That exercises `windowSamples`, the ring at three block sizes and the upload path at three window lengths, none of which the harness's fixed 960-sample window reaches.
 
-**The criterion is a direction, not a magnitude.** Predicted single-frame energy at a 960-point editor is 2.60, 2.10 and 1.85 deposits, which is the offscreen sweep re-measured through the host's own persistence, so the printed number will be larger than those and should *fall* by roughly a third across the range. What must not happen is a rise: before the density scale was corrected to points, a 2x display went 2.60 at 48 kHz to 3.70 at 192, and the minimum editor at 192 kHz was worse still. That case is the sharpest test here, because 480 points at 3840 samples is eight samples per point.
-
-Two cautions. Use the sine rather than `level-2.000`, whose brightest pixel reads "at or above the white point" and yields no number at all. And take more than one capture per rate: the sweep is free-running, so peak dwell swings about ±35% between frames depending on where the phase lands, which ADR 0019 records from #60's session.
+**What this arm does *not* do is check `TraceUniforms.density`, and an earlier draft of this plan said it was the only thing that could.** That was wrong twice over and the correction is below, under what the host settled.
 
 **Arm 4, by eye.** The beam is visibly wider and smoother with no seam where the geometry ends, and a transport stop still draws the bright vertical line [#79](https://github.com/cboone/fosforo/issues/79) describes, which is #58's to remove rather than this issue's.
 
@@ -370,3 +368,27 @@ Three observations from the sweep. **The plateau width is non-monotonic**, 2, 22
 ### Still open
 
 Arm 3, the sample-rate pass, which is the only check on `TraceUniforms.density` anywhere. Arm 4, the visual pass.
+
+## Arm 3, and a verification arm that was placed in the wrong instrument
+
+Nine captures, `sine-100hz-0.5.wav` at three device rates, three per rate, default editor at 1920x1080.
+
+**What it established.** Every capture inverts to **+0.5000**, worst case +0.4990, across window lengths of 960, 1920 and 3840 samples. The vertical mapping is rate-independent through the whole chain, which is a real result and one the harness cannot produce, since it renders a fixed 960-sample window.
+
+**What it could not establish, and never could have.** The brightness half was meant to check the density scale by reading the `deposits` figure and watching it fall. It does not resolve:
+
+| rate    | deposits, three captures | median |
+| ------- | ------------------------ | ------ |
+| 48 kHz  | 6.80, 6.80, 8.21         | 6.80   |
+| 96 kHz  | 8.77, 7.69, 7.22         | 7.69   |
+| 192 kHz | 7.22, 6.80, 4.88         | 6.80   |
+
+The predicted effect is a 1.41x fall; the scatter within a single rate is **1.8x**. Worse, the *defect* would have read `g≈249` against the observed `g≈243`, six byte levels apart, inside an observed scatter of ten. **So this method could not have caught the bug it was written for.** It is the wrong instrument rather than a noisy one.
+
+The arithmetic shows why, and it is `AGENTS.md`'s existing warning about inverting near saturation made concrete: every reading here maps to one byte, and one byte is about **0.45 deposits** at this part of the curve — 6.80, 7.22, 7.69, 8.21 and 8.77 are `g` of 243, 244, 245, 246 and 247.
+
+**The design error underneath it.** `density` is `min(1, viewport_points / (sample_count - 1))`: a pure function of the window length and the drawable width, both of which `initOffscreen` sets exactly. Unlike the trace's position, it touches neither the ring, nor the display link, nor the compositor, so **it has no host-only component and a host arm was never going to add anything.** The general lesson is worth carrying past this issue: put a verification arm where the quantity actually lives, and a quantity with no host-only component does not belong in a host arm however important it is.
+
+Density is verified, and it always was, in two places that do not depend on a screenshot. **The property**, with no GPU: `beamDensity` agrees to 1e-6 at 1x, 2x and 3x across five window lengths, and the pixel-based version fails it at 1 against 0.50026. **The magnitude**, offscreen at both scales: 2.6133, 2.0996 and 1.8486 at 1x, and 2.4434 and 1.7266 at 2x against **3.4531** before the fix — single deposit into a cleared accumulation, so no dwell, no free-running phase and no byte quantization, matching the model to three significant figures.
+
+**The minimum editor is unverifiable in REAPER**, and by construction rather than by accident: `AGENTS.md` records that REAPER implements `request_resize` and holds the *view* at the minimum while its own FX window still drags smaller and clips the view inside it, so the drawable stops being visible before it stops being small. A half-width editor does not rescue the comparison either — 480 against 960 points predicts 2.10 against 2.60, a 1.24x difference against that same 1.8x scatter.
