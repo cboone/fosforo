@@ -356,12 +356,12 @@ Getting there found two defects in the screenshot tool, both introduced by this 
 
 ### Arm 2: the rail
 
-| file | predicted | peak | trough | error | on the rail |
-| ----------- | -------- | ------- | ------- | ------- | ----------- |
-| level-1.000 | +1.0000  | +0.9991 | -0.9991 | 0.44 px | no          |
-| level-1.050 | +1.0500  | +1.0504 | -1.0504 | 0.19 px | no          |
-| level-1.089 | +1.0889  | +1.0894 | -1.0895 | 0.24 px | yes         |
-| level-2.000 | +1.0889  | +1.0894 | -1.0894 | 0.24 px | yes         |
+| file        | predicted | peak    | trough  | error   | on the rail |
+| ----------- | --------- | ------- | ------- | ------- | ----------- |
+| level-1.000 | +1.0000   | +0.9991 | -0.9991 | 0.44 px | no          |
+| level-1.050 | +1.0500   | +1.0504 | -1.0504 | 0.19 px | no          |
+| level-1.089 | +1.0889   | +1.0894 | -1.0895 | 0.24 px | yes         |
+| level-2.000 | +1.0889   | +1.0894 | -1.0894 | 0.24 px | yes         |
 
 Both halves of ADR 0017 hold. Below the rail the values are distinct and each equals its own file; at and above it they are identical, from peak rows 10.04 and 10.06 — a fiftieth of a pixel apart. Every error is inside one backing pixel, and peak matches trough to four decimals throughout.
 
