@@ -62,7 +62,7 @@ from PIL import Image, ImageCms, UnidentifiedImageError
 # comparison cannot catch, so both were renamed and a stale copy of this file now
 # fails the constants test loudly instead.
 FULL_SCALE = 0.9  # iface.trace_full_scale
-RAIL = 0.98
+RAIL = 0.98  # iface.trace_rail
 
 # `iface.beam_width_points`. How wide the beam draws, in points, which becomes
 # backing pixels only after the display's scale is applied — hence `--scale`,
@@ -77,7 +77,7 @@ BEAM_WIDTH_POINTS = 3.0
 # This machine's panel, on the same footing as DEFAULT_REFRESH_HZ: a screenshot
 # carries neither its display's scale nor its refresh rate, so both are arguments
 # with a local default rather than anything read from the file.
-DEFAULT_SCALE = 2.0  # iface.trace_rail
+DEFAULT_SCALE = 2.0
 BACKGROUND_BYTES = (5.0, 5.0, 8.0)  # palette.background_bytes
 CORE_EXPONENT = 4  # palette.core_exponent
 WHITE_HEADROOM = 0.8  # palette.white_headroom
@@ -293,6 +293,14 @@ LEAD_WINDOW = 1
 # recompression, and good against lossy is 135x and 457x. The same three orders of
 # magnitude the pre-#57 pair had, which is what keeps this needing no calibration
 # against the machine it runs on.
+#
+# **Four captures rather than two, since the level sweep landed.** The lossless
+# figures at tolerance 3 are 0.30%, 0.30%, 0.28% and 0.14% across level-1.000,
+# level-1.050, level-1.089 and level-2.000, against 0.26% for the 0.5 sine. So the
+# worst good capture leaves 1.7x of margin under MAX_OFF_RAY where the pre-#57 pair
+# implied 25x, and the separation from a recompression is 117x rather than 1100x.
+# The tolerance is still right and the margin is simply thinner than the old
+# numbers suggested; re-read this if a capture ever passes 0.4%.
 RAY_TOLERANCE = 3
 MAX_OFF_RAY = 0.005
 

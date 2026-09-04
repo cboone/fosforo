@@ -1,6 +1,6 @@
 # Draw the beam as oriented quads rather than a line strip
 
-Issue [#57](https://github.com/cboone/fosforo/issues/57). Branch `feature/beam-as-quads`. Phase 3, step 4 of [the build plan](2026-07-25-repo-foundation-and-phased-build-plan.md). Depends on [#55](https://github.com/cboone/fosforo/issues/55), which gave it somewhere to deposit, and on [#51](https://github.com/cboone/fosforo/issues/51), which gave it the only instrument that can see a single frame. [#58](https://github.com/cboone/fosforo/issues/58) and [#59](https://github.com/cboone/fosforo/issues/59) sit behind it.
+Issue [#57](https://github.com/cboone/fosforo/issues/57). Branch `feature/beam-as-quads`. Phase 3, step 4 of [the build plan](../todo/2026-07-25-repo-foundation-and-phased-build-plan.md). Depends on [#55](https://github.com/cboone/fosforo/issues/55), which gave it somewhere to deposit, and on [#51](https://github.com/cboone/fosforo/issues/51), which gave it the only instrument that can see a single frame. [#58](https://github.com/cboone/fosforo/issues/58) and [#59](https://github.com/cboone/fosforo/issues/59) sit behind it.
 
 ## Context
 
@@ -204,11 +204,9 @@ zig build install-clap
 
 **Arm 2, the rail.** The level sweep at 1.000, 1.050, 1.089 and 2.000. The centroid inverts straight to a sample value, so the criterion is that the implied sample tracks the level and then *stops*: +1.0000, +1.0500, +1.0889, +1.0889. Watching for a flat top is the wrong test, as `AGENTS.md` records; the peak ceasing to climb is the whole of what ADR 0017 means by refusing to say how far over a signal is. **Partly done**: `level-2.000` reads `+1.0893` against a predicted 1.08889 and prints the "on the rail" line. 1.000, 1.050 and 1.089 remain.
 
-**Arm 3, sample rate, which is the density scale's whole justification and the only check on it anywhere.** Change REAPER's **device** rate in preferences, not the files: `gui.windowSamples` is `sample_rate * 0.020`, so the negotiated rate is what sets the window length and the files stay 48 kHz throughout. Play `sine-100hz-0.5.wav` at 48, 96 and 192 kHz, at the default editor and at the minimum, and read the `deposits` figure `measure-trace` prints for the brightest pixel.
+**Arm 3, sample rate.** Change REAPER's **device** rate in preferences, not the files: `gui.windowSamples` is `sample_rate * 0.020`, so the negotiated rate is what sets the window length and the files stay 48 kHz throughout. Play `sine-100hz-0.5.wav` at 48, 96 and 192 kHz and confirm the peak still inverts to +0.5000 at every rate. That exercises `windowSamples`, the ring at three block sizes and the upload path at three window lengths, none of which the harness's fixed 960-sample window reaches.
 
-**The criterion is a direction, not a magnitude.** Predicted single-frame energy at a 960-point editor is 2.60, 2.10 and 1.85 deposits, which is the offscreen sweep re-measured through the host's own persistence, so the printed number will be larger than those and should *fall* by roughly a third across the range. What must not happen is a rise: before the density scale was corrected to points, a 2x display went 2.60 at 48 kHz to 3.70 at 192, and the minimum editor at 192 kHz was worse still. That case is the sharpest test here, because 480 points at 3840 samples is eight samples per point.
-
-Two cautions. Use the sine rather than `level-2.000`, whose brightest pixel reads "at or above the white point" and yields no number at all. And take more than one capture per rate: the sweep is free-running, so peak dwell swings about ±35% between frames depending on where the phase lands, which ADR 0019 records from #60's session.
+**What this arm does *not* do is check `TraceUniforms.density`, and an earlier draft of this plan said it was the only thing that could.** That was wrong twice over and the correction is below, under what the host settled.
 
 **Arm 4, by eye.** The beam is visibly wider and smoother with no seam where the geometry ends, and a transport stop still draws the bright vertical line [#79](https://github.com/cboone/fosforo/issues/79) describes, which is #58's to remove rather than this issue's.
 
@@ -312,7 +310,7 @@ The NaN pair is a control rather than a single plant, for the reason `scripts/ri
 
 ### What is left
 
-The host verification has not been run. Everything above is `zig build smoke-trace`, which renders a window it supplied itself and says nothing about the audio path, the ring, the display link or the compositor. The bash block in the verification section is what remains, and the sample-rate arm of it is the only check on `density` that exists.
+At the time this section was written, nothing above had been checked in a host. All four arms have since run; the sections at the foot of this document carry what they settled, including one that had to be retired as misdesigned.
 
 ## The density scale was wrong, and answering "what does host verification need" is what found it
 
@@ -343,3 +341,60 @@ The first is the better outcome ADR 0013 records for the accumulation-texture pl
 ### What this does not change
 
 Every number in the sections above was measured at one sample per logical point, where `density` is exactly 1.0 by construction, so `smoke-trace`'s output is byte-identical before and after. The host pass is still what settles the density arm, and it is now worth running.
+
+## What the host settled, arms 1 and 2
+
+Captured in REAPER 7.79 at the default editor on a 2x display, 1920x1080 drawable, measured with `--refresh 120`.
+
+### Arm 1: the trace's position
+
+`sine-100hz-0.5.wav` inverts to **+0.5000 and -0.5000**, exactly. That is the centre-line and level mapping confirmed through the whole chain the harness cannot see: the audio path, the ring, the display link and the compositor.
+
+Getting there found two defects in the screenshot tool, both introduced by this issue and both invisible offscreen. The centroid was taken over the whole **column**, which under persistence averages the trail rather than the beam and reported that same sine as **+0.0359** — silence — while the lit rows either side implied ±0.505 correctly; it now reads a column's first and last contiguous lit *run*. And `rail_row` was missing the pixel-centre term, the same half-pixel the `implied_sample` fix had just corrected in one place and left in another; a level-2.000 capture exposed it, because its trough centroid landed on 1068.68 against a printed 1069.2 and a Zig-side 1068.7.
+
+### Arm 2: the rail
+
+| file        | predicted | peak    | trough  | error   | on the rail |
+| ----------- | --------- | ------- | ------- | ------- | ----------- |
+| level-1.000 | +1.0000   | +0.9991 | -0.9991 | 0.44 px | no          |
+| level-1.050 | +1.0500   | +1.0504 | -1.0504 | 0.19 px | no          |
+| level-1.089 | +1.0889   | +1.0894 | -1.0895 | 0.24 px | yes         |
+| level-2.000 | +1.0889   | +1.0894 | -1.0894 | 0.24 px | yes         |
+
+Both halves of ADR 0017 hold. Below the rail the values are distinct and each equals its own file; at and above it they are identical, from peak rows 10.04 and 10.06 — a fiftieth of a pixel apart. Every error is inside one backing pixel, and peak matches trough to four decimals throughout.
+
+Three observations from the sweep. **The plateau width is non-monotonic**, 2, 220, 171 and 1920 columns, so 1.050 has a wider top than 1.089 despite being quieter; `AGENTS.md` predicted exactly that and it is why nothing asserts on the number. **1.089 and 2.000 saturate to white where 1.000 and 1.050 read 6.80 and 6.05 deposits**, which is dwell at the rail — a clamped trace holds the same rows for a long stretch of each cycle — and it is why `SATURATED` excluded 7805 pixels at 2.000. And **the colour guard now rests on four captures rather than two**, reading 0.30%, 0.30%, 0.28% and 0.14%: all pass, but 0.30% leaves 1.7x of margin under `MAX_OFF_RAY` where the pre-#57 pair suggested 25x. The separation from a recompressed capture is still 117x at worst, so a tolerance of 3 is right; the margin is simply thinner than the old numbers implied and should be re-read if a future capture pushes past 0.4%.
+
+## Arm 3, and a verification arm that was placed in the wrong instrument
+
+Nine captures, `sine-100hz-0.5.wav` at three device rates, three per rate, default editor at 1920x1080.
+
+**What it established.** Every capture inverts to **+0.5000**, worst case +0.4990, across window lengths of 960, 1920 and 3840 samples. The vertical mapping is rate-independent through the whole chain, which is a real result and one the harness cannot produce, since it renders a fixed 960-sample window.
+
+**What it could not establish, and never could have.** The brightness half was meant to check the density scale by reading the `deposits` figure and watching it fall. It does not resolve:
+
+| rate    | deposits, three captures | median |
+| ------- | ------------------------ | ------ |
+| 48 kHz  | 6.80, 6.80, 8.21         | 6.80   |
+| 96 kHz  | 8.77, 7.69, 7.22         | 7.69   |
+| 192 kHz | 7.22, 6.80, 4.88         | 6.80   |
+
+The predicted effect is a 1.41x fall; the scatter within a single rate is **1.8x**. Worse, the *defect* would have read `g≈249` against the observed `g≈243`, six byte levels apart, inside an observed scatter of ten. **So this method could not have caught the bug it was written for.** It is the wrong instrument rather than a noisy one.
+
+The arithmetic shows why, and it is `AGENTS.md`'s existing warning about inverting near saturation made concrete: every reading here maps to one byte, and one byte is about **0.45 deposits** at this part of the curve — 6.80, 7.22, 7.69, 8.21 and 8.77 are `g` of 243, 244, 245, 246 and 247.
+
+**The design error underneath it.** `density` is `min(1, viewport_points / (sample_count - 1))`: a pure function of the window length and the drawable width, both of which `initOffscreen` sets exactly. Unlike the trace's position, it touches neither the ring, nor the display link, nor the compositor, so **it has no host-only component and a host arm was never going to add anything.** The general lesson is worth carrying past this issue: put a verification arm where the quantity actually lives, and a quantity with no host-only component does not belong in a host arm however important it is.
+
+Density is verified, and it always was, in two places that do not depend on a screenshot. **The property**, with no GPU: `beamDensity` agrees to 1e-6 at 1x, 2x and 3x across five window lengths, and the pixel-based version fails it at 1 against 0.50026. **The magnitude**, offscreen at both scales: 2.6133, 2.0996 and 1.8486 at 1x, and 2.4434 and 1.7266 at 2x against **3.4531** before the fix — single deposit into a cleared accumulation, so no dwell, no free-running phase and no byte quantization, matching the model to three significant figures.
+
+**The minimum editor is unverifiable in REAPER**, and by construction rather than by accident: `AGENTS.md` records that REAPER implements `request_resize` and holds the *view* at the minimum while its own FX window still drags smaller and clips the view inside it, so the drawable stops being visible before it stops being small. A half-width editor does not rescue the comparison either — 480 against 960 points predicts 2.10 against 2.60, a 1.24x difference against that same 1.8x scatter.
+
+## Arm 4, and the beading question answered
+
+**No beading.** The one thing in this issue that could not be settled by derivation is settled by looking: a 2:1 brightness ripple at the segment pitch would have shown as a regular string of brighter dots along every steep crossing, green 219 against 189, and there is none. So of the two analyses this plan recorded, the **side-by-side** one was right: when the segment pitch is under the beam width — one device pixel against three at the harness geometry, two against six at the shipping one — adjacent capsules overlap along their whole length rather than meeting end to end, and coverage is uniform.
+
+That is by eye rather than by instrument, which is weaker than the rest of this document and is worth stating. It is not weak for *this* claim: a 16% brightness ripple repeating at a fixed spatial period is exactly what an eye is good at, and it is why the question was put to one.
+
+The other three held. The beam is visibly wider and smoother than the aliased single device pixel it replaced. There is no seam at the quad's edge, which is the biweight reaching zero with zero slope rather than being truncated there, and is the property a Gaussian would not have had. Silence is flat and stable, with no flicker between adjacent rows.
+
+**All four arms are complete.** What the host added over `zig build smoke-trace`, and could not have been obtained any other way: the audio path, the ring at three block sizes, the display link, the compositor, and the sRGB and Display P3 conversions between the drawable and a PNG.

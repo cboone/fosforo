@@ -218,7 +218,7 @@ Phase 2's issues were filed on that rule when phase 1 closed, and phase 3's when
 
 **A milestone marks what has to close before that phase's exit criteria are met, not what is one of its numbered steps.** Those are different sets, and the difference is why four issues on the phase 3 milestone carry a step of "none": [#62](https://github.com/cboone/fosforo/issues/62) is what makes "stable under sample-rate change" true, [#77](https://github.com/cboone/fosforo/issues/77) closes a gap [#61](https://github.com/cboone/fosforo/issues/61) opened by making the shader reloadable, and [#79](https://github.com/cboone/fosforo/issues/79) and [#80](https://github.com/cboone/fosforo/issues/80) both came out of verifying [#60](https://github.com/cboone/fosforo/issues/60). Reading a milestone as a list of steps understates a phase's remaining work by exactly the issues its own verification produced, which in this phase is most of them.
 
-**Six open issues sit on no milestone, and that is deliberate.** No phase's exit criteria depend on any of them.
+**Eighteen open issues sit on no milestone, and that is deliberate.** No phase's exit criteria depend on any of them. They fall into four groups.
 
 **Two are carried in the risks table below instead**, which is where a reader who
 does not open the tracker will find them:
@@ -226,13 +226,8 @@ does not open the tracker will find them:
 phase 1, and [#30](https://github.com/cboone/fosforo/issues/30) is certificate
 maintenance for a release that is several phases out.
 
-**The other four are deferred questions rather than risks to this plan**, which
+**Three are deferred questions rather than risks to this plan**, which
 is why they are not in that table.
-[#85](https://github.com/cboone/fosforo/issues/85) is the newest and the most
-mechanical: `.markdownlint-cli2.jsonc` pins a table style that nothing enforces,
-which is the state `typos.toml` was in before #28, measured at 0 findings on
-`main` against 129 on a branch in flight. It reads with #69, since both are
-questions about what CI is obliged to check rather than about the renderer.
 [#65](https://github.com/cboone/fosforo/issues/65) is verification phase 3 wanted
 and could not close in place, because the evidence points at Logic rather than at
 this project. [#53](https://github.com/cboone/fosforo/issues/53) is a feature #55
@@ -246,6 +241,30 @@ AppKit half is required, on 65 runs in which it never failed, and the leak half
 stays advisory because it is the one step there whose verdict depends on the
 runner's own AppKit chatter rather than on this project. The working order below
 places #69.
+
+**Two are checks that are configured, are believed to be running, and silently
+are not**, which is a shape this repository has now hit three times counting #28.
+[#85](https://github.com/cboone/fosforo/issues/85) is the more mechanical:
+`.markdownlint-cli2.jsonc` pins a table style that nothing enforces, which is the
+state `typos.toml` was in before #28, measured at 0 findings on `main` against
+129 on a branch in flight. [#87](https://github.com/cboone/fosforo/issues/87) is
+`ci.yml`'s `pull_request` trigger carrying `branches: [main]`, so a stacked pull
+request runs none of the nine jobs and nothing says so. **#87 constrains how
+anything here is worked** rather than what it contains: until it is settled,
+every branch is an ordinary branch off `main`. Both read with #69, since all
+three ask what CI is obliged to check rather than anything about the renderer.
+
+**The remaining eleven are the verification program**,
+[#89](https://github.com/cboone/fosforo/issues/89) through
+[#99](https://github.com/cboone/fosforo/issues/99), from a review of the whole
+verification surface on `0e1ddf5`, with its own plan at
+[`2026-09-04-close-the-verification-gaps-in-the-test-suite.md`](2026-09-04-close-the-verification-gaps-in-the-test-suite.md).
+Phase 3's section below describes them, because that is when they were found and
+beside where they run. **None is on a milestone under the rule above**: phase 3's
+exit criteria are about the picture and its stability under resize, sample-rate
+change and multiple instances, and no one of these has to close for those to be
+met. [#99](https://github.com/cboone/fosforo/issues/99) is the natural neighbour
+of #85 and #87 and could equally have been counted in the group above.
 
 ## Phase 2: signal path (complete)
 
@@ -346,13 +365,15 @@ That rule earns its place here rather than being process for its own sake, becau
 
 **Three resources are exclusive, and they are exclusive for three different reasons.** Keeping the reasons apart is the value of the table, because it says which constraints can be argued with and which cannot.
 
-| Resource                          | Why it is exclusive                                                                                                                                                                                                                                                           | What it binds                                               |
-| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| **Logic and the Audio Unit**      | **The filesystem, so not at all.** `AudioComponentRegistrar` scans only the two standard `Components` directories, there is no `AU_PATH`, and #22 measured that macOS will not follow a symlink into a worktree: 60 Audio Units as a copy, 59 as a symlink, 60 again restored | Any issue whose plan names Logic. Today #65, and #34        |
-| **The install path and a host**   | **Choice.** `CLAP_PATH` works and is deliberately not used, for the reasons two paragraphs below, so the loop is one `zig build install-clap` against one terminal REAPER and there is one of each                                                                            | #58, #59, #79, #83, #53                                     |
-| **The GPU and the window server** | **Hardware.** Two harnesses cannot both open windows and time each other's frames. It binds independently of any host, which is why #69 is exclusive while touching no DAW at all                                                                                             | #69, plus `smoke-appkit` and `smoke-leaks` inside any issue |
+| Resource                          | Why it is exclusive                                                                                                                                                                                                                                                           | What it binds                                                                                             |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| **Logic and the Audio Unit**      | **The filesystem, so not at all.** `AudioComponentRegistrar` scans only the two standard `Components` directories, there is no `AU_PATH`, and #22 measured that macOS will not follow a symlink into a worktree: 60 Audio Units as a copy, 59 as a symlink, 60 again restored | Any issue whose plan names Logic. Today #65, and #34                                                      |
+| **The install path and a host**   | **Choice.** `CLAP_PATH` works and is deliberately not used, for the reasons two paragraphs below, so the loop is one `zig build install-clap` against one terminal REAPER and there is one of each                                                                            | #58, #59, #79, #83, #53                                                                                   |
+| **The GPU and the window server** | **Hardware.** Two harnesses cannot both open windows and time each other's frames. It binds independently of any host, which is why #69 is exclusive while touching no DAW at all                                                                                             | #69, #98 if its seam decision needs a control run, plus `smoke-appkit` and `smoke-leaks` inside any issue |
 
-**Everything else overlaps freely, and that is where a second stream belongs.** `zig build smoke-gpu` and `smoke-trace`, both of which acquire a device and open no window; `zig build test`, `validate-shaders` and compiling; and documentation. Today that is [#77](https://github.com/cboone/fosforo/issues/77), [#80](https://github.com/cboone/fosforo/issues/80), [#62](https://github.com/cboone/fosforo/issues/62)'s algorithm half, [#30](https://github.com/cboone/fosforo/issues/30) and [#85](https://github.com/cboone/fosforo/issues/85). #30 belongs there despite re-running the three release scripts and reaching Apple's notary service: what puts it there is that it contends for none of the three above, not that it does nothing on this machine, which is what this paragraph used to claim.
+**Everything else overlaps freely, and that is where a second stream belongs.** `zig build smoke-gpu` and `smoke-trace`, both of which acquire a device and open no window; `zig build test`, `validate-shaders` and compiling; and documentation. Today that is [#77](https://github.com/cboone/fosforo/issues/77), [#80](https://github.com/cboone/fosforo/issues/80), [#62](https://github.com/cboone/fosforo/issues/62)'s algorithm half, [#30](https://github.com/cboone/fosforo/issues/30), [#85](https://github.com/cboone/fosforo/issues/85), [#87](https://github.com/cboone/fosforo/issues/87), and **ten of the eleven issues in the verification program below**, everything from [#89](https://github.com/cboone/fosforo/issues/89) to [#99](https://github.com/cboone/fosforo/issues/99) except [#98](https://github.com/cboone/fosforo/issues/98). #30 belongs there despite re-running the three release scripts and reaching Apple's notary service: what puts it there is that it contends for none of the three above, not that it does nothing on this machine, which is what this paragraph used to claim.
+
+**That makes the free lane much wider than it was**, and it is worth saying plainly rather than leaving to be inferred from two lists: the lane now holds more open issues than the two exclusive lanes combined. The rule two paragraphs down, to prefer an unblocked issue in the free lane over a blocked one in an exclusive lane, therefore has considerably more to offer than when it was written.
 
 **Do not start an issue whose only blocker is contention.** That is a working rule rather than a fact about the machine, and it is stated separately for that reason. An issue waiting on a resource is not partial progress; it is work in progress that cannot be finished, and this phase's rule that code and verification land together means a branch that cannot verify cannot merge. Prefer an unblocked issue in the free lane over a blocked one in an exclusive lane, even when the blocked one is more interesting.
 
@@ -371,15 +392,15 @@ Two orderings follow from the rule, and both were reasoned about before it was a
 
 Merge order is a separate question from run order, and only two things constrain it. **Every issue here is an ordinary branch off `main`, and none needs another's unfinished work:**
 
-| Constraint                   | Where it applies                                                 | What it actually requires                                                                                   |
-| ---------------------------- | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| **Code dependency**          | #56, #57 and #60 needed #55; #58 and #59 need #57; #83 needs #58 | Wait for the PR to merge, then branch from `main` as usual                                                  |
-| **Merge conflict**           | #80 against #58, both editing `src/smoke.zig`                    | Nothing, strictly. Whichever lands second rebases. Different lanes, so they can still be in flight together |
-| **Machine and install path** | The verification half of #58, #59, #79, #83 and #34              | Do not *run* two issues at the same moment. No effect on what may be branched, reviewed or merged           |
+| Constraint                   | Where it applies                                                        | What it actually requires                                                                                   |
+| ---------------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| **Code dependency**          | #56, #57 and #60 needed #55; #58, #59 and #92 needed #57; #83 needs #58 | Wait for the PR to merge, then branch from `main` as usual                                                  |
+| **Merge conflict**           | #80 and #92 against #58, all three editing `src/smoke.zig`              | Nothing, strictly. Whichever lands second rebases. Different lanes, so they can still be in flight together |
+| **Machine and install path** | The verification half of #58, #59, #79, #83 and #34                     | Do not *run* two issues at the same moment. No effect on what may be branched, reviewed or merged           |
 
 The resulting order is **#55**, then **#64**, then **#63**, then **#22**, then **#51**, then **#61**, then **#60**, then **#56**, then **#57** — all nine done — then **#58**.
 
-**Beside #58, in the other two lanes.** [#77](https://github.com/cboone/fosforo/issues/77) is overdue rather than upcoming, which is the one piece of sequencing this plan got wrong rather than merely left stale: its own body says it bites first at #57, #57 has landed, and #58 moves bindings again if velocity weighting adds a uniform. [#62](https://github.com/cboone/fosforo/issues/62)'s algorithm half can be written into the reserved `src/dsp/decimate.zig` at any time and collides with nothing, since #57 touched no file under `src/dsp/` at all. [#30](https://github.com/cboone/fosforo/issues/30) and [#65](https://github.com/cboone/fosforo/issues/65) need nothing this phase is holding.
+**Beside #58, in the other two lanes.** [#77](https://github.com/cboone/fosforo/issues/77) is overdue rather than upcoming, which is the one piece of sequencing this plan got wrong rather than merely left stale: its own body says it bites first at #57, #57 has landed, and #58 moves bindings again if velocity weighting adds a uniform. [#62](https://github.com/cboone/fosforo/issues/62)'s algorithm half can be written into the reserved `src/dsp/decimate.zig` at any time and collides with nothing, since #57 touched no file under `src/dsp/` at all. [#30](https://github.com/cboone/fosforo/issues/30) and [#65](https://github.com/cboone/fosforo/issues/65) need nothing this phase is holding. **And the verification program below**, [#89](https://github.com/cboone/fosforo/issues/89) to [#99](https://github.com/cboone/fosforo/issues/99), of which ten are in the free lane; [#89](https://github.com/cboone/fosforo/issues/89) should come first of everything in this paragraph, because it is why `main` is red.
 
 **Behind #58, in order.** [#79](https://github.com/cboone/fosforo/issues/79) first, and it may close as *covered* rather than fixed: velocity weighting is the exact relationship its bright transport-stop line violates, so #58 should be checked against it before anything of its own is built. Then **#59**. Then #62's wiring, with or after #59, because that is where the point count stops being bounded by the sample rate alone. Then [#83](https://github.com/cboone/fosforo/issues/83) after both, so the banding it measures is the banding that will ship rather than today's.
 
@@ -387,7 +408,33 @@ The resulting order is **#55**, then **#64**, then **#63**, then **#22**, then *
 
 The subtle entry was [#63](https://github.com/cboone/fosforo/issues/63)'s: its RSS threshold depended on #55's baseline **number** rather than on its code, so it wanted #55 merged before the figure was fixed, while its `smoke-leaks` half depended on nothing. It is now **done**, and the threshold was never set, for the reason two bullets above.
 
-Stacking is available and is deliberately not the recommendation. Branching #57 off #55 before #55 merges would make partial work available to it, at the usual cost: the child's diff is unreadable until the parent lands, and every parent revision forces a rebase. #55's own commits are strictly sequential anyway, so the simpler model wins.
+Stacking is available and is deliberately not the recommendation. Branching #57 off #55 before #55 merges would make partial work available to it, at the usual cost: the child's diff is unreadable until the parent lands, and every parent revision forces a rebase. #55's own commits are strictly sequential anyway, so the simpler model wins. **[#87](https://github.com/cboone/fosforo/issues/87) has since made that a rule rather than a preference:** `ci.yml`'s `pull_request` trigger carries `branches: [main]`, so a stacked pull request runs none of the nine jobs, and a stacked branch carrying code would merge into its parent with zero verification.
+
+### The verification program, which is not phase 3 work and runs beside it
+
+A review of the whole verification surface on `0e1ddf5` produced eleven issues, [#89](https://github.com/cboone/fosforo/issues/89) through [#99](https://github.com/cboone/fosforo/issues/99), with their own plan at [`2026-09-04-close-the-verification-gaps-in-the-test-suite.md`](2026-09-04-close-the-verification-gaps-in-the-test-suite.md). They are recorded here because this is when they were found and beside where they run, and they are on **no milestone** under the rule above: none of them has to close before any phase's exit criteria are met.
+
+**What the review found is not "write more tests".** The suite is 200 named tests, about a quarter of the Zig source, and the instruments are layered with a written theory of what each one cannot see, which is the strongest thing in the repository. The gaps cluster in one shape instead: the question "would I know if this broke?" was answered once, by hand, and written into prose rather than into anything that re-runs. ADR 0013 and ADR 0016 both record planted defects as acceptance criteria; neither leaves behind a check that fails if the planted defect returns.
+
+| Issue                                              | Work                                                          | What it needs                            | Status |
+| -------------------------------------------------- | ------------------------------------------------------------- | ---------------------------------------- | ------ |
+| [#89](https://github.com/cboone/fosforo/issues/89) | Bound the trace half's frame wait by time, not by yields      | `smoke-trace`, so a device and no window | Open   |
+| [#90](https://github.com/cboone/fosforo/issues/90) | Canary the `std.Io` constructor and three unguarded orderings | `zig build test`                         | Open   |
+| [#91](https://github.com/cboone/fosforo/issues/91) | Race `Gate` and `Pending` under Thread Sanitizer              | A Linux runner, so CI                    | Open   |
+| [#92](https://github.com/cboone/fosforo/issues/92) | Make the trace half's judgements pure, and test them          | `smoke-trace`, so a device and no window | Open   |
+| [#93](https://github.com/cboone/fosforo/issues/93) | Make the shader watcher's bookkeeping testable                | `zig build test`                         | Open   |
+| [#94](https://github.com/cboone/fosforo/issues/94) | Run the unit suite in the optimize mode that ships            | `zig build test`                         | Open   |
+| [#95](https://github.com/cboone/fosforo/issues/95) | Analyze every public declaration; settle the uncalled one     | `zig build test`                         | Open   |
+| [#96](https://github.com/cboone/fosforo/issues/96) | Assert `tonemap` and `whitePoint`'s defining properties       | `zig build test`                         | Open   |
+| [#97](https://github.com/cboone/fosforo/issues/97) | Eleven small, named, missing assertions                       | `zig build test`                         | Open   |
+| [#98](https://github.com/cboone/fosforo/issues/98) | Cover `Editor.tick` and `readWindow`, or record why not       | Possibly `smoke-appkit`, so a window     | Open   |
+| [#99](https://github.com/cboone/fosforo/issues/99) | Lint the workflows                                            | Nothing on this machine                  | Open   |
+
+**Three of them are urgent in a way the rest are not.** [#89](https://github.com/cboone/fosforo/issues/89) is why `main` is red: `smoke-trace` is a required check and it gave up against a bound expressed in scheduler yields rather than wall time, three seconds into a step that takes four when it passes. [#90](https://github.com/cboone/fosforo/issues/90) is the largest gap closed by the fewest lines, because [ADR 0015](../../adr/0015-adopt-std-io-single-instance.md) is a non-negotiable that a one-token edit defeats silently. [#92](https://github.com/cboone/fosforo/issues/92) is the largest gap: `src/smoke.zig` is 1,898 lines with zero tests and is not in `zig build test`'s module graph at all, so the eleven `check*` functions carrying this project's hardest claims are verified by nothing that re-runs.
+
+**Ten of the eleven sit in the free lane, which is what makes this program worth starting now.** The lane table above puts `zig build test`, `validate-shaders`, `smoke-gpu`, `smoke-trace` and compiling outside all three exclusive resources, and that covers everything here except [#98](https://github.com/cboone/fosforo/issues/98), which binds the GPU and the window server only if its seam decision goes the way that needs a `smoke-appkit` control. So this is a large body of work that takes the host lane from nobody, at a point where the phase 3 chain behind #58 is dependency-serial anyway.
+
+**Nothing here is blocked any longer.** [#92](https://github.com/cboone/fosforo/issues/92) needed [#57](https://github.com/cboone/fosforo/issues/57), which has merged, so its only remaining constraint is the merge conflict it shares with #80 and #58 over `src/smoke.zig`, which the table above records as costing a rebase and nothing else. That was the one dependency in the program.
 
 ## Phase 4: triggering
 
@@ -438,23 +485,24 @@ Recorded so these read as deliberate omissions rather than oversights:
 
 ## Verification
 
-| Layer       | Check                                                                                                                                                            |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Build       | `zig build` produces `Fosforo.clap`; `zig fmt --check` clean                                                                                                     |
-| Bindings    | Comptime `@sizeOf` and `@offsetOf` assertions for every CLAP struct crossing the ABI                                                                             |
-| Shaders     | `zig build validate-shaders` pipes each shader through `metal -fsyntax-only`. Deliberately not in `zig build test` (ADR 0009)                                    |
-| Plugin      | `clap-validator validate` passes for **both** `.clap` bundles, enforced in CI                                                                                    |
-| Audio Unit  | **No automated check exists.** `auval` cannot enumerate this component at all, so loading it in Logic is the only test                                           |
-| GUI         | `zig build smoke-gpu` and `smoke-appkit` are both required in CI, the second since #72 on 65 runs in which it never failed (ADR 0013)                            |
-| Pixels      | `zig build smoke-trace` renders the shipping pipeline into a texture and asserts the mapping, the rail, period counts, the resolve and the decay. Required in CI |
-| Leaks       | `zig build smoke-leaks` in CI at 40 cycles and 400 by hand, judging leaked classes and a byte bound, plus the counters. Advisory: its classes judge the runner   |
-| Concurrency | `zig build ring-race` runs the ring on two threads under Thread Sanitizer, on Linux; a source canary in `src/dsp/ring.zig` fails `zig build test` too (ADR 0016) |
-| Signatures  | `scripts/assert-adhoc-signature` on all three bundles in CI; `scripts/assert-distributable-signature` by hand, since no runner holds a certificate               |
-| Shell       | `shfmt -d` and `shellcheck` over every file `shfmt -f` selects, against the profile in `.editorconfig`                                                           |
-| Spelling    | `typos` over the whole tree, from its own workflow so no `paths-ignore` can exempt the files it exists to check                                                  |
-| Hosts       | Loads in REAPER and Logic Pro; open, close, resize during playback. `clap-host` is the third, manual, and the only one that shows `clap.log`                     |
-| Real-time   | A fixed-buffer allocator threaded through `process`, so no allocation is a fact about the call graph rather than a convention                                    |
-| CI          | Green on `macos-latest` and `ubuntu-latest`; `clap-validator` clean; gitleaks, TruffleHog and `typos` clean                                                      |
+| Layer       | Check                                                                                                                                                                                                                                                                                                                                                               |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Build       | `zig build` produces `Fosforo.clap`; `zig fmt --check` clean                                                                                                                                                                                                                                                                                                        |
+| Unit tests  | `zig build test`, 200 named tests across `src/`. **Debug only**, while the shipped bundle is `--release=fast`; [#94](https://github.com/cboone/fosforo/issues/94) adds the mode that ships                                                                                                                                                                          |
+| Bindings    | Comptime `@sizeOf` and `@offsetOf` assertions for every CLAP struct crossing the ABI                                                                                                                                                                                                                                                                                |
+| Shaders     | `zig build validate-shaders` pipes each shader through `metal -fsyntax-only`. Deliberately not in `zig build test` (ADR 0009)                                                                                                                                                                                                                                       |
+| Plugin      | `clap-validator validate` passes for **both** `.clap` bundles, enforced in CI                                                                                                                                                                                                                                                                                       |
+| Audio Unit  | **No automated check exists.** `auval` cannot enumerate this component at all, so loading it in Logic is the only test                                                                                                                                                                                                                                              |
+| GUI         | `zig build smoke-gpu` and `smoke-appkit` are both required in CI, the second since #72 on 65 runs in which it never failed (ADR 0013)                                                                                                                                                                                                                               |
+| Pixels      | `zig build smoke-trace` renders the shipping pipeline into a texture and asserts the mapping, the rail, period counts, the resolve and the decay. Required in CI                                                                                                                                                                                                    |
+| Leaks       | `zig build smoke-leaks` in CI at 40 cycles and 400 by hand, judging leaked classes and a byte bound, plus the counters. Advisory: its classes judge the runner                                                                                                                                                                                                      |
+| Concurrency | `zig build ring-race` runs the ring on two threads under Thread Sanitizer, on Linux; a source canary in `src/dsp/ring.zig` fails `zig build test` too (ADR 0016). [#91](https://github.com/cboone/fosforo/issues/91) extends both to `Gate` and `Pending`, and [#90](https://github.com/cboone/fosforo/issues/90) the canary to every ordering-critical declaration |
+| Signatures  | `scripts/assert-adhoc-signature` on all three bundles in CI; `scripts/assert-distributable-signature` by hand, since no runner holds a certificate                                                                                                                                                                                                                  |
+| Shell       | `shfmt -d` and `shellcheck` over every file `shfmt -f` selects, against the profile in `.editorconfig`                                                                                                                                                                                                                                                              |
+| Spelling    | `typos` over the whole tree, from its own workflow so no `paths-ignore` can exempt the files it exists to check                                                                                                                                                                                                                                                     |
+| Hosts       | Loads in REAPER and Logic Pro; open, close, resize during playback. `clap-host` is the third, manual, and the only one that shows `clap.log`                                                                                                                                                                                                                        |
+| Real-time   | A fixed-buffer allocator threaded through `process`, so no allocation is a fact about the call graph rather than a convention                                                                                                                                                                                                                                       |
+| CI          | Green on `macos-latest` and `ubuntu-latest`; `clap-validator` clean; gitleaks, TruffleHog and `typos` clean. **Currently red on `main`**, on the required `smoke-trace` step, which [#89](https://github.com/cboone/fosforo/issues/89) fixes. Nothing lints the workflows themselves ([#99](https://github.com/cboone/fosforo/issues/99))                           |
 
 ## Items to confirm during execution
 
