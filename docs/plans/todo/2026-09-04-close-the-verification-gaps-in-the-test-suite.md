@@ -59,7 +59,7 @@ It is the only unintentional CI failure in the last 60 runs of `ci.yml`. The oth
 
 > **The bound is attempts rather than time, and each attempt yields**, so this is a bound on scheduler turns rather than on a duration. A frame at this geometry completes in well under a millisecond, and a hundred thousand yields is many seconds of slack on a loaded runner. That is the same reasoning `frame_timeout_us` carries: the margin is for a busy machine, and anything approaching this ceiling is the defect rather than the ceiling.
 
-The failing step ran from 03:20:06 to 03:20:09. Three seconds, against four for a passing trace step on the previous commit. It did not spend "many seconds of slack"; it gave up faster than a successful run completes, because `std.Thread.yield()` returns almost immediately when nothing else on the core is runnable. The bound is a spin count wearing a timeout's clothes, and it is the only wait in the harness that is not wall-clock: `frame_timeout_us` is 2 s (`src/smoke.zig:91`) and `reload_timeout_us` is 6 s (`:429`).
+The failing step ran from 03:20:06 to 03:20:09. Three seconds, against four for a passing trace step on the previous commit. It did not spend "many seconds of slack"; it gave up faster than a successful run completes, because `std.Thread.yield()` returns almost immediately when nothing else on the core is runnable. The bound is a spin count wearing a timeout's clothes, and it is the only wait in the harness that is not wall-clock: `frame_timeout_us` is 2 s (`src/smoke.zig:91`) and `reload_timeout_us` is 6 s (`src/smoke.zig:460`).
 
 ~~The exposure grows with frame count, which is why it surfaced where it did. `checkDecay`'s last arm drives five frames against a three-deep semaphore. `checkDecayIsInRealTime`, which drives thirteen and seven and runs after it, is more exposed and has never been reached on a slow runner.~~
 
@@ -202,7 +202,7 @@ Then write the tests, and write them **as the historical plants**. Ten defects w
 - A picture whose chroma does not follow from its intensity, which is the palette's whole claim.
 - A run in which nothing was drawn at all, which is what `if (lit == 0)` exists for and which no test currently reaches.
 
-Two arithmetic details to fix while the code is open, both currently correct and currently unasserted: `decay_span_nanos / interval` at `src/smoke.zig:1351` is integer division whose divisibility is argued in a comment, which should be a comptime assertion; and `expectClose`'s relative tolerance divides by `b`, which is undefined if a future caller passes zero.
+Two arithmetic details to fix while the code is open, both currently correct and currently unasserted: `decay_span_nanos / interval` at `src/smoke.zig:1634` is integer division whose divisibility is argued in a comment, which should be a comptime assertion; and `expectClose`'s relative tolerance divides by `b`, which is undefined if a future caller passes zero.
 
 ### Acceptance
 
