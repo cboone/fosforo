@@ -31,3 +31,17 @@ zig-pkg/
 
 # CMake (clap-wrapper builds)
 build/
+
+# Host verification captures
+#
+# `verification/` is where a `screencapture` of the editor goes before
+# `scripts/measure-trace` reads it. They are working artifacts of one session:
+# frequent, a couple of megabytes each, and superseded by the next build. The
+# numbers measured out of them belong in the issue or the plan; the pixels do
+# not belong in a public repository's history.
+#
+# The directory is tracked through its `.gitkeep` so the path always exists and
+# nobody has to remember to create it. One capture reached a commit before this
+# rule existed, and removing it meant rewriting three commits.
+verification/*
+!verification/.gitkeep

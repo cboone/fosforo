@@ -6,16 +6,16 @@ A Mac-first GPU-rendered phosphor oscilloscope and signal-analysis plugin, autho
 
 Early development, and not yet worth installing unless you are working on it. No release has been cut.
 
-What works: the plugin loads in REAPER and in Logic Pro, through the Audio Unit that [clap-wrapper](https://github.com/free-audio/clap-wrapper) projects it into. It passes stereo audio through unchanged, saves and restores its state, and taps one channel into a lock-free history buffer the render thread reads a trailing window from. It opens a resizable editor backed by a `CAMetalLayer` and renders into it at vsync, driven by a `CVDisplayLink`. **It draws the signal**, as a beam depositing energy into a persistent floating-point accumulation texture that decays between frames, so the trace glows and fades rather than being redrawn from nothing. The fade is exponential in real elapsed time against a time constant, so it looks the same at 60 Hz, at 120, and on a display that drifts between the two.
+What works: the plugin loads in REAPER and in Logic Pro, through the Audio Unit that [clap-wrapper](https://github.com/free-audio/clap-wrapper) projects it into. It passes stereo audio through unchanged, saves and restores its state, and taps one channel into a lock-free history buffer the render thread reads a trailing window from. It opens a resizable editor backed by a `CAMetalLayer` and renders into it at vsync, driven by a `CVDisplayLink`. **It draws the signal**, as a beam depositing energy into a persistent floating-point accumulation texture that decays between frames, so the trace glows and fades rather than being redrawn from nothing. The fade is exponential in real elapsed time against a time constant, so it looks the same at 60 Hz, at 120, and on a display that drifts between the two. The beam is real geometry: each inter-sample segment is a quad shaded by its distance from the beam's path, three points wide, with an intensity profile and antialiasing that come from the profile rather than from multisampling.
 
-What does not work yet: the beam is still a one-pixel line strip rather than geometry, and its brightness does not vary with how fast it sweeps. Those are the rest of [phase 3](https://github.com/cboone/fosforo/milestone/3), and each is an issue.
+What does not work yet: the beam's brightness does not vary with how fast it sweeps, and the trace follows the samples rather than the continuous waveform between them, so intersample peaks are invisible. Those are the rest of [phase 3](https://github.com/cboone/fosforo/milestone/3), and each is an issue.
 
 ## Roadmap
 
 Six phases. [The build plan](./docs/plans/todo/2026-07-25-repo-foundation-and-phased-build-plan.md) holds the reasoning, the sequencing and the exit criteria for each; [the design brainstorm](./docs/design/scope-plugin-handoff.md) is the background it came from. Issues are filed one phase at a time, so a phase marked planned deliberately has none yet.
 
 | Phase | Scope                                                                       | Status      |
-|-------|-----------------------------------------------------------------------------|-------------|
+| ----- | --------------------------------------------------------------------------- | ----------- |
 | 0     | Repository foundation, build skeleton, ADRs                                 | Complete    |
 | 1     | Walking skeleton: loads in a host and renders a cleared drawable            | Complete    |
 | 2     | Signal path: history buffer, audio tap, trailing-window read, a crude trace | Complete    |

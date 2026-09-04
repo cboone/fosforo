@@ -24,6 +24,14 @@ extend-ignore-re = [
 # precession. Not a misspelling of "processing", despite the audio context.
 precessing = "precessing"
 
+# numpy's array constructor, which splits out of `np.arange` as a bare word.
+# `scripts/measure-trace` is the only Python here and the centroid it gained in
+# #57 is what first needed it. In this table rather than `extend-identifiers`
+# because the identifier is `np.arange`: typos splits on the dot, so a whole
+# identifier keyed on "arange" would be the mistake the comment below describes
+# in the other direction.
+arange = "arange"
+
 # A pluralised acronym has to go in `extend-identifiers` rather than here, and
 # the difference is not cosmetic: `extend-words` allows a *word* wherever it
 # appears, while typos splits "PNGs" into words and objects to the "PN" inside

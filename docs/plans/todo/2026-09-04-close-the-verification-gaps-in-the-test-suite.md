@@ -2,7 +2,7 @@
 
 Issues: [#89](https://github.com/cboone/fosforo/issues/89) through [#99](https://github.com/cboone/fosforo/issues/99), each one branch and one PR, on the rule the phase 3 section already states: the code and its verification land together.
 
-**None of them sits on a milestone**, on the rule in the build plan's "How work is tracked": milestones carry one phase's steps, and an issue that is not a step of any phase would misreport that phase's remaining work. They are recorded in the build plan's phase 3 section instead, which is where a reader who does not open the tracker will find them.
+**None of them sits on a milestone**, on the rule in the build plan's "How work is tracked": a milestone marks what has to close before that phase's exit criteria are met, and phase 3's are about the picture and its stability under resize, sample-rate change and multiple instances. No one of these has to close for those to be true. They are recorded in the build plan's phase 3 section instead, which is where a reader who does not open the tracker will find them.
 
 ## Context
 
@@ -17,7 +17,7 @@ Four consequences of that shape, in the order they cost something:
 - ADR 0016's discipline, which is exemplary, is scoped to one file. Four more cross-thread mechanisms have arrived since and none of them has any part of it.
 - ADR 0015 is listed among the non-negotiables and a one-token edit defeats it silently, in a project that already has the pattern for stopping exactly that.
 
-Everything below is scoped so that most of it runs against `zig build test` alone, which the phase 3 plan records as contending for neither exclusive resource. This program therefore parallelizes against phase 3's issue work rather than serializing behind it.
+Everything below is scoped so that most of it runs against `zig build test` alone, which the build plan's lane table puts outside all three exclusive resources. Ten of the eleven sit in that free lane, so this program runs beside phase 3's issue work rather than behind it.
 
 ## The principle these all share
 
@@ -374,20 +374,25 @@ These are real gaps and each already has an issue. This plan should not duplicat
 
 ## Sequencing and contention
 
-The phase 3 plan records that the phase runs serially because almost every issue's verification needs one of two exclusive resources. **Most of this program needs neither**, which is the useful property here: `zig build test` and compiling contend for nothing and overlap freely with phase 3's issue work.
+The build plan sorts work into three exclusive lanes and one free lane, separated by *why* each resource is exclusive: Logic and the Audio Unit (the filesystem, so not negotiable at all), the install path and a host (a choice, since `CLAP_PATH` works and is deliberately not used), and the GPU and the window server (hardware). Everything else overlaps freely.
 
-| Issues                            | Resource                  | Can run beside a phase 3 issue                           |
-| --------------------------------- | ------------------------- | -------------------------------------------------------- |
-| #90, #93, #94, #95, #96, #97, #99 | `zig build test` only     | Yes                                                      |
-| #89, #92                          | A Metal device, no window | Yes, `smoke-trace` is exempt from the window-server lock |
-| #91                               | A Linux runner            | Yes                                                      |
-| #98                               | Possibly `smoke-appkit`   | No, if it needs a control run                            |
+**Ten of these eleven are in the free lane.**
+
+| Issues                       | What they run                                  | Lane                                   |
+| ---------------------------- | ---------------------------------------------- | -------------------------------------- |
+| #90, #93, #94, #95, #96, #97 | `zig build test`                               | Free                                   |
+| #89, #92                     | `smoke-trace`: a device, no window             | Free                                   |
+| #91                          | A Linux runner, so CI rather than this machine | Free                                   |
+| #99                          | Nothing on this machine                        | Free                                   |
+| #98                          | Possibly `smoke-appkit`                        | GPU and window server, if it needs one |
+
+That is the property worth acting on: this is a large body of work that takes the host lane from nobody, arriving at a point where the phase 3 chain behind #58 is dependency-serial anyway. The build plan's rule to prefer an unblocked issue in the free lane over a blocked one in an exclusive lane has more to offer with these filed than it did without them.
 
 Order within the program: **#89 first**, because `main` was red; that one has landed. Then #90, which is the largest gap closed by the fewest lines. Then #92, which is the largest gap here and which #93 and #98 both cite. The rest are independent and can be taken in any order.
 
-**#92 must land after [#57](https://github.com/cboone/fosforo/issues/57).** That branch is in flight on `feature/beam-as-quads`, already changes 286 lines of `src/smoke.zig`, and re-derives the trace checks against a beam with width. Refactoring the file before it lands conflicts with the branch currently rewriting the thing #92 is refactoring. Nothing else here has a code dependency on anything, inside this program or outside it.
+**Nothing here is blocked.** #92 needed [#57](https://github.com/cboone/fosforo/issues/57), which has merged. What survives is a merge conflict rather than a dependency: #92, #80 and #58 all edit `src/smoke.zig`, so whichever lands second rebases, and the build plan's merge-order table records that as costing nothing but the rebase. They are in different lanes and can be in flight together.
 
-One consequence for worktrees: because the issues are independent, several can be in flight at once, and the only pair that cannot *run* their verification simultaneously is #98 against any phase 3 issue needing the window server. #89 and #92 both need a device and neither needs a window, so both are exempt from that lock under the rule the build plan already states.
+**Do not stack them**, per [#87](https://github.com/cboone/fosforo/issues/87): `ci.yml`'s `pull_request` trigger carries `branches: [main]`, so a pull request based on anything else runs none of the nine jobs. Each of these is an ordinary branch off `main`.
 
 ## Out of scope
 
@@ -416,10 +421,11 @@ ADR 0013 is amended twice, by two issues, which is ordinary for it: it already c
 
 [`2026-07-25-repo-foundation-and-phased-build-plan.md`](2026-07-25-repo-foundation-and-phased-build-plan.md) is updated **once, with this plan**, rather than eleven times:
 
-- "How work is tracked" carries a running count of off-milestone issues, and it was already stale before this program: it said seven and grouped them as two risks plus five phase 3 questions, two of which (#51, #72) have since closed and two of which (#85, #87) had arrived and were never added. Corrected, and the eleven added.
+- "How work is tracked" carries a running count of off-milestone issues. It goes to eighteen, in four groups: the two risks, three deferred phase 3 questions, two checks that are configured and silently do not run (#85 and #87), and these eleven. The count is reasoned under that section's own rule, that a milestone marks what has to close before a phase's exit criteria rather than what is one of its numbered steps, so none of these belongs on one.
 - Phase 3 gains a subsection naming this program, on the precedent that puts #62 and #77 in that section under "step: none".
-- The merge-order constraint table gains #92's dependency on #57.
-- The **Verification** table's `Concurrency` and `CI` rows change once #91 and #94 land, and are marked as pending rather than rewritten in advance.
+- The lane table's free lane gains ten of the eleven, and its GPU-and-window-server row gains #98 conditionally. That is the substantive change: the free lane now holds more open issues than the two exclusive lanes combined, which is what makes this program startable beside phase 3 rather than behind it.
+- The merge-order table records #92 against #80 and #58 as a **merge conflict** over `src/smoke.zig` rather than a dependency, since #57 has merged and discharged the one real dependency this program had.
+- The **Verification** table gains the `Unit tests` row it never had, and its `Concurrency` and `CI` rows name what changes them (#90, #91, #94, #89, #99) rather than being rewritten in advance.
 
 ### `AGENTS.md`
 

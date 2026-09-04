@@ -212,11 +212,18 @@ jobs:
   # this block used to carry drifted by half while reading like a measurement.
   #
   # **Every number the step printed is identical to the development machine's**,
-  # on different silicon: row 269 for silence, row 26 for full scale, rail on row
-  # 5, twenty periods from twenty cycles, four channels agreeing to 0.00000 at
-  # every lit pixel, and one deposit peaking at exactly 1.0000. That last one is
-  # the interesting one, since it means the diamond-exit finding recorded in ADR
-  # 0013 holds on more than one GPU.
+  # on different silicon: twenty periods from twenty cycles, four channels
+  # agreeing to 0.00000 at every lit pixel, and the vertical mapping's rows.
+  #
+  # **#57 moved every one of those rows and the deposit with them**, because the
+  # trace stopped being a line strip. The rows are now read as energy-weighted
+  # centroids rather than as the topmost lit pixel, so silence reads centroid row
+  # 269.500 implying a sample of exactly 0.00000 where it used to read row 269 and
+  # imply 0.00206; full scale reads 26.50 and the rail 4.872 against a predicted
+  # 4.9. And one deposit peaks at **2.6133** rather than exactly 1.0000, which is
+  # not a different answer to the diamond-exit question ADR 0013 recorded but the
+  # retirement of it: quads overlap at every joint by construction, so single
+  # coverage is no longer even approximately true.
   #
   # **#60 replaced what this half asserts about colour, and the replacement is
   # recorded rather than the old numbers being quietly dropped.** Those were a
@@ -224,11 +231,16 @@ jobs:
   # `checkBeamIsOneColour`. The deposit carries no colour at all now, so
   # `checkDepositIsScalar` reports the four channels' agreement instead and
   # nothing emits a ray under any name. The resolve figures are what took their
-  # place, and they match across machines too: 2412 lit pixels with the worst
-  # channel off by 0, one deposit reading RGB(75, 189, 96), and thirty deposits
-  # reaching RGB(255, 255, 255) against a white point of 8.000. Re-measured on
-  # run 33446784490 rather than carried forward, which is the one kind of change
-  # a recorded measurement cannot survive being left alone through.
+  # place, and they match across machines too. Re-measured on run 33446784490
+  # rather than carried forward, which is the one kind of change a recorded
+  # measurement cannot survive being left alone through — and then moved again by
+  # #57, which is the same point made twice. A beam with a falloff lights **4853**
+  # pixels rather than 2412 and puts most of the new ones in the gradient's toe,
+  # where the sRGB curve is 3294.6 bytes per unit linear, so the worst channel is
+  # off by **1** rather than 0. One deposit reads RGB(143, 224, 154) rather than
+  # RGB(75, 189, 96), because it is 2.6 deposits of overlap rather than one; thirty
+  # still reach RGB(255, 255, 255) against a white point of 8.000, with far more
+  # room than before.
   #
   # [#69]: https://github.com/cboone/fosforo/issues/69
   #

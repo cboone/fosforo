@@ -1313,17 +1313,26 @@ test "the rail is outside full scale, so over-scale has somewhere to go" {
 
 test "the rail leaves at least one backing pixel at the smallest editor" {
     // This file owns the assertion because this file owns `min_size`, which is
-    // what the rail's inset is sized against. A one-pixel line whose centre lands
-    // on the drawable's boundary may rasterize to nothing, so a rail flush with
-    // the edge would make a railed signal read as an absent one.
+    // what the rail's inset is sized against. A rail flush with the edge would
+    // make a railed signal read as an absent one.
     //
-    // The worst case is the smallest editor at a backing scale of 1, which is the
-    // fewest pixels the inset can be spent on. Shrink `min_size` or move
-    // `trace_rail` and this is what has to be faced.
+    // **The bound moved with #57 and the reason moved further.** It used to be
+    // one pixel, for the rasterizer's coverage diamond: a one-pixel line centred
+    // on the drawable's boundary has half its diamond off-screen and may light
+    // nothing. A quad has area and does not inherit that. What has to fit now is
+    // the beam itself, since a profile centred on the boundary loses whatever
+    // falls outside it and the centroid `src/gpu/measure.zig` reads is then
+    // dragged inward.
+    //
+    // **In points on both sides, so the scale cancels.** The old form compared an
+    // inset in points against one backing *pixel* and was therefore an assertion
+    // about a backing scale of 1, which happened to be the worst case. This is an
+    // assertion at every scale at once. Shrink `min_size`, move `trace_rail`, or
+    // widen `beam_width_points` and this is what has to be faced.
     const half_height: f32 = @as(f32, @floatFromInt(min_size.height)) / 2;
     const inset = (1.0 - gpu.trace_rail) * half_height;
 
-    try testing.expect(inset > 1.0);
+    try testing.expect(inset > gpu.beam_width_points / 2.0);
 }
 
 test "teardown clears the editor's own counters and leaves the instance's alone" {
