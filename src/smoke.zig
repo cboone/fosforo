@@ -106,7 +106,7 @@ const smoke_sample_rate: f64 = 48_000;
 const smoke_block_frames: u32 = 512;
 const smoke_blocks = 4;
 
-/// Sleep, which is all this harness asks of `std.Io`.
+/// Sleep, which is one of the two things this harness asks of `std.Io`.
 ///
 /// Taken from `platform/io.zig` rather than declared here. Zig 0.16 moved every
 /// sleep behind an `Io` instance, and a harness that waits for another thread
@@ -120,6 +120,37 @@ const smoke_blocks = 4;
 /// `catch` would need a justification longer than this sentence.
 fn sleepFor(duration: std.Io.Duration) std.Io.Cancelable!void {
     return io.get().sleep(duration, .awake);
+}
+
+/// The wall clock, which is the other one, and arrived with #89.
+///
+/// **Not the synthetic clock**, and the two must not be confused. The trace half
+/// makes up the nanoseconds it hands `Renderer.frame` so that a fade is
+/// reproducible on any machine; this is how long something actually took. A
+/// deadline built out of the first would measure nothing, and a decay driven by
+/// the second would measure the runner.
+///
+/// **Safe from any thread, and more plainly so than `sleepFor` is**, which is
+/// worth stating rather than assuming because `driveFrame` reads it from a thread
+/// `std.Thread.spawn` created and `init_single_threaded` did not. Read out of
+/// Zig 0.16's source rather than inferred: `Threaded.now` binds its userdata and
+/// discards it unused, then calls `clock_gettime`, so it touches no threadlocal
+/// and no shared state at all. It is `sleep` that reaches `nanosleep` by way of
+/// `Threaded.Thread.current`, and the paragraph above is the whole of what that
+/// costs (ADR 0015).
+///
+/// **Not `display_link.monotonicNanos()`**, which is these two lines against this
+/// same instance. That one is the render loop's clock and stays beside the loop
+/// it paces, on `platform/io.zig`'s own rule that the construction is shared and
+/// the callers are not hidden. A harness whose entire reason for a synthetic
+/// clock is that it has no display link should not reach into the display link's
+/// module for a timeout.
+///
+/// The cast is lossless for `monotonicNanos`' reason: `Io.Timestamp` counts
+/// signed `i96` nanoseconds and `awake` counts from boot, so the value is
+/// non-negative and nowhere near 64 bits.
+fn nowNanos() u64 {
+    return @intCast(std.Io.Clock.awake.now(io.get()).nanoseconds);
 }
 
 /// AppKit constants, restated here for the reason `platform/objc.zig` restates
@@ -634,7 +665,7 @@ const trace_frame_nanos: u64 = palette.decay_reference_frame_nanos;
 /// `trace_frame_nanos` describes, not because it is written down twice.
 const trace_decay: f32 = palette.decayOver(trace_frame_nanos);
 
-/// How many times a frame will be retried when every slot is still in flight.
+/// How long a frame will be retried for when every slot is still in flight.
 ///
 /// Offscreen there is no display link pacing the loop, so a tight run of frames
 /// hits the three-deep semaphore on the fourth and `no_frame_slot` is the
@@ -643,13 +674,35 @@ const trace_decay: f32 = palette.decayOver(trace_frame_nanos);
 /// `frame` can report is a failure here, because none of the machine conditions
 /// behind them should arise on a renderer with no compositor and no window.
 ///
-/// **The bound is attempts rather than time, and each attempt yields**, so this
-/// is a bound on scheduler turns rather than on a duration. A frame at this
-/// geometry completes in well under a millisecond, and a hundred thousand yields
-/// is many seconds of slack on a loaded runner. That is the same reasoning
-/// `frame_timeout_us` carries: the margin is for a busy machine, and anything
-/// approaching this ceiling is the defect rather than the ceiling.
-const trace_frame_attempts = 100_000;
+/// Two seconds, on `frame_timeout_us`' precedent and for its reason: the margin
+/// is for a loaded runner rather than for a GPU that is working, and a frame at
+/// this geometry completes in well under a millisecond. Generosity is nearly free
+/// here, because **at most one deadline is ever burned in a run**: `traceHalf`
+/// returns on the first error, so a ceiling too high costs seconds once against a
+/// genuine defect, where a ceiling too low is what turned `main` red.
+///
+/// **This replaced a bound of 100,000 attempts, whose argument a measurement
+/// falsified** (#89). That argument was: "The bound is attempts rather than time,
+/// and each attempt yields, so this is a bound on scheduler turns rather than on
+/// a duration ... a hundred thousand yields is many seconds of slack on a loaded
+/// runner." CI run 33465800182 on `0e1ddf5` failed `checkDecay`'s five-frame arm
+/// as `FramesNeverPresented` with every figure before it correct, in a step that
+/// ran three seconds against four for a passing one. `std.Thread.yield()` returns
+/// almost immediately when nothing else on the core is runnable, so a hundred
+/// thousand of them is a fraction of a second: the bound gave up faster than a
+/// healthy run finishes. It was a spin count wearing a timeout's clothes.
+///
+/// **Raising the count would have been the wrong repair**, because the exposure
+/// is not proportional to frame count the way the semaphore's depth suggests.
+/// `checkHotCore` drives thirty frames against `checkDecay`'s five, runs before
+/// it, and passed in that same failing run. A count is not a duration at any
+/// value.
+///
+/// The rule that generalises, for whoever adds the next wait here: **a sleeping
+/// wait may sum its sleeps and a yielding wait must read a clock.**
+/// `waitForFrames` and `waitForReload` accumulate `waited_us` soundly because
+/// `sleep` guarantees a floor per turn. `yield` guarantees nothing at all.
+const trace_frame_timeout_us: u64 = 2 * std.time.us_per_s;
 
 /// Renders a window offscreen and holds what came back.
 ///
@@ -777,28 +830,62 @@ const Worker = struct {
     }
 };
 
+/// Present one frame at `now_nanos` on the harness's synthetic clock, waiting out
+/// a busy semaphore against the real one.
+///
+/// The two clocks in this function are deliberately different things. `now_nanos`
+/// is passed through to `frame` unchanged on every attempt, which is what keeps a
+/// retried frame from advancing the simulated time; `nowNanos()` is read here and
+/// never reaches the seam, so `iface.zig`'s "there is exactly one clock" is a
+/// statement about `frame`'s parameter and is untouched by this.
+///
+/// **One `clock_gettime` for a frame that takes its slot on the first attempt,
+/// and one more for every retry after that.** The reading at the top is all the
+/// common case pays; the retry path re-reads on each turn deliberately, because a
+/// deadline consulted once and then trusted is a count again, which is the whole
+/// of what #89 removed.
 fn driveFrame(renderer: *gpu.Renderer, now_nanos: u64) !void {
-    var attempt: usize = 0;
-    while (attempt < trace_frame_attempts) : (attempt += 1) {
+    const started = nowNanos();
+    var attempts: u64 = 0;
+
+    while (true) : (attempts += 1) {
         switch (renderer.frame(now_nanos)) {
             .presented => return,
-            // The one outcome worth waiting out. Yielding rather than sleeping
-            // because reaching for `std.Io` from a thread its single-threaded
-            // instance did not spawn is a bigger claim than this needs (ADR
-            // 0015), and `std.Thread.sleep` is gone in Zig 0.16. Yielding rather
-            // than spinning because a bare `spinLoopHint` loop measured out at
-            // roughly a millisecond over a hundred thousand turns, which is the
-            // same order as the frame it is waiting for: it failed on the fourth
-            // frame of every case, which reads exactly like a completion handler
-            // that never fires and was not one.
-            .no_frame_slot => std.Thread.yield() catch {},
+            // The one outcome worth waiting out, and the wait is bounded by
+            // `trace_frame_timeout_us` rather than by a count of turns through
+            // here; that constant carries the measurement that settled it.
+            //
+            // Yielding rather than sleeping is about latency: the slot comes back
+            // from a completion handler in microseconds, and the shortest sleep
+            // this harness takes elsewhere is a millisecond. Yielding rather than
+            // spinning because a bare `spinLoopHint` loop measured out at roughly
+            // a millisecond over a hundred thousand turns, which is the same
+            // order as the frame it is waiting for: it failed on the fourth frame
+            // of every case, which reads exactly like a completion handler that
+            // never fires and was not one.
+            .no_frame_slot => {
+                const waited = nowNanos() - started;
+                if (waited >= trace_frame_timeout_us * std.time.ns_per_us) {
+                    // The measured elapsed rather than the ceiling, which is the
+                    // whole of what #89 changed about this message: under the old
+                    // bound a give-up at two seconds and one at forty milliseconds
+                    // printed identically, and the CI log could not tell them
+                    // apart. The attempt count survives beside it as a diagnostic,
+                    // demoted from the bound to a number.
+                    say("  waited {d}ms across {d} attempts for a frame slot", .{
+                        waited / std.time.ns_per_ms,
+                        attempts + 1,
+                    });
+                    return error.FramesNeverPresented;
+                }
+                std.Thread.yield() catch {};
+            },
             else => |outcome| {
                 say("  frame reported {s} on a surface with no compositor", .{@tagName(outcome)});
                 return error.FrameSkipped;
             },
         }
     }
-    return error.FramesNeverPresented;
 }
 
 /// Needs a device and no window, on `gpuHalf`'s terms, and answers the question

@@ -327,3 +327,33 @@ The rule this document set under #55 is that a resource which is not a buffer ge
 ### What the harness still cannot see, and #60 sharpened it
 
 The offscreen path reads `getBytes:` off a texture and never involves CoreAnimation. So `smoke-trace` settles what the *hardware* does — it read `RGBA(5, 5, 8, 255)` for a background written as `float3(5, 5, 8) / (255 * 12.92)`, which is only true if the render-output stage encoded on write and `getBytes:` decoded nothing — and it says nothing whatever about what the **compositor** does with a `_sRGB` layer whose colorspace is nil. A screenshot of a running host is the only instrument for that, which is this document's position restated one layer up: the thing the harness cannot see is still the picture, and it is now the picture *on a screen* rather than the picture at all.
+
+## Amended by issue #89: the offscreen wait's bound was a spin count, not a duration
+
+The finding recorded under #51, that "offscreen frames stop at three without a wait ... The harness yields instead", stands and is still what the code does. What it did not record is the *bound* on that yielding, and that bound was wrong in a way nothing in this document's instrument set was arranged to see.
+
+### A required check turned `main` red with nothing wrong with the shader
+
+CI run [33465800182](https://github.com/cboone/fosforo/actions/runs/33465800182) on `0e1ddf5` failed `smoke: trace FAILED: FramesNeverPresented` inside `checkDecay`'s five-frame arm, having printed every figure before it correctly: the levels within a pixel, the rail on the expected row, the deposit scalar to 0.00000, the resolve's worst channel off by 0, the hot core at `RGB(255, 255, 255)`, and the decay at 0.7285 against a predicted 0.7290. It is the only unintentional failure in the last 60 runs of `ci.yml`.
+
+`driveFrame` gave up after `trace_frame_attempts = 100_000` turns, on a docstring arguing that "the bound is attempts rather than time, and each attempt yields ... a hundred thousand yields is many seconds of slack on a loaded runner". The failing step ran three seconds against four for a passing trace step on the previous commit. It did not spend many seconds of slack; it gave up faster than a healthy run finishes.
+
+### How wrong, measured rather than estimated
+
+`frame` planted to report `.no_frame_slot` unconditionally, run against the two-second deadline that replaced the count: **14,468,498 attempts fit inside 2000 ms**. The old bound was therefore worth about **13.8 ms** on this machine, not many seconds, and the discrepancy is a factor of roughly 150. The same plant against a 1 ms ceiling reports 5,344 attempts, so the rate holds across three orders of magnitude and the deadline is what sets the duration rather than the machine. `std.Thread.yield()` returns almost immediately when nothing else on the core is runnable, which is the whole of it.
+
+### Raising the count would have been the wrong repair
+
+The obvious reading is that the exposure grows with frame count, since a case driving more frames than the semaphore is deep spends longer in the retry path, and that a larger count would therefore buy proportional headroom. It does not, and the failing run refutes it directly: `checkHotCore` drives **thirty** frames against `checkDecay`'s five, runs immediately before it, and passed. A count is not a duration at any value, which is why the repair is a clock.
+
+### The rule that generalises
+
+**A sleeping wait may sum its sleeps; a yielding wait must read a clock.** `waitForFrames` and `waitForReload` accumulate a nominal poll interval and are sound doing so, because `sleep` guarantees a floor per turn and the sum therefore under-counts real elapsed time, erring toward waiting longer than the stated ceiling. `yield` guarantees nothing at all, so a count of yields is a measurement of how idle the machine was.
+
+The harness now reads the wall clock through a second local wrapper beside `sleepFor`, and the two clocks in the trace half must not be confused: the synthetic nanoseconds handed to `Renderer.frame` are made up so that a fade is reproducible on any machine, and a retried frame deliberately does not advance them. The deadline never reaches the seam, so `src/gpu/iface.zig`'s statement that "there is exactly one clock, `display_link.monotonicNanos()`" is untouched: that is a claim about what may be passed through `frame`'s parameter, and `frame` still receives the synthetic reading unchanged.
+
+### What this adds to the theory of instruments
+
+Every limit catalogued above is a **false negative**: a defect one instrument cannot see, closed by naming a second that can. This is the first entry of the other kind. Nothing here was broken, and a required check said something was. That failure mode belongs to the harness's own scaffolding rather than to the code under test, and no amount of adding instruments addresses it: the answer is that a bound which is not measured in the units it claims will eventually be believed in them.
+
+The failure message now names the measured elapsed rather than the ceiling, for the same reason. Under the old bound a give-up at two seconds and one at forty milliseconds printed identically, so the CI log could not distinguish a slow runner from a completion handler that never fired, and settling that took a plant on a development machine rather than a reading of the log.
