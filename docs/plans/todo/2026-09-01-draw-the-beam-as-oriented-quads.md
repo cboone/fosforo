@@ -310,7 +310,7 @@ The NaN pair is a control rather than a single plant, for the reason `scripts/ri
 
 ### What is left
 
-The host verification has not been run. Everything above is `zig build smoke-trace`, which renders a window it supplied itself and says nothing about the audio path, the ring, the display link or the compositor. The bash block in the verification section is what remains, and the sample-rate arm of it is the only check on `density` that exists.
+At the time this section was written, nothing above had been checked in a host. All four arms have since run; the sections at the foot of this document carry what they settled, including one that had to be retired as misdesigned.
 
 ## The density scale was wrong, and answering "what does host verification need" is what found it
 
@@ -365,10 +365,6 @@ Both halves of ADR 0017 hold. Below the rail the values are distinct and each eq
 
 Three observations from the sweep. **The plateau width is non-monotonic**, 2, 220, 171 and 1920 columns, so 1.050 has a wider top than 1.089 despite being quieter; `AGENTS.md` predicted exactly that and it is why nothing asserts on the number. **1.089 and 2.000 saturate to white where 1.000 and 1.050 read 6.80 and 6.05 deposits**, which is dwell at the rail — a clamped trace holds the same rows for a long stretch of each cycle — and it is why `SATURATED` excluded 7805 pixels at 2.000. And **the colour guard now rests on four captures rather than two**, reading 0.30%, 0.30%, 0.28% and 0.14%: all pass, but 0.30% leaves 1.7x of margin under `MAX_OFF_RAY` where the pre-#57 pair suggested 25x. The separation from a recompressed capture is still 117x at worst, so a tolerance of 3 is right; the margin is simply thinner than the old numbers implied and should be re-read if a future capture pushes past 0.4%.
 
-### Still open
-
-Arm 3, the sample-rate pass, which is the only check on `TraceUniforms.density` anywhere. Arm 4, the visual pass.
-
 ## Arm 3, and a verification arm that was placed in the wrong instrument
 
 Nine captures, `sine-100hz-0.5.wav` at three device rates, three per rate, default editor at 1920x1080.
@@ -392,3 +388,13 @@ The arithmetic shows why, and it is `AGENTS.md`'s existing warning about inverti
 Density is verified, and it always was, in two places that do not depend on a screenshot. **The property**, with no GPU: `beamDensity` agrees to 1e-6 at 1x, 2x and 3x across five window lengths, and the pixel-based version fails it at 1 against 0.50026. **The magnitude**, offscreen at both scales: 2.6133, 2.0996 and 1.8486 at 1x, and 2.4434 and 1.7266 at 2x against **3.4531** before the fix — single deposit into a cleared accumulation, so no dwell, no free-running phase and no byte quantization, matching the model to three significant figures.
 
 **The minimum editor is unverifiable in REAPER**, and by construction rather than by accident: `AGENTS.md` records that REAPER implements `request_resize` and holds the *view* at the minimum while its own FX window still drags smaller and clips the view inside it, so the drawable stops being visible before it stops being small. A half-width editor does not rescue the comparison either — 480 against 960 points predicts 2.10 against 2.60, a 1.24x difference against that same 1.8x scatter.
+
+## Arm 4, and the beading question answered
+
+**No beading.** The one thing in this issue that could not be settled by derivation is settled by looking: a 2:1 brightness ripple at the segment pitch would have shown as a regular string of brighter dots along every steep crossing, green 219 against 189, and there is none. So of the two analyses this plan recorded, the **side-by-side** one was right: when the segment pitch is under the beam width — one device pixel against three at the harness geometry, two against six at the shipping one — adjacent capsules overlap along their whole length rather than meeting end to end, and coverage is uniform.
+
+That is by eye rather than by instrument, which is weaker than the rest of this document and is worth stating. It is not weak for *this* claim: a 16% brightness ripple repeating at a fixed spatial period is exactly what an eye is good at, and it is why the question was put to one.
+
+The other three held. The beam is visibly wider and smoother than the aliased single device pixel it replaced. There is no seam at the quad's edge, which is the biweight reaching zero with zero slope rather than being truncated there, and is the property a Gaussian would not have had. Silence is flat and stable, with no flicker between adjacent rows.
+
+**All four arms are complete.** What the host added over `zig build smoke-trace`, and could not have been obtained any other way: the audio path, the ring at three block sizes, the display link, the compositor, and the sRGB and Display P3 conversions between the drawable and a PNG.
