@@ -2932,6 +2932,7 @@ fn describe(err: ?*anyopaque, diags: *iface.Diagnostics, fallback: []const u8) v
 // ---------------------------------------------------------------------------
 
 const testing = std.testing;
+const canary = @import("../../canary.zig");
 
 // No test constructs a `Renderer` or sends a message. Acquiring a GPU would
 // make `zig build test` depend on the runner having one, which is the
@@ -3622,4 +3623,77 @@ test "a scale no integer can hold is saturated rather than illegal" {
 
     const nonsense = backingPixels(.{ .width = 960, .height = 540 }, std.math.nan(f64));
     try testing.expect(nonsense.width >= 1);
+}
+
+// The canaries.
+//
+// Two mechanisms here run across threads and **neither has a backstop anywhere**.
+// `Gate` and `Pending` in `gui.zig` at least have #91 ahead of them; the watcher
+// thread is deliberately outside any sanitizer arm, and `Mailbox` carries three
+// Metal object pointers, so racing it would need a device on a Linux host. This
+// is what they get, and it reads the source as text and proves nothing about
+// behaviour (ADR 0016).
+test "the pipeline mailbox still states its ordering, and still copies before it releases the slot" {
+    const code = canary.implementation(@embedFile("renderer.zig"));
+
+    // The word is what *publishes* the payload beside it rather than merely
+    // announcing it, so every transition is release on the way out and acquire on
+    // the way in. The one `.monotonic` is the producer reading its own slot under
+    // an assertion, which is safe only because nothing else writes `.empty`.
+    try testing.expectEqual(1, canary.stated(code, "return self.state.load(.acquire) == .empty;"));
+    try testing.expectEqual(1, canary.stated(code, "std.debug.assert(self.state.load(.monotonic) == .empty);"));
+    try testing.expectEqual(1, canary.stated(code, "self.state.store(.full, .release);"));
+    try testing.expectEqual(1, canary.stated(code, "if (self.state.load(.acquire) != .full) return null;"));
+    try testing.expectEqual(1, canary.stated(code, "self.state.store(.empty, .release);"));
+    try testing.expectEqual(5, canary.mentions(code, "self.state."));
+
+    // **The order, which no count can see.** Both statements are correct either
+    // way round and every assertion above passes either way round. `take`'s
+    // docstring names reversing its pair as the defect it exists to prevent:
+    // emptying the slot first lets the watcher start writing `staged` while this
+    // thread is still reading it, and what comes out is three pointers drawn from
+    // two different compiles. That is not a crash, it is a picture that is subtly
+    // wrong, which is the hardest kind of defect this project can ship.
+    try testing.expect(canary.statedBefore(
+        code,
+        "const taken = self.staged;",
+        "self.state.store(.empty, .release);",
+    ));
+
+    // The same claim on the producer's side, where the payload has to land before
+    // the word that publishes it.
+    try testing.expect(canary.statedBefore(
+        code,
+        "self.staged = pipelines;",
+        "self.state.store(.full, .release);",
+    ));
+    try testing.expectEqual(2, canary.mentions(code, "self.staged"));
+}
+
+test "the watcher's stop flag is still its futex word" {
+    const code = canary.implementation(@embedFile("renderer.zig"));
+
+    // One word carrying both, which is what makes the wake race-free rather than
+    // lucky: the kernel re-checks it under its own lock before parking, so a halt
+    // landing between the last check and the wait returns immediately instead of
+    // sleeping the interval out. Split into a `bool` and a separate word and the
+    // classic missed wakeup is back, at a quarter second on the host's main
+    // thread every time an editor closes.
+    //
+    // The declaration is pinned along with the four statements, because that is
+    // the edit the docstring warns against and it is not an ordering at all.
+    try testing.expectEqual(1, canary.stated(code, "halt: std.atomic.Value(u32) = .init(running),"));
+    try testing.expectEqual(1, canary.stated(code, "self.halt.store(halting, .release);"));
+    try testing.expectEqual(1, canary.stated(code, "io.get().futexWake(u32, &self.halt.raw, 1);"));
+    try testing.expectEqual(1, canary.stated(code, "return self.halt.load(.acquire) != running;"));
+    try testing.expectEqual(1, canary.stated(code, "io.get().futexWaitTimeout(u32, &self.halt.raw, running, .{"));
+    try testing.expectEqual(4, canary.mentions(code, "self.halt."));
+
+    // The store has to be visible before the wake, or a thread that checked and
+    // is about to park sees `running` and sleeps the interval out anyway.
+    try testing.expect(canary.statedBefore(
+        code,
+        "self.halt.store(halting, .release);",
+        "io.get().futexWake(u32, &self.halt.raw, 1);",
+    ));
 }
