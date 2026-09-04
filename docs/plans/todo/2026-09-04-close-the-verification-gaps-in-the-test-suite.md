@@ -41,9 +41,11 @@ The work below does not replace planting. It moves the plants that can be expres
 | [#98](https://github.com/cboone/fosforo/issues/98) | Cover the render thread's read side                           | `test:`     | A seam decision     | `Editor.tick` and `Editor.readWindow`, currently untested |
 | [#99](https://github.com/cboone/fosforo/issues/99) | Lint the workflows                                            | `ci:`       | Nothing             | 46 KB of `ci.yml` that nothing checks                     |
 
+**[#89](https://github.com/cboone/fosforo/issues/89) has landed**, so `main` is no longer red on a required check and the remaining ten are all `test:`, `refactor:` or `ci:` work with nothing currently costing anything. Section 1 below records what it found, including a correction to its own reasoning.
+
 ## 1. Give the trace half's frame wait a deadline rather than a spin count
 
-**Issue:** [#89](https://github.com/cboone/fosforo/issues/89). **Type:** `fix:`. **Do this first**, because it is the only item that is currently costing something.
+**Issue:** [#89](https://github.com/cboone/fosforo/issues/89). **Type:** `fix:`. **Landed**, with its own plan at [`2026-09-04-bound-the-trace-frame-wait-by-time.md`](../done/2026-09-04-bound-the-trace-frame-wait-by-time.md). It went first because it was the only item here currently costing something.
 
 ### What happened
 
@@ -59,7 +61,9 @@ It is the only unintentional CI failure in the last 60 runs of `ci.yml`. The oth
 
 The failing step ran from 03:20:06 to 03:20:09. Three seconds, against four for a passing trace step on the previous commit. It did not spend "many seconds of slack"; it gave up faster than a successful run completes, because `std.Thread.yield()` returns almost immediately when nothing else on the core is runnable. The bound is a spin count wearing a timeout's clothes, and it is the only wait in the harness that is not wall-clock: `frame_timeout_us` is 2 s (`src/smoke.zig:91`) and `reload_timeout_us` is 6 s (`:429`).
 
-The exposure grows with frame count, which is why it surfaced where it did. `checkDecay`'s last arm drives five frames against a three-deep semaphore. `checkDecayIsInRealTime`, which drives thirteen and seven and runs after it, is more exposed and has never been reached on a slow runner.
+~~The exposure grows with frame count, which is why it surfaced where it did. `checkDecay`'s last arm drives five frames against a three-deep semaphore. `checkDecayIsInRealTime`, which drives thirteen and seven and runs after it, is more exposed and has never been reached on a slow runner.~~
+
+**That paragraph was wrong, and the same run refutes it.** Exposure is not proportional to frame count: `checkHotCore` drives **thirty** frames, runs immediately before `checkDecay`, and passed in the failing run, which the `hot core` line in its log proves. Had the claim held, raising the count would have been a legitimate repair; it is not, at any value, and the correction is why the fix is a clock rather than a bigger number.
 
 ### Shape
 
@@ -67,9 +71,11 @@ Replace the attempt count with a deadline read from `platform.io`'s clock, on `f
 
 ### Acceptance
 
-- Plant a `frame` that always reports `.no_frame_slot`, and confirm the harness fails naming a duration rather than a count, at roughly the deadline rather than in a fraction of a second.
-- Re-run `zig build smoke-trace` on this machine and confirm the reported figures are unchanged, since this must not move any measurement.
-- Correct the docstring rather than deleting it. The reasoning it records was falsified by a measurement, and that is worth keeping alongside the correction.
+All three met.
+
+- Planted a `frame` that always reports `.no_frame_slot`. The harness fails as `waited 2000ms across 14468498 attempts for a frame slot`, in a run of 2.03 s total. **The plant also quantified the falsification**: 14,468,498 yields inside two seconds means the old 100,000-attempt bound was worth about **13.8 ms** on this machine rather than the "many seconds" it claimed, off by a factor of 150. A second run against a 1 ms ceiling reports 5,344 attempts, which is the control confirming the constant sets the duration rather than the machine.
+- `zig build smoke-trace` before and after are byte-identical below the provenance line, so no measurement moved.
+- The docstring is corrected rather than deleted, and now carries the run, the two figures, and the reason a larger count was not the repair.
 
 ### What it does not close
 
@@ -377,7 +383,7 @@ The phase 3 plan records that the phase runs serially because almost every issue
 | #91                               | A Linux runner            | Yes                                                      |
 | #98                               | Possibly `smoke-appkit`   | No, if it needs a control run                            |
 
-Order within the program: **#89 first**, because `main` is red. Then #90, which is the largest gap closed by the fewest lines. Then #92, which is the largest gap here and which #93 and #98 both cite. The rest are independent and can be taken in any order.
+Order within the program: **#89 first**, because `main` was red; that one has landed. Then #90, which is the largest gap closed by the fewest lines. Then #92, which is the largest gap here and which #93 and #98 both cite. The rest are independent and can be taken in any order.
 
 **#92 must land after [#57](https://github.com/cboone/fosforo/issues/57).** That branch is in flight on `feature/beam-as-quads`, already changes 286 lines of `src/smoke.zig`, and re-derives the trace checks against a beam with width. Refactoring the file before it lands conflicts with the branch currently rewriting the thing #92 is refactoring. Nothing else here has a code dependency on anything, inside this program or outside it.
 

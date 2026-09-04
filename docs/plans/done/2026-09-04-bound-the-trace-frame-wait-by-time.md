@@ -1,6 +1,6 @@
 # Bound the trace half's frame wait by time, not by yields
 
-Issue: [#89](https://github.com/cboone/fosforo/issues/89). Type: `fix:`. Item 1 of [the verification-gaps program](2026-09-04-close-the-verification-gaps-in-the-test-suite.md), and the only one of the eleven that is currently costing something.
+Issue: [#89](https://github.com/cboone/fosforo/issues/89). Type: `fix:`. Item 1 of [the verification-gaps program](../todo/2026-09-04-close-the-verification-gaps-in-the-test-suite.md), taken first because it was the only one of the eleven that was costing something.
 
 ## Context
 
@@ -92,13 +92,28 @@ The comment on the `.no_frame_slot` arm needs rewording rather than keeping. Its
 
 Each lands in this branch, on the program plan's rule that a document updated later describes a state nobody checked.
 
-| Document                                                       | Edit                                                                                                                                        |
-| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `docs/adr/0013-gui-smoke-harness-as-a-build-step.md`           | A new `## Amended by issue #89` section. Line 252's finding stays standing, on that ADR's own rule; the amendment says what its bound was  |
-| `AGENTS.md`, the `smoke-trace` bullet                          | A paragraph on the harness's two wait idioms and why the offscreen one is a deadline                                                        |
-| `docs/plans/todo/2026-09-04-close-the-verification-gaps-...md` | Item 1 and its summary-table row marked landed, with the `checkHotCore` correction to its exposure claim                                     |
+| Document                                                       | Edit                                                                                                                                      |
+|----------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------|
+| `docs/adr/0013-gui-smoke-harness-as-a-build-step.md`           | A new `## Amended by issue #89` section. Line 252's finding stays standing, on that ADR's own rule; the amendment says what its bound was |
+| `AGENTS.md`, the `smoke-trace` bullet                          | A paragraph on the harness's two wait idioms and why the offscreen one is a deadline                                                      |
+| `docs/plans/todo/2026-09-04-close-the-verification-gaps-...md` | Item 1 and its summary-table row marked landed, with the `checkHotCore` correction to its exposure claim                                  |
 
 The ADR amendment is an addition to the scope the program plan set, which assigned #89 no ADR. It earns its place because 0013:252 is where the yield-instead-of-spin decision is recorded, and a reader arriving there should not have to find out from the source that its bound has since been replaced.
+
+## Results
+
+All three of the issue's acceptance criteria are met, and the plant returned a sharper number than the issue could.
+
+| Check                                         | Result                                                                                             |
+|-----------------------------------------------|----------------------------------------------------------------------------------------------------|
+| `zig build smoke-trace`, before and after     | Byte-identical below the provenance line. No measurement moved                                     |
+| Plant, 2 s ceiling                            | `waited 2000ms across 14468498 attempts for a frame slot`, 2.034 s total, failed in `checkSilence` |
+| Plant, 1 ms ceiling                           | `waited 1ms across 5344 attempts for a frame slot`, 0.031 s total                                  |
+| `zig build test`, `smoke-gpu`, `smoke-appkit` | Pass. 10 AppKit cycles clean                                                                       |
+
+**The plant quantified the falsification, which the issue could only bound.** 14,468,498 yields inside 2000 ms is about 7,200 per millisecond, so the old 100,000-attempt bound was worth roughly **13.8 ms** on this machine rather than the "many seconds" its docstring claimed: off by a factor of 150, not by "a fraction of a second". The 1 ms control returns 5,344 attempts, a consistent rate three orders of magnitude down, which is what makes the constant rather than the machine the thing setting the duration.
+
+**One claim in the issue is wrong and the same CI log refutes it.** The issue reasons that exposure grows with frame count, so `checkDecayIsInRealTime`'s thirteen-frame arm was next in line. `checkHotCore` drives thirty frames, runs immediately before `checkDecay`, and passed in that run, which its `hot core` line proves. Had the claim held, raising the count would have been a legitimate repair. It is not one at any value, and that is recorded in the constant's docstring, in ADR 0013's amendment and in the program plan.
 
 ## Verification
 
