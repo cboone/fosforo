@@ -8,11 +8,13 @@ Issues: [#89](https://github.com/cboone/fosforo/issues/89) through [#99](https:/
 
 A review of the whole verification surface on `0e1ddf5` found 200 named tests across `src/`, roughly a quarter of the Zig source, and a set of instruments layered with an explicit written theory of what each one cannot see. That theory is the strongest thing here, and it has outrun the instruments in a small number of specific places.
 
+**That count was 200 at `0e1ddf5` and is 205 on `main` today**, because [#57](https://github.com/cboone/fosforo/issues/57) landed seven tests after the review and [#89](https://github.com/cboone/fosforo/issues/89) added none. The figure anchored to a commit stays as measured; the present-tense figures below track `main`, and none of the eleven findings changed. #57's seven are all beam geometry — the centroid, the density, the half-width against the rail, one instance per segment — and close none of them.
+
 The gaps are not spread evenly and they are not the usual "write more tests". They cluster in one shape: **the question "would I know if this broke?" was answered once, by hand, and the answer was written into prose rather than into anything that re-runs.** ADR 0013 and ADR 0016 both record planted defects as acceptance criteria and both are right to; what neither does is leave behind a check that fails if the planted defect is reintroduced tomorrow. Ten defects were planted against `smoke-trace` and all ten were caught; none of the ten is a test.
 
 Four consequences of that shape, in the order they cost something:
 
-- `main` is currently red on a required check, and the reason falsifies a bound the code argues for in a docstring.
+- `main` was red on a required check, and the reason falsified a bound the code argued for in a docstring. **Closed by #89**; `main` has been green since `6f0a860`.
 - `src/smoke.zig` carries the project's hardest claims, is the second-largest file here, and has zero tests. The argument for splitting `src/gpu/measure.zig` out and testing it applies to the rest of that file and was not carried through.
 - ADR 0016's discipline, which is exemplary, is scoped to one file. Four more cross-thread mechanisms have arrived since and none of them has any part of it.
 - ADR 0015 is listed among the non-negotiables and a one-token edit defeats it silently, in a project that already has the pattern for stopping exactly that.
@@ -171,13 +173,13 @@ The arms worth having, given what each primitive is for:
 
 ### The gap
 
-`src/smoke.zig` is 1,898 lines with zero test blocks, and it is not in the test module's graph at all: it imports `src/main.zig` rather than the reverse, so `zig build test` never compiles a line of it.
+`src/smoke.zig` is 2,181 lines with zero test blocks, and it is not in the test module's graph at all: it imports `src/main.zig` rather than the reverse, so `zig build test` never compiles a line of it. It was 1,898 lines when the review ran; #57 and #89 have added 283 since, none of them tested.
 
 ADR 0013's #51 amendment already made this argument and won it, about the other half of the same analysis:
 
 > #38's defect was in the *analysis* and not in the shader: its first period counter read the topmost lit pixel against the centre row, a steep segment crossing the centre lights every row it spans, and every tone came back exactly one period low. An analysis that runs only against a GPU is an analysis nothing tests, so this one has its own tests.
 
-That reasoning was applied to `src/gpu/measure.zig`, which has 14 tests and a model rasterizer that deliberately reproduces the spanning behaviour that broke the original. It was not carried through to the eleven `check*` functions, which hold the expectations rather than the extraction. And it has already been vindicated a second time: `checkDecayIsInRealTime`'s per-step composition exists because asking `decayOver` for the whole span clamps and predicts 0.7684 against a true 0.5451, which `AGENTS.md` records as "the first thing this check caught and it was in the check itself".
+That reasoning was applied to `src/gpu/measure.zig`, which has 15 tests and a model rasterizer that deliberately reproduces the spanning behaviour that broke the original. It was not carried through to the **thirteen** `check*` functions, which hold the expectations rather than the extraction. #57 added two of those thirteen, `checkEdgeColumns` and `checkBeamProfile`, and both keep the `(energy, picture, window)` signature the split below depends on, so the premise is on firmer ground than when it was written rather than weaker. And it has already been vindicated a second time: `checkDecayIsInRealTime`'s per-step composition exists because asking `decayOver` for the whole span clamps and predicts 0.7684 against a true 0.5451, which `AGENTS.md` records as "the first thing this check caught and it was in the check itself".
 
 ### Why this is smaller than it looks
 
