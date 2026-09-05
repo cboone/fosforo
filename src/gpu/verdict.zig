@@ -751,6 +751,15 @@ pub fn movingCore(image: measure.Image, picture: Picture) Fault!void {
     // for the build you are in. Debug panics with `integer overflow` instead of
     // naming the defect; ReleaseFast wraps 278 to 22, compares it against 255,
     // and lets the white trace through.
+    // **The first of these two arms cannot fire for the shipped palette, and
+    // that was established by planting rather than by reading.** Every gradient's
+    // largest tint component is exactly 1.0 and green's other two are below it,
+    // so `tint[channel] < 1.0` holds for both non-lead channels and the second
+    // arm already refuses everything the first would, `gap` of zero and negative
+    // included. Removing the first changes no verdict any test here reaches. It
+    // stays because it is the arm that survives a palette whose non-lead tint
+    // reaches 1.0, where the second goes quiet, and a defensive arm that is dead
+    // for today's constant is worth its line as long as it says so.
     for (0..3) |channel| {
         if (channel == lead) continue;
         const gap = @as(i32, got[lead]) - @as(i32, got[channel]);
@@ -1474,6 +1483,24 @@ test "the same elapsed time fades the same however many frames delivered it" {
         slot.* = .{ .deposited = 2.6133, .faded = 2.6133 * kept };
     }
     try testing.expectError(Fault.DecayNotInRealTime, realTimeDecay(&per_frame));
+
+    // **Both arms wrong in the same way, which is the case the second assertion
+    // exists for and the one the spread between them cannot see.** Halving each
+    // arm's interval fades both as if `tau` were twice what the model says:
+    // `decayOver(4 ms)^12` and `decayOver(8 ms)^6` are the same number, so the
+    // arms agree with each other exactly and neither agrees with
+    // `palette.decayOver`. Planted, removing the per-arm comparison leaves the
+    // spread check passing this, which is what makes the two assertions two.
+    var wrong_tau: [decay_arms.len]RealTimeArm = undefined;
+    for (decay_arms, &wrong_tau) |arm, *slot| {
+        const kept = std.math.pow(
+            f32,
+            palette.decayOver(arm.interval_nanos / 2),
+            @floatFromInt(arm.steps),
+        );
+        slot.* = .{ .deposited = 2.6133, .faded = 2.6133 * kept };
+    }
+    try testing.expectError(Fault.DecayNotInRealTime, realTimeDecay(&wrong_tau));
 
     try testing.expectError(Fault.DecayNotInRealTime, realTimeDecay(&.{}));
 }
