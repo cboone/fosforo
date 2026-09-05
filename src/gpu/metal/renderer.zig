@@ -705,20 +705,39 @@ fn sayShader(comptime fmt: []const u8, args: anytype) void {
     std.debug.print("[fosforo] shader: " ++ fmt ++ "\n", args);
 }
 
-/// The index MSL attaches to the first parameter matching `anchor`, by reading the
-/// `[[<kind>(N)]]` that follows it.
+/// The first `[[<kind>(N)]]` that follows the first occurrence of `anchor`.
+///
+/// **Stated as what it does rather than as what it is for, because those are not
+/// the same claim and the difference is a trap.** It is *used* as "the index MSL
+/// attaches to the parameter matching `anchor`", and that is what it means only
+/// when the anchored parameter actually carries an attribute of that kind. It does
+/// not parse MSL. A parameter whose `[[buffer(N)]]` was deleted does not answer
+/// null here — the scan runs on and returns the *next* parameter's index, from a
+/// later declaration or a later function.
+///
+/// **That is safe in the direction that matters and the reason is worth having.**
+/// The next index along is almost never the one the caller expected, so a deleted
+/// attribute still reads as a mismatch; what it is not is a *diagnosis*, and the
+/// message will name a number that came from somewhere else. It would read as a
+/// pass only if the following declaration happened to carry the same number, which
+/// is the residue of not parsing MSL and is accepted for the same reason the
+/// parameter-rename false positive is.
+///
+/// Two consequences that look like defects and are the design. **Scanning to end
+/// of file** is what lets a kind that never appears answer null, which the
+/// `sampler` negative control at the foot of this file rests on entirely. And **a
+/// new MSL parameter name must not be a substring of an existing one**, since the
+/// anchor is found by `indexOf` — the reason `TraceUniforms &uniforms` and
+/// `&beam` are spelled out rather than anchored on the shared type.
 ///
 /// **Works at comptime over the embedded copy and at runtime over a source read
 /// off disk, which is the whole reason it takes its source as a parameter.** The
 /// test at the foot of this file is the first caller and `noteBindings` is the
 /// second; a single implementation is what makes the reloaded shader checked by
 /// the same rule as the shipped one rather than by a second one that resembles it.
-///
 /// It walks the attributes after the anchor rather than searching for a formatted
 /// `"[[" ++ kind ++ "("`, which is what a runtime caller cannot build without
-/// allocating. Scanning to end of file and answering null is deliberate: a kind
-/// that never appears has to be distinguishable from one that appears with the
-/// wrong number, and the negative control at the foot of this file rests on it.
+/// allocating.
 fn bindingIndexIn(source: []const u8, anchor: []const u8, kind: []const u8) ?u64 {
     const start = std.mem.indexOf(u8, source, anchor) orelse return null;
     var rest = source[start + anchor.len ..];
@@ -3338,16 +3357,34 @@ fn replaceOnce(buf: []u8, haystack: []const u8, from: []const u8, to: []const u8
     return buf[0 .. at + to.len + rest.len];
 }
 
-test "an attribute of another kind between the anchor and the index is stepped over" {
-    // `[[stage_in]]` and `[[vertex_id]]` sit in these parameter lists, so the walk
-    // has to pass attributes that are not indices at all rather than stopping at
-    // the first `[[` it meets. The real shader exercises this and a synthetic case
-    // states it as the property it is.
+test "the walk steps over attributes of another kind, and does not stop at a parameter boundary" {
     const stage_in =
         \\fragment float4 trace_fragment(TraceOut in [[stage_in]],
         \\                               constant TraceUniforms &beam [[buffer(0)]]) {
     ;
+
+    // The property this is for. `[[stage_in]]` and `[[vertex_id]]` sit in these
+    // parameter lists, so the walk has to pass attributes that are not indices at
+    // all rather than stopping at the first `[[` it meets.
+    try testing.expectEqual(@as(?u64, 0), bindingIndexIn(stage_in, "TraceUniforms &beam", "buffer"));
+
+    // **And the same mechanism from the side that overpromises**, which is why the
+    // docstring is worded as it is. Anchoring on a parameter that carries no
+    // buffer of its own does not answer null: the scan runs on to `&beam`'s. So
+    // this helper is "the first index of that kind after the anchor" and only
+    // means "the anchored parameter's index" when that parameter has one.
     try testing.expectEqual(@as(?u64, 0), bindingIndexIn(stage_in, "TraceOut in", "buffer"));
+
+    // The consequence for a *deleted* attribute, which is the case that matters:
+    // the scan reaches the next declaration rather than reporting nothing, so it
+    // still reads as a mismatch against any index but that one. Safe in the
+    // direction it needs to be, and not a diagnosis.
+    const deleted =
+        \\vertex TraceOut trace_vertex(device const float *samples,
+        \\                             constant TraceUniforms &uniforms [[buffer(1)]]) {
+    ;
+    try testing.expectEqual(@as(?u64, 1), bindingIndexIn(deleted, "device const float *samples", "buffer"));
+    try testing.expect(bindingIndexIn(deleted, "device const float *samples", "buffer") != window_buffer_index);
 }
 
 /// The bare number following `needle`, for a Python assignment like `RAIL = 0.98`.

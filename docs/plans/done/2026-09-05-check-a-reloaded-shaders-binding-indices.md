@@ -90,6 +90,8 @@ Said in three places rather than one: `noteBindings`' docstring, the `binding_mi
 
 **A false positive is accepted.** The anchor is a parameter declaration, so renaming a parameter without moving its index reads as a mismatch. It costs one printed line naming the anchor it looked for, never a refused swap. The alternative is parsing MSL.
 
+**And the helper does not parse MSL, which its docstring now says as a property rather than implying the opposite.** It returns the first `[[<kind>(N)]]` after the anchor, so it means "the anchored parameter's index" only when that parameter carries one: delete an attribute and the scan runs on to the next declaration's. Safe in the direction that matters, since the next index along is almost never the expected one and so still reads as a mismatch, but it is not a diagnosis and the message will name a number from somewhere else. It would read as a pass only if the following declaration happened to carry the same number. Caught in review by Copilot on [#104](https://github.com/cboone/fosforo/pull/104), against a docstring that promised the parameter rather than the scan; the behaviour is `bindingIndexAfter`'s and unchanged, and the two tests that pin it are new.
+
 ## Documents
 
 | File                                 | Change                                                                                                                              |
