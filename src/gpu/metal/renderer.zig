@@ -3366,7 +3366,7 @@ fn scalarAfter(comptime source: []const u8, comptime needle: []const u8) ?f64 {
 /// Two needles rather than one, because the MSL side cannot be reached with a
 /// single search. `float3(0.02, 0.02, 0.03)` sits inside a `return float4(...)`,
 /// and the first `(` after a fragment's name opens its *parameter list*; while
-/// anchoring on `float3(` alone would be the vacuous search `bindingIndexAfter`
+/// anchoring on `float3(` alone would be the vacuous search `bindingIndexIn`
 /// exists to avoid, since nothing ties that spelling to the function meant.
 ///
 /// Exactly `n`, not at least `n`: a fourth component appearing in a Python tuple

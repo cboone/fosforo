@@ -367,7 +367,7 @@ These are real gaps and each already has an issue. This plan should not duplicat
 | Issue                                              | Gap                                                                                       |
 | -------------------------------------------------- | ----------------------------------------------------------------------------------------- |
 | [#69](https://github.com/cboone/fosforo/issues/69) | `MTL_DEBUG_LAYER` is the only instrument for two Metal misconfigurations and runs by hand |
-| [#77](https://github.com/cboone/fosforo/issues/77) | A hot-reloaded shader's binding indices are checked by nothing                            |
+| [#77](https://github.com/cboone/fosforo/issues/77) | A hot-reloaded shader's binding indices are checked by nothing. **Done**                  |
 | [#34](https://github.com/cboone/fosforo/issues/34) | The cross-display path has never executed                                                 |
 | [#85](https://github.com/cboone/fosforo/issues/85) | Nothing runs `markdownlint`                                                               |
 | [#87](https://github.com/cboone/fosforo/issues/87) | A pull request based on anything but `main` runs no CI at all                             |
