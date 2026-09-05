@@ -882,3 +882,602 @@ pub fn realTimeDecay(measured: []const RealTimeArm) Fault!void {
     // what was asked for.
     if (spread > 0.01) return Fault.DecayNotInRealTime;
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+const testing = std.testing;
+
+// Ten defects were planted against this half at #51 and recorded in a table in
+// `docs/plans/done/2026-08-29-verify-the-shader-offscreen-against-the-constants.md`.
+// Each was verified once, by hand, against a GPU, and written down in prose;
+// nothing re-ran them, so a refactor could make a judge vacuous and nothing would
+// notice. Every one of them expressible as a synthetic readback is a test below,
+// named for the row it encodes, and each is paired with the good input in the
+// same block so that a judge which refused everything would fail too.
+
+/// One image's worth of scratch, plus the window that draws into it.
+///
+/// Heap rather than stack, on `measure.zig`'s precedent and for its reason: the
+/// vertical cases need a real height, because `measure.pixelTolerance` is one
+/// backing pixel expressed as a sample value and the planted errors below are
+/// stated in sample values. At 36 rows a whole pixel is 0.06 of full scale and
+/// every level plant in the table would pass; at 540 it is 0.0041 and they are
+/// five to a hundred times outside it. The *width* is free, so it is small.
+const Canvas = struct {
+    pixels: []f32,
+    window: []f32,
+    width: usize,
+    height: usize,
+
+    fn init(width: usize, height: usize) !Canvas {
+        return .{
+            .pixels = try testing.allocator.alloc(f32, width * height * 4),
+            // One sample per column, which is what puts a sample in every column
+            // and makes `litColumns` reach the width.
+            .window = try testing.allocator.alloc(f32, width),
+            .width = width,
+            .height = height,
+        };
+    }
+
+    fn deinit(self: Canvas) void {
+        testing.allocator.free(self.pixels);
+        testing.allocator.free(self.window);
+    }
+
+    fn image(self: Canvas) measure.Image {
+        return .{ .width = self.width, .height = self.height, .pixels = self.pixels };
+    }
+
+    fn flat(self: Canvas, value: f32) measure.Image {
+        measure.constant(self.window, value);
+        return measure.rasterize(self.pixels, self.width, self.height, self.window);
+    }
+
+    fn wave(self: Canvas, cycles: f32, amplitude: f32) measure.Image {
+        measure.sine(self.window, cycles, amplitude);
+        return measure.rasterize(self.pixels, self.width, self.height, self.window);
+    }
+
+    fn dark(self: Canvas) measure.Image {
+        @memset(self.pixels, 0);
+        return self.image();
+    }
+
+    /// Set one pixel's four channels to the same energy, which is what the shader
+    /// deposits and what `depositIsScalar` exists to keep true.
+    fn deposit(self: Canvas, x: usize, y: usize, energy: f32) void {
+        const at = (y * self.width + x) * 4;
+        for (0..4) |channel| self.pixels[at + channel] = energy;
+    }
+
+    /// `measure.rasterize` writes green alone, which is all the analysis reads.
+    /// Anything judging the *picture* needs the other three, because the resolve
+    /// reads green and the judge compares four channels against a prediction.
+    fn splat(self: Canvas) void {
+        var i: usize = 0;
+        while (i < self.width * self.height) : (i += 1) {
+            const g = self.pixels[i * 4 + 1];
+            for (0..4) |channel| self.pixels[i * 4 + channel] = g;
+        }
+    }
+};
+
+/// Paint the picture an accumulation should resolve to, optionally wrong.
+///
+/// `gain` of 1.0 is the shipping resolve. #55 shipped `1 - decay`, which is the
+/// row of the plant table this exists to reproduce; a `p` other than the shipped
+/// palette is the other kind of wrong, a picture whose chroma does not follow
+/// from its intensity.
+fn paint(bytes: []u8, image: measure.Image, p: palette.Palette, gain: f32) void {
+    var table: [palette.palette_floats]f32 = undefined;
+    palette.buildPalette(&table);
+
+    var y: usize = 0;
+    while (y < image.height) : (y += 1) {
+        var x: usize = 0;
+        while (x < image.width) : (x += 1) {
+            const rgb = palette.resolved(&table, p, trace_decay, image.channel(x, y, 1) * gain);
+            const at = (y * image.width + x) * 4;
+            bytes[at + 0] = rgb[0];
+            bytes[at + 1] = rgb[1];
+            bytes[at + 2] = rgb[2];
+            bytes[at + 3] = 255;
+        }
+    }
+}
+
+fn pictureFor(image: measure.Image, p: palette.Palette, gain: f32) !Picture {
+    const bytes = try testing.allocator.alloc(u8, image.width * image.height * 4);
+    paint(bytes, image, p, gain);
+    return .{ .width = image.width, .height = image.height, .bytes = bytes };
+}
+
+fn freePicture(picture: Picture) void {
+    testing.allocator.free(@constCast(picture.bytes));
+}
+
+// ---------------------------------------------------------------------------
+
+test "silence is flat, centred, and lights every column" {
+    const canvas = try Canvas.init(64, 540);
+    defer canvas.deinit();
+
+    const got = try silence(canvas.flat(0.0));
+
+    try testing.expectEqual(@as(usize, 64), got.lit);
+    // The centroid of a symmetric profile straddling the boundary between two
+    // rows is that boundary exactly, which is what #38's `+0.0021` was not.
+    try testing.expectApproxEqAbs(measure.centreRow(540), got.centroid, 0.01);
+    try testing.expectApproxEqAbs(@as(f32, 0.0), got.implied, 1e-4);
+}
+
+test "silence refuses a line off the centre, a line that is not flat, and no line at all" {
+    const canvas = try Canvas.init(64, 540);
+    defer canvas.deinit();
+
+    // A twentieth of a pixel is the bound, so a hundredth of full scale is two
+    // orders of magnitude outside it. A whole-pixel tolerance would pass this.
+    try testing.expectError(Fault.CentreLineWrong, silence(canvas.flat(0.01)));
+
+    // A sine lights every column too, so this is refused for its depth rather
+    // than for being absent, which is the distinction the two faults draw.
+    try testing.expectError(Fault.TraceNotFlat, silence(canvas.wave(3.0, 0.5)));
+
+    try testing.expectError(Fault.TraceNotDrawn, silence(canvas.dark()));
+}
+
+test "a readback shorter than its geometry is refused rather than indexed" {
+    const canvas = try Canvas.init(64, 540);
+    defer canvas.deinit();
+
+    const full = canvas.flat(0.0);
+    const short: measure.Image = .{
+        .width = full.width,
+        .height = full.height,
+        .pixels = full.pixels[0 .. full.pixels.len - 4],
+    };
+
+    try testing.expectError(Fault.ReadbackTruncated, silence(short));
+}
+
+test "every level plant in the table is refused, and the level itself is not" {
+    const canvas = try Canvas.init(32, 540);
+    defer canvas.deinit();
+
+    // The negative control first: a judge that refused everything would pass
+    // every arm below and assert nothing.
+    for ([_]f32{ 0.25, 0.5, 1.0, 1.05, -0.25, -0.5, -1.0 }) |want| {
+        const got = try level(canvas.flat(want), want);
+        try testing.expect(got.off <= measure.pixelTolerance(540));
+    }
+
+    // The three `LevelMisplaced` rows of #51's plant table, as the values that
+    // issue measured: a vertex stage that swaps `full_scale` and `rail` reads
+    // 0.250 as 0.27366, one that applies `full_scale` twice reads 0.22428, and
+    // one that negates y reads -0.24897.
+    for ([_]f32{ 0.27366, 0.22428, -0.24897 }) |wrong| {
+        try testing.expectError(Fault.LevelMisplaced, level(canvas.flat(wrong), 0.25));
+    }
+
+    try testing.expectError(Fault.TraceNotDrawn, level(canvas.dark(), 0.25));
+}
+
+test "the rail saturates, and dropping the clamp is what stops it" {
+    const rail = measure.railRow(540);
+
+    try saturation(&.{ 1.111, 2.0, 8.0, 1000.0 }, &.{ rail, rail, rail, rail }, 540);
+
+    // "Drop the `clamp`" in the plant table, which reported "rail on row 0,
+    // expected 4.9".
+    try testing.expectError(
+        Fault.RailMisplaced,
+        saturation(&.{ 1.111, 2.0, 8.0, 1000.0 }, &.{ 0.0, 0.0, 0.0, 0.0 }, 540),
+    );
+
+    // And a rail that keeps climbing above the threshold, which is the claim
+    // ADR 0017 makes and the one a single arm could not see.
+    try testing.expectError(
+        Fault.RailNotSaturated,
+        saturation(&.{ 1.111, 2.0, 8.0, 1000.0 }, &.{ rail, rail, rail - 3.0, rail }, 540),
+    );
+}
+
+test "symmetry sees a negated axis and an uneven clamp as different faults" {
+    const centre = measure.centreRow(540);
+
+    try symmetry(.{ centre - 121.5, centre + 121.5 }, 540);
+
+    // "The same, with the level and rail checks skipped" in the plant table,
+    // which reported "+0.5 sits -121.5 above centre".
+    try testing.expectError(
+        Fault.TraceInverted,
+        symmetry(.{ centre + 121.5, centre - 121.5 }, 540),
+    );
+
+    try testing.expectError(
+        Fault.TraceAsymmetric,
+        symmetry(.{ centre - 121.5, centre + 110.5 }, 540),
+    );
+}
+
+test "a three-sample ramp reaches both edges, and the wrong divisor stops short" {
+    const canvas = try Canvas.init(96, 540);
+    defer canvas.deinit();
+
+    var rising = [_]f32{ -1.0, 0.0, 1.0 };
+    const got = try horizontalMapping(
+        measure.rasterize(canvas.pixels, 96, 540, &rising),
+    );
+    try testing.expectEqual(@as(usize, 0), got.first);
+    try testing.expectEqual(@as(usize, 95), got.last);
+
+    // "Divide x by `sample_count` rather than `sample_count - 1`", at the probe
+    // that makes it 320 columns wide rather than one. Two thirds of 95 is 63.
+    const image = canvas.dark();
+    for (0..64) |x| {
+        canvas.pixels[((512 - x * 8) * 96 + x) * 4 + 1] = 1.0;
+    }
+    try testing.expectError(Fault.TraceEndsEarly, horizontalMapping(image));
+
+    var falling = [_]f32{ 1.0, 0.0, -1.0 };
+    try testing.expectError(
+        Fault.TraceInverted,
+        horizontalMapping(measure.rasterize(canvas.pixels, 96, 540, &falling)),
+    );
+
+    try testing.expectError(Fault.TraceNotDrawn, horizontalMapping(canvas.dark()));
+}
+
+test "a railed trace lights every column, and a dropped one is not an edge fault" {
+    const canvas = try Canvas.init(64, 540);
+    defer canvas.deinit();
+
+    const railed = iface.trace_rail / iface.trace_full_scale;
+    const got = try edgeColumns(canvas.flat(railed));
+    try testing.expectEqual(@as(usize, 64), got.lit);
+
+    // An interior column dropped: the span still reaches both edges, so this
+    // must be `ColumnDropped` and not the edge fault. #38's own finding was the
+    // other way round, which is why the two are separate.
+    _ = canvas.flat(railed);
+    for (0..540) |y| canvas.pixels[(y * 64 + 30) * 4 + 1] = 0.0;
+    try testing.expectError(Fault.ColumnDropped, edgeColumns(canvas.image()));
+
+    _ = canvas.flat(railed);
+    for (0..540) |y| canvas.pixels[(y * 64 + 0) * 4 + 1] = 0.0;
+    try testing.expectError(Fault.EdgeColumnDark, edgeColumns(canvas.image()));
+
+    try testing.expectError(Fault.TraceNotDrawn, edgeColumns(canvas.dark()));
+}
+
+test "the beam's cross-section integrates to the biweight, in pixels not clip space" {
+    const canvas = try Canvas.init(64, 8);
+    defer canvas.deinit();
+
+    // Centred on a pixel boundary, which is where the harness measures it and
+    // why it reads 1.5796 rather than 1.6000.
+    _ = canvas.dark();
+    beamRow(canvas, 4, 31.5, beam_half_width_px);
+    const got = try beamProfile(canvas.image(), 4);
+    try testing.expectApproxEqAbs(@as(f32, 1.6), got.expected, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 31.5), got.centre, 0.01);
+
+    // **Expanded in clip space rather than in pixels.** At 960x540 that makes
+    // the beam 1.78 times wider one way than the other, which every other judge
+    // here reads as a slightly different row and passes.
+    _ = canvas.dark();
+    beamRow(canvas, 4, 31.5, beam_half_width_px * 960.0 / 540.0);
+    try testing.expectError(Fault.BeamWidthWrong, beamProfile(canvas.image(), 4));
+
+    // A profile with the right integral and the wrong shape, which is what a
+    // strip whose corners run the wrong way draws.
+    _ = canvas.dark();
+    for ([_]f32{ 0.1, 0.9, 0.5, 0.1 }, 30..) |value, x| {
+        canvas.pixels[(4 * 64 + x) * 4 + 1] = value;
+    }
+    try testing.expectError(Fault.BeamNotSymmetric, beamProfile(canvas.image(), 4));
+
+    try testing.expectError(Fault.TraceNotDrawn, beamProfile(canvas.dark(), 4));
+}
+
+fn beamRow(canvas: Canvas, row: usize, centre: f32, half: f32) void {
+    var x: usize = 0;
+    while (x < canvas.width) : (x += 1) {
+        const d = @abs(@as(f32, @floatFromInt(x)) - centre);
+        if (d >= half) continue;
+        const u = d / half;
+        const falloff = 1.0 - u * u;
+        canvas.pixels[(row * canvas.width + x) * 4 + 1] = falloff * falloff;
+    }
+}
+
+test "periods are counted under strict equality, which a one-off tolerance would hide" {
+    const canvas = try Canvas.init(960, 540);
+    defer canvas.deinit();
+
+    // The accept arm is #38's own case: `measure.rasterize` lights every row a
+    // steep segment spans, so the centre crossing is exactly the shape that made
+    // the original counter read one low.
+    const image = canvas.wave(4.0, 0.8);
+    try testing.expectEqual(@as(usize, 4), try period(image, 4));
+
+    // A count one low, which is what #38 measured at every frequency and what a
+    // ±1 tolerance called "ok" six times over.
+    try testing.expectError(Fault.PeriodMiscounted, period(image, 5));
+}
+
+test "the doubling arm reads three counts and refuses a ratio that is not two" {
+    try periodRatio(&.{ 1, 2, 4, 5, 8, 20 });
+
+    // 8 miscounted as 9 while 2 and 4 stay right, which the absolute arm would
+    // also catch and which this one catches without knowing the frequencies.
+    try testing.expectError(Fault.PeriodRatioWrong, periodRatio(&.{ 1, 2, 4, 5, 9, 20 }));
+
+    // A list of the wrong length is refused rather than indexed, which is what
+    // replaced an `undefined` array written only inside a `switch`.
+    try testing.expectError(Fault.PeriodRatioWrong, periodRatio(&.{ 1, 2, 4 }));
+}
+
+test "a deposit is a scalar, and one channel out of step is what that forbids" {
+    const canvas = try Canvas.init(8, 4);
+    defer canvas.deinit();
+
+    _ = canvas.dark();
+    canvas.deposit(4, 2, 2.6133);
+    try testing.expectApproxEqAbs(@as(f32, 0.0), try depositIsScalar(canvas.image()), 1e-6);
+
+    // The claim that replaced `checkBeamIsOneColour` at #60: green is the energy
+    // only because the other three are the same number. A weighting that moved
+    // one would change the meaning of every green-channel measurement in this
+    // project at once, and nothing else anywhere would fail.
+    canvas.pixels[(2 * 8 + 4) * 4 + 2] = 2.5;
+    try testing.expectError(Fault.DepositNotScalar, depositIsScalar(canvas.image()));
+
+    try testing.expectError(Fault.TraceNotDrawn, depositIsScalar(canvas.dark()));
+}
+
+test "the resolve is the tonemap, and #55's gain is what that refuses" {
+    const canvas = try Canvas.init(8, 4);
+    defer canvas.deinit();
+
+    _ = canvas.dark();
+    canvas.deposit(4, 2, 2.6133);
+    const image = canvas.image();
+
+    {
+        const picture = try pictureFor(image, palette.shipped_palette, 1.0);
+        defer freePicture(picture);
+
+        const got = try resolve(image, picture);
+        try testing.expectEqual(@as(usize, 1), got.lit);
+        try testing.expectEqual(@as(i32, 0), got.worst);
+        try testing.expectEqualSlices(u8, &palette.background_bytes, got.background[0..3]);
+    }
+
+    // **The row this whole half exists for.** #55 shipped a resolve gain of
+    // `1 - decay`, which divides a moving trace by ten and renders a sine as a
+    // black display. It passed 160 unit tests, both smoke halves, the leak
+    // check, `clap-validator` and the validation layer, and was found by eye.
+    {
+        const picture = try pictureFor(image, palette.shipped_palette, 1.0 - trace_decay);
+        defer freePicture(picture);
+        try testing.expectError(Fault.ResolveNotTheTonemap, resolve(image, picture));
+    }
+
+    // Chroma that does not follow from intensity, which is the palette's whole
+    // claim and the thing a per-channel comparison could not see. Every gradient
+    // starts at the same background, so this passes all four background checks
+    // and fails on the lit pixel alone.
+    {
+        const picture = try pictureFor(image, .amber, 1.0);
+        defer freePicture(picture);
+        try testing.expectError(Fault.ResolveNotTheTonemap, resolve(image, picture));
+    }
+}
+
+test "a run in which nothing was drawn is refused rather than reported as clean" {
+    const canvas = try Canvas.init(8, 4);
+    defer canvas.deinit();
+
+    // The guard `if (lit == 0)` exists for, which no test reached before this
+    // one. Every pixel carries the background, every channel matches the
+    // prediction exactly, and the picture is still not of anything.
+    const image = canvas.dark();
+    const picture = try pictureFor(image, palette.shipped_palette, 1.0);
+    defer freePicture(picture);
+
+    try testing.expectError(Fault.TraceNotDrawn, resolve(image, picture));
+}
+
+test "the background is the palette at zero, and four ways of not being it" {
+    const canvas = try Canvas.init(8, 4);
+    defer canvas.deinit();
+
+    _ = canvas.dark();
+    canvas.deposit(4, 2, 2.6133);
+    const image = canvas.image();
+
+    const cases = [_]struct { bytes: [4]u8, fault: Fault }{
+        // "Reorder the background literal's channels" in the plant table, which
+        // reported `background RGBA(8, 5, 5, 255)`.
+        .{ .bytes = .{ 8, 5, 5, 255 }, .fault = Fault.BackgroundNotNeutral },
+        .{ .bytes = .{ 5, 5, 5, 255 }, .fault = Fault.BackgroundNotBlueLeading },
+        .{ .bytes = .{ 20, 20, 30, 255 }, .fault = Fault.BackgroundNotDark },
+        .{ .bytes = .{ 5, 5, 8, 254 }, .fault = Fault.BackgroundNotOpaque },
+        // Dark, neutral, blue-leading and opaque, and still not what the
+        // gradient's first entry puts on an unlit pixel. This is #60's own open
+        // question asserted rather than argued.
+        .{ .bytes = .{ 6, 6, 9, 255 }, .fault = Fault.BackgroundNotThePaletteAtZero },
+    };
+
+    for (cases) |case| {
+        const picture = try pictureFor(image, palette.shipped_palette, 1.0);
+        defer freePicture(picture);
+
+        const bytes = @constCast(picture.bytes);
+        @memcpy(bytes[0..4], &case.bytes);
+        try testing.expectError(case.fault, resolve(image, picture));
+    }
+}
+
+test "one deposit is bright and tinted, and #55's dim trace is neither" {
+    const canvas = try Canvas.init(8, 4);
+    defer canvas.deinit();
+
+    _ = canvas.dark();
+    canvas.deposit(4, 2, 2.6133);
+    const image = canvas.image();
+
+    {
+        const picture = try pictureFor(image, palette.shipped_palette, 1.0);
+        defer freePicture(picture);
+        try movingCore(image, picture);
+    }
+
+    // Green 53 of 255 is what #55 rendered, which reads as a black display. The
+    // bound is 128 rather than the shipped curve's 189, so retuning the curve
+    // does not mean rewriting the assertion.
+    {
+        const picture = try pictureFor(image, palette.shipped_palette, 1.0 - trace_decay);
+        defer freePicture(picture);
+        try testing.expectError(Fault.MovingTraceTooDim, movingCore(image, picture));
+    }
+
+    // A white pixel at one deposit, which is the other way #55 measured of
+    // getting the range wrong, and the case the `i32` gap arithmetic exists for:
+    // in `u8` this comparison overflows at 232 and above, which is exactly here.
+    {
+        const picture = try pictureFor(image, palette.shipped_palette, 100.0);
+        defer freePicture(picture);
+        try testing.expectError(Fault.MovingTraceNotTinted, movingCore(image, picture));
+    }
+
+    {
+        const empty = canvas.dark();
+        const picture = try pictureFor(empty, palette.shipped_palette, 1.0);
+        defer freePicture(picture);
+        try testing.expectError(Fault.TraceNotDrawn, movingCore(empty, picture));
+    }
+}
+
+test "a dwelt trace reaches the white point and is exactly white there" {
+    const canvas = try Canvas.init(8, 4);
+    defer canvas.deinit();
+
+    _ = canvas.dark();
+    canvas.deposit(4, 2, 24.188);
+    const image = canvas.image();
+
+    {
+        const picture = try pictureFor(image, palette.shipped_palette, 1.0);
+        defer freePicture(picture);
+        try dwellCore(image, picture);
+    }
+
+    // Short of the white point, which is what a unit resolve gain on a moving
+    // trace looks like from this end.
+    {
+        _ = canvas.dark();
+        canvas.deposit(4, 2, 4.0);
+        const dim = canvas.image();
+        const picture = try pictureFor(dim, palette.shipped_palette, 1.0);
+        defer freePicture(picture);
+        try testing.expectError(Fault.DwellNeverReachesWhite, dwellCore(dim, picture));
+    }
+
+    // Past the white point in energy and short of it in the picture, which is
+    // the resolve failing rather than the accumulation. Exactly 255 rather than
+    // nearly, because the gradient's last entry is 1.0 by construction.
+    {
+        _ = canvas.dark();
+        canvas.deposit(4, 2, 24.188);
+        const hot = canvas.image();
+        const picture = try pictureFor(hot, palette.shipped_palette, 2.6133 / 24.188);
+        defer freePicture(picture);
+        try testing.expectError(Fault.CoreNotWhite, dwellCore(hot, picture));
+    }
+}
+
+test "the phosphor fades by the decay factor, and both table rows say it did not" {
+    const first: f32 = 2.6133;
+    var good: [5]f32 = undefined;
+    for (&good, 0..) |*slot, quiet| {
+        slot.* = first * std.math.pow(f32, trace_decay, @floatFromInt(quiet));
+    }
+    try decay(&good);
+
+    // "`decay_per_frame` of 1.0" in the plant table, which reported "1.0000 of
+    // the deposit, expected 0.9000".
+    try testing.expectError(Fault.DecayWrong, decay(&.{ first, first, first, first, first }));
+
+    // "Bind `target` rather than `source` to the decay pass", which reported
+    // "0.0000 of the deposit, expected 0.9000". The defect itself is caught by
+    // the compiler; this is its symptom, which the judge has to refuse too.
+    try testing.expectError(Fault.DecayWrong, decay(&.{ first, 0.0, 0.0, 0.0, 0.0 }));
+}
+
+test "a decay measured off a blank readback is refused, where nan used to pass" {
+    // **The vacuity hole this fold was written to close.** Dividing by a first
+    // peak of zero gives `nan`, and `nan > 0.02 * want` is *false*, so every arm
+    // passed and a run that drew nothing at all reported a healthy fade.
+    try testing.expectError(Fault.TraceNotDrawn, decay(&.{ 0.0, 0.0, 0.0, 0.0, 0.0 }));
+    try testing.expectError(Fault.TraceNotDrawn, decay(&.{}));
+
+    const blank: [decay_arms.len]RealTimeArm = @splat(.{ .deposited = 0.0, .faded = 0.0 });
+    try testing.expectError(Fault.TraceNotDrawn, realTimeDecay(&blank));
+}
+
+test "the same elapsed time fades the same however many frames delivered it" {
+    var good: [decay_arms.len]RealTimeArm = undefined;
+    for (decay_arms, &good) |arm, *slot| {
+        const kept = std.math.pow(f32, palette.decayOver(arm.interval_nanos), @floatFromInt(arm.steps));
+        slot.* = .{ .deposited = 2.6133, .faded = 2.6133 * kept };
+    }
+    try realTimeDecay(&good);
+
+    // **The falsification, and it is not subtle.** With a per-frame factor the
+    // arms land on `0.9^12 = 0.2824` and `0.9^6 = 0.5314`, a factor of 1.88
+    // apart against a tolerance of two percent.
+    var per_frame: [decay_arms.len]RealTimeArm = undefined;
+    for (decay_arms, &per_frame) |arm, *slot| {
+        const kept = std.math.pow(f32, 0.9, @floatFromInt(arm.steps));
+        slot.* = .{ .deposited = 2.6133, .faded = 2.6133 * kept };
+    }
+    try testing.expectError(Fault.DecayNotInRealTime, realTimeDecay(&per_frame));
+
+    try testing.expectError(Fault.DecayNotInRealTime, realTimeDecay(&.{}));
+}
+
+test "both arms span the same interval in whole steps" {
+    // The property `decay_span_nanos`' docstring argues for, which is a
+    // `@compileError` above and therefore cannot fail here; what this asserts is
+    // that the table it produces is the one the prose names, 12 steps of 8 ms
+    // and 6 of 16 ms.
+    try testing.expectEqual(@as(usize, 2), decay_arms.len);
+    try testing.expectEqual(@as(u64, 12), decay_arms[0].steps);
+    try testing.expectEqual(@as(u64, 6), decay_arms[1].steps);
+
+    for (decay_arms) |arm| {
+        try testing.expectEqual(decay_span_nanos, arm.steps * arm.interval_nanos);
+    }
+}
+
+test "a relative tolerance scaled by the larger argument is symmetric and safe at zero" {
+    try expectClose(1.0, 1.0001, 1e-3, Fault.DecayWrong);
+    try testing.expectError(Fault.DecayWrong, expectClose(1.0, 1.5, 1e-3, Fault.DecayWrong));
+
+    // **Zero is the case the old form got wrong**, silently: scaling by `@abs(b)`
+    // alone collapsed the tolerance to zero and turned the predicate into exact
+    // equality without saying so. Taking the larger of the two leaves a zero
+    // scale only where equality already holds.
+    try expectClose(0.0, 0.0, 1e-3, Fault.DecayWrong);
+    try testing.expectError(Fault.DecayWrong, expectClose(1e-9, 0.0, 1e-3, Fault.DecayWrong));
+
+    // And symmetric, which the old form was not: it read its scale from one
+    // argument, so swapping them could change the verdict.
+    try testing.expectError(Fault.DecayWrong, expectClose(0.0, 1e-9, 1e-3, Fault.DecayWrong));
+    try expectClose(1.0001, 1.0, 1e-3, Fault.DecayWrong);
+}
