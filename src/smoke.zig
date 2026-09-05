@@ -607,22 +607,99 @@ fn waitForReload(want: struct { reloads: ?u64 = null, rejected: ?u64 = null }, w
 const trace_width: u32 = 960;
 const trace_height: u32 = 540;
 
-/// Energy above which a pixel counts as lit.
+/// The fraction of a frame's peak above which a pixel counts as lit.
 ///
-/// One segment deposits 1.0 at its core, the accumulation is linear and
-/// unclipped, and this is half of that. This is not `measure-trace`'s 64-of-255:
-/// that tool reads an 8-bit picture through a display's colour space, and this
-/// reads the float the shader wrote.
+/// An iso-intensity contour of the beam's falloff: the biweight reaches half its
+/// peak at `u = 0.5412`, so the lit band is 54% of the half-width either side of
+/// the centreline. Every geometric measurement below is stated at that contour
+/// rather than at the beam's full width, which makes this the constant that sets
+/// the effective beam width for the whole file. It is not `measure-trace`'s
+/// 64-of-255: that tool reads an 8-bit picture through a display's colour space,
+/// and this reads the float the shader wrote.
 ///
-/// **What it means changed with #57 and the number did not.** It used to be a
-/// floor between "a deposit landed here" and "nothing did", because a one-pixel
-/// line deposited 1.0 or nothing at all. A beam has a falloff, so this is now an
-/// iso-intensity contour of that falloff: the biweight reaches 0.5 at
-/// `u = 0.5412`, so the lit band is 54% of the half-width either side of the
-/// centreline. Every geometric measurement below is therefore stated at that
-/// contour rather than at the beam's full width, which is what makes this the
-/// constant that sets the effective beam width for the whole file.
+/// **A fraction of one segment's core deposit rather than an absolute energy
+/// since #58, and the number did not change.** It was a bare 0.5 for two issues,
+/// which was the same contour only because a segment deposited 1.0 at its core
+/// whatever it was doing. Velocity weighting ended that: what one segment lays
+/// down is now `beamWeight` of its screen length, from about 0.60 where the beam
+/// dwells to 0.0034 on a full-height rod, so a fixed energy stops being a contour
+/// and becomes an absolute brightness assertion smuggled into every geometric
+/// check. `checkHorizontalMapping` is where that bit first and hardest: its
+/// three-sample window makes every segment 538 px long, so *nothing in it*
+/// cleared 0.5 and the case failed `TraceNotDrawn` with a correctly drawn ramp in
+/// front of it.
+///
+/// **A fraction of the frame's *peak* was tried first and is wrong**, which is
+/// worth recording because it is the obvious form and it fails subtly. Under
+/// velocity weighting brightness and height are correlated: `measure.periods`
+/// counts columns reaching above a half-amplitude band, and the trace is *moving*
+/// where it crosses that band, so it is dim there. At two cycles the crossing
+/// deposits 0.635 against a frame peak of 1.544, so a contour at half the peak
+/// read it as dark and the two runs fragmented into **eight** as the trace passed
+/// in and out of the contour instead of in and out of the band. A fraction of one
+/// segment's own deposit has no such coupling, because it is the same fraction of
+/// whatever that segment was going to deposit.
+///
+/// Read it through `litLevel`, which each check hands the length its own signal
+/// produces. Absolute energy is `checkHotCore`'s, `checkResolve`'s,
+/// `checkDecay`'s and `checkVelocityWeighting`'s, and not one of them reads this.
 const trace_threshold: f32 = 0.5;
+
+/// The peak energy below which a frame is held to have drawn nothing at all.
+///
+/// Separate from the contour above and not derivable from it. A `TraceNotDrawn`
+/// guard is asking whether the draw happened, which is a question about the
+/// pipeline rather than about the beam, and the contour now varies over two
+/// orders of magnitude with the signal.
+///
+/// Far below anything a real case produces and far above the format's noise. The
+/// dimmest peak in this half is `checkHorizontalMapping`'s 0.0028, which leaves
+/// 28x of margin, and `RGBA16Float`'s smallest subnormal is 6e-8, which leaves
+/// three orders the other way. It says "the draw was skipped or the pipeline drew
+/// nothing", not "the trace is dim", and it must never be tightened into the
+/// second claim.
+const trace_drawn: f32 = 1e-4;
+
+/// `trace_threshold` resolved for a segment of a given screen length.
+///
+/// One function rather than the expression at nine call sites, because a call
+/// site that reverted to the bare `trace_threshold` would still compile and would
+/// still pass on every flat case, which is where the constant is nearest its old
+/// value.
+fn litLevel(segment_len_px: f32) f32 {
+    return trace_threshold * measure.beamWeight(segment_len_px, beam_half_width_px);
+}
+
+/// The segment pitch a window of `samples` gives at this half's width.
+fn segmentPitch(samples: usize) f32 {
+    return @as(f32, @floatFromInt(trace_width)) / @as(f32, @floatFromInt(samples - 1));
+}
+
+/// The screen length of a segment whose two samples are `travel_px` apart.
+///
+/// Both legs, because a segment always advances one pitch horizontally however
+/// flat it is: that is why a stationary beam's segments are the pitch long rather
+/// than zero long, and why `beamWeight`'s floor is never actually reached.
+fn segmentLength(travel_px: f32, samples: usize) f32 {
+    return std.math.hypot(segmentPitch(samples), travel_px);
+}
+
+/// The screen length of a sine's segments at a chosen point on its cycle.
+///
+/// `cosine` selects the point, as the cosine of the phase: 1.0 is the zero
+/// crossing, where the beam is fastest and dimmest, and `sqrt(3)/2` is the
+/// half-amplitude band `measure.periods` counts against. A sine has no single
+/// segment length, so a check that thresholds one has to say which part of it the
+/// threshold is for.
+fn sineSegment(cycles: f32, amplitude: f32, samples: usize, cosine: f32) f32 {
+    const height: f32 = @floatFromInt(trace_height);
+    const span: f32 = @floatFromInt(samples - 1);
+
+    const amplitude_px = amplitude * gpu.trace_full_scale * height / 2.0;
+    const travel = amplitude_px * 2.0 * std.math.pi * cycles / span * cosine;
+
+    return segmentLength(travel, samples);
+}
 
 /// Half the beam's width, in backing pixels, at this harness's geometry.
 ///
@@ -632,6 +709,18 @@ const trace_threshold: f32 = 0.5;
 /// 3.0 a 2x host draws, and the rail clearance and the row spans are both
 /// tightest at 2x. `src/gpu/iface.zig` carries the same warning at the constant.
 const beam_half_width_px: f32 = gpu.beam_width_points / 2.0;
+
+/// A window four times the drawable's width, for the one case that needs two
+/// sample densities rather than one.
+///
+/// Every other case here runs at one sample per point, which is where every
+/// number this half prints is stated and where `TraceUniforms.density` is exactly
+/// 1.0. `checkVelocityWeighting` needs it to be something else, because the whole
+/// question it settles is whether the density term and the velocity term stay
+/// independent, and at one sample per point the first of them is not doing
+/// anything. Four is where `beamDensity` reads a quarter, which is the geometry
+/// #57 named as the one where a moving trace would otherwise saturate.
+const dense_samples: usize = 4 * trace_width;
 
 /// The interval between frames on this half's synthetic clock.
 ///
@@ -924,6 +1013,7 @@ fn traceHalf() !void {
     try checkHorizontalMapping(energy, picture);
     try checkEdgeColumns(energy, picture, window);
     try checkBeamProfile(energy, picture, window);
+    try checkVelocityWeighting(energy, picture, window);
     try checkPeriods(energy, picture, window);
     try checkDepositIsScalar(energy, picture, window);
     try checkResolve(energy, picture, window);
@@ -966,8 +1056,9 @@ fn checkEdgeColumns(energy: []f32, picture: []u8, window: []f32) !void {
     try probe.run(window, 1, 1);
 
     const image = probe.image();
-    const lit = measure.litColumns(image, trace_threshold);
-    const span = measure.litSpan(image, trace_threshold) orelse return error.TraceNotDrawn;
+    const contour = litLevel(segmentLength(0.0, window.len));
+    const lit = measure.litColumns(image, contour);
+    const span = measure.litSpan(image, contour) orelse return error.TraceNotDrawn;
 
     say("  railed: {d} of {d} columns lit, spanning {d} to {d}", .{
         lit,
@@ -1012,25 +1103,36 @@ fn checkBeamProfile(energy: []f32, picture: []u8, window: []f32) !void {
     const image = probe.image();
     const row = trace_height / 2;
 
-    var total: f32 = 0;
+    const total = measure.rowEnergy(image, row);
+    if (total <= 0) return error.TraceNotDrawn;
+
     var moment: f32 = 0;
     var x: usize = 0;
     while (x < trace_width) : (x += 1) {
-        const e = image.green(x, row);
-        total += e;
-        moment += e * @as(f32, @floatFromInt(x));
+        moment += image.green(x, row) * @as(f32, @floatFromInt(x));
     }
-
-    if (total <= 0) return error.TraceNotDrawn;
 
     // `16/15` is `∫(1 - u²)² du` over the profile's support, which is what makes
     // this a statement about the biweight rather than about any curve of roughly
     // the right size.
-    const want = beam_half_width_px * 16.0 / 15.0;
+    //
+    // **Times the rod's own velocity weight since #58**, which is the whole of
+    // what that issue does to this check and is what turns it into a second
+    // instrument for it. A cross-section is energy *per unit length*, and that is
+    // exactly the quantity velocity weighting divides: this rod is 437 px long,
+    // so it deposits about 0.0034 of what a dwelling beam does and the integral
+    // falls with it. The length comes from the constants that place the step
+    // rather than from the picture, so this still compares two derivations.
+    const travel = measure.expectedRow(-0.9, trace_height) - measure.expectedRow(0.9, trace_height);
+    const pitch = @as(f32, @floatFromInt(trace_width)) / @as(f32, @floatFromInt(window.len - 1));
+    const rod = std.math.hypot(pitch, travel);
+
+    const want = beam_half_width_px * 16.0 / 15.0 * measure.beamWeight(rod, beam_half_width_px);
     const centre = moment / total;
-    say("  beam: cross-section integrates to {d:.4}, expected {d:.4}, centred on column {d:.2}", .{
+    say("  beam: cross-section integrates to {d:.6}, expected {d:.6}, over a {d:.1} px segment, centred on column {d:.2}", .{
         total,
         want,
+        rod,
         centre,
     });
 
@@ -1052,6 +1154,126 @@ fn checkBeamProfile(energy: []f32, picture: []u8, window: []f32) !void {
     if (@abs(left - right) > total * 0.05) return error.BeamNotSymmetric;
 }
 
+/// Deposited brightness per unit length is inversely proportional to a segment's
+/// screen length, and a segment's total deposit is therefore constant.
+///
+/// **ADR 0007's "single relationship" (#58), and the check that issue was held
+/// open for.** It is a claim about a *relationship*, and by-eye verification of a
+/// relationship is how plausible-looking wrong code survives: "it looks like a
+/// scope" cannot tell `1/length` from `1/sqrt(length)` from a constant with a
+/// lucky palette. That argument is why [#51] built this half before the look was
+/// finished rather than after.
+///
+/// **Two arms, stating the same physics from both ends, and the pairing is the
+/// point.** One reads energy *per unit length*, which is the form the issue and
+/// the ADR are written in and which falls as `1/len`. The other reads the *total*,
+/// which is what the beam actually conserves and which does not move at all. A
+/// defect that got the exponent wrong would have to satisfy both.
+fn checkVelocityWeighting(energy: []f32, picture: []u8, window: []f32) !void {
+    // Arm 1, per unit length, on isolated rods.
+    //
+    // A window that steps from +a to -a at its midpoint draws one segment across
+    // the centre row and puts its two flat runs far above and below, so
+    // `rowEnergy` at that row is that segment's cross-section and nothing else's.
+    // Three amplitudes span a factor of eighteen in length, which the weight has
+    // to track; `checkBeamProfile` is the same measurement at the longest of them
+    // and asserts the biweight's own constant beside it.
+    for ([_]f32{ 0.05, 0.2, 0.9 }) |a| {
+        var probe = try Probe.init(energy, picture);
+        defer probe.deinit();
+
+        for (window, 0..) |*slot, i| slot.* = if (i < window.len / 2) a else -a;
+        try probe.run(window, 1, 1);
+
+        const image = probe.image();
+        if (measure.maxChannel(image, 1) <= trace_drawn) return error.TraceNotDrawn;
+
+        const total = measure.rowEnergy(image, trace_height / 2);
+
+        const travel = measure.expectedRow(-a, trace_height) - measure.expectedRow(a, trace_height);
+        const len = segmentLength(travel, window.len);
+        const want = beam_half_width_px * 16.0 / 15.0 * measure.beamWeight(len, beam_half_width_px);
+
+        say("  velocity: a {d: >6.1} px segment deposits {d:.6} per unit length, expected {d:.6}", .{
+            len,
+            total,
+            want,
+        });
+
+        try expectClose(total, want, 0.05, error.DepositNotVelocityWeighted);
+    }
+
+    // Arm 2, the total, across four slopes and two sample densities.
+    //
+    // **Eight probes and one assertion, and the second axis is what nothing else
+    // here reaches.** An alternating window gives every segment the same length,
+    // so the image's total is the segment count times `segmentEnergy` of one
+    // rather than a mixture over a sine's whole range of speeds. The four slopes
+    // drive the velocity term over a factor of 486 in length; the two window
+    // lengths drive `TraceUniforms.density` to a quarter underneath them. Both
+    // terms are in play at once and the total does not move, which is the
+    // executable form of "these are two divisions with different domains".
+    //
+    // Unweighted the four slopes alone span a factor of 197, so this
+    // discriminates by two orders of magnitude against a tolerance of five
+    // percent.
+    var dense: [dense_samples]f32 = undefined;
+
+    var low: f32 = std.math.floatMax(f32);
+    var high: f32 = 0;
+
+    for ([_][]f32{ window, &dense }) |samples| {
+        // `beamDensity`'s counterpart, restated here rather than reached, on
+        // `measure.expectedRow`'s terms: the backend's copy is private and an
+        // assertion is worth more when the two derivations are independent. The
+        // scale cancels because `initOffscreen` runs at 1.0, so a pitch in points
+        // and a pitch in backing pixels are the same number in this half.
+        const pitch = segmentPitch(samples.len);
+        const density = @min(1.0, pitch);
+        const instances: f32 = @floatFromInt(samples.len - 1);
+
+        for ([_]f32{ 0.0, 0.05, 0.45, 1.0 }) |a| {
+            var probe = try Probe.init(energy, picture);
+            defer probe.deinit();
+
+            measure.alternating(samples, a);
+            try probe.run(samples, 1, 1);
+
+            const image = probe.image();
+            if (measure.maxChannel(image, 1) <= trace_drawn) return error.TraceNotDrawn;
+
+            const total = measure.totalEnergy(image);
+
+            const travel = measure.expectedRow(-a, trace_height) - measure.expectedRow(a, trace_height);
+            const len = segmentLength(travel, samples.len);
+            const want = instances * density * measure.segmentEnergy(len, beam_half_width_px);
+
+            say("  velocity: {d: >4} samples at a {d: >6.1} px slope deposit {d: >7.1} in total, expected {d: >7.1}", .{
+                samples.len,
+                len,
+                total,
+                want,
+            });
+
+            // Ten percent against the closed form, which is a claim about the
+            // profile's two-dimensional integral as well as about the weight, and
+            // absorbs the half-cap each end of the window loses off the drawable.
+            try expectClose(total, want, 0.10, error.DepositNotVelocityWeighted);
+
+            low = @min(low, total);
+            high = @max(high, total);
+        }
+    }
+
+    // And against each other, which is the assertion the issue actually asks for
+    // and needs no model at all. The model's own spread is 1.8%, from
+    // `segmentEnergy`'s two limits, so five percent is that plus half-float.
+    const spread = high / low;
+    say("  velocity: the eight totals span {d:.4}, against 197 unweighted", .{spread});
+
+    if (spread > 1.05) return error.DepositNotVelocityWeighted;
+}
+
 /// A window of zeros draws one flat line through the centre.
 fn checkSilence(energy: []f32, picture: []u8, window: []f32) !void {
     var probe = try Probe.init(energy, picture);
@@ -1063,13 +1285,14 @@ fn checkSilence(energy: []f32, picture: []u8, window: []f32) !void {
     const image = probe.image();
     if (!image.complete()) return error.ReadbackTruncated;
 
-    const lit = measure.litColumns(image, trace_threshold);
+    const contour = litLevel(segmentLength(0.0, window.len));
+    const lit = measure.litColumns(image, contour);
     if (lit != trace_width) {
         say("  silence lit {d} of {d} columns", .{ lit, trace_width });
         return error.TraceNotDrawn;
     }
 
-    const seen = measure.extremes(image, trace_threshold) orelse return error.TraceNotDrawn;
+    const seen = measure.extremes(image, contour) orelse return error.TraceNotDrawn;
 
     // **The bound is the beam's own depth now, and it is parity-dependent.**
     // Before #57 this was one row of slack for the centre line falling on a pixel
@@ -1224,7 +1447,14 @@ fn checkHorizontalMapping(energy: []f32, picture: []u8) !void {
     try probe.run(&window, 1, 1);
 
     const image = probe.image();
-    const span = measure.litSpan(image, trace_threshold) orelse return error.TraceNotDrawn;
+    // **The contour, not an absolute energy, and this case is why that changed.**
+    // Three samples put the segment pitch at 480 px, so both segments are 538 px
+    // long and #58's weighting takes their peak to 0.0028. Read against the old
+    // fixed 0.5 this case failed `TraceNotDrawn` with a perfectly drawn ramp in
+    // front of it; the geometry it is about was never in question.
+    const travel = measure.expectedRow(0.0, trace_height) - measure.expectedRow(1.0, trace_height);
+    const contour = litLevel(segmentLength(travel, window.len));
+    const span = measure.litSpan(image, contour) orelse return error.TraceNotDrawn;
     say("  three samples span columns {d} to {d} of {d}", .{ span.first, span.last, trace_width - 1 });
 
     // **Exactly the edge columns, with no slack, and #57 is what removed it.**
@@ -1238,8 +1468,8 @@ fn checkHorizontalMapping(energy: []f32, picture: []u8) !void {
 
     // And the vertical, which the same window checks for free: the ramp runs from
     // -1 at the left to +1 at the right, so the corners are the extremes.
-    const left = measure.topRow(image, span.first, trace_threshold).?;
-    const right = measure.topRow(image, span.last, trace_threshold).?;
+    const left = measure.topRow(image, span.first, contour).?;
+    const right = measure.topRow(image, span.last, contour).?;
     if (right >= left) {
         say("  the ramp does not rise: column {d} is row {d}, column {d} is row {d}", .{
             span.first,
@@ -1262,7 +1492,20 @@ fn checkPeriods(energy: []f32, picture: []u8, window: []f32) !void {
         measure.sine(window, @floatFromInt(cycles), 0.8);
         try probe.run(window, 1, 1);
 
-        const counted = measure.periods(probe.image(), trace_threshold);
+        // **The contour matters more here than anywhere, and in the direction
+        // that helps.** Under velocity weighting a crossing column is dim by
+        // construction, so at twenty cycles it falls below the contour and
+        // `topRow` returns nothing for it. That is precisely the column
+        // `periods`' docstring says a crossing counter reads early, so #58 makes
+        // this count *more* robust rather than less; what it would break is a
+        // fixed energy, since at twenty cycles even the turning points peak at
+        // 0.80 and the whole trace would read dark.
+        // The band crossing rather than the turning point, because that is the
+        // brightness this count has to be able to see: `periods` reads *height*
+        // and the trace is moving where it reaches the band, so under #58 it is
+        // dim exactly where it is being looked for.
+        const at_band = sineSegment(@floatFromInt(cycles), 0.8, window.len, @sqrt(3.0) / 2.0);
+        const counted = measure.periods(probe.image(), litLevel(at_band));
         say("  {d: >2} cycles in, {d: >2} periods counted", .{ cycles, counted });
 
         // Strict equality. #38's first counter was off by exactly one at every
@@ -1309,7 +1552,11 @@ fn checkDepositIsScalar(energy: []f32, picture: []u8, window: []f32) !void {
     const image = probe.image();
 
     const peak_green = measure.maxChannel(image, 1);
-    if (peak_green <= trace_threshold) return error.TraceNotDrawn;
+    if (peak_green <= trace_drawn) return error.TraceNotDrawn;
+
+    // The zero crossing, which is the dimmest the trace gets, so the scan covers
+    // as much of it as the contour admits rather than only its turning points.
+    const contour = litLevel(sineSegment(4.0, 0.8, window.len, 1.0));
 
     var worst: f32 = 0;
     var y: usize = 0;
@@ -1317,7 +1564,7 @@ fn checkDepositIsScalar(energy: []f32, picture: []u8, window: []f32) !void {
         var x: usize = 0;
         while (x < trace_width) : (x += 1) {
             const g = image.channel(x, y, 1);
-            if (g <= trace_threshold) continue;
+            if (g <= contour) continue;
 
             // Alpha included. It accumulates and decays exactly like the other
             // three, which is what `mtl.blend_factor_one`'s docstring left open
@@ -1386,6 +1633,8 @@ fn checkResolve(energy: []f32, picture: []u8, window: []f32) !void {
         if (background[channel] != at_zero[channel]) return error.BackgroundNotThePaletteAtZero;
     }
 
+    const contour = litLevel(sineSegment(3.0, 0.8, window.len, 1.0));
+
     var worst: i32 = 0;
     var lit: usize = 0;
 
@@ -1394,7 +1643,7 @@ fn checkResolve(energy: []f32, picture: []u8, window: []f32) !void {
         var x: usize = 0;
         while (x < trace_width) : (x += 1) {
             const got = probe.pixel(x, y);
-            if (image.channel(x, y, 1) > trace_threshold) lit += 1;
+            if (image.channel(x, y, 1) > contour) lit += 1;
 
             // **Every channel predicted from one number**, which is stronger
             // than comparing each against its own energy: it asserts the
