@@ -1034,9 +1034,14 @@ test "silence refuses a line off the centre, a line that is not flat, and no lin
     const canvas = try Canvas.init(64, 540);
     defer canvas.deinit();
 
-    // A twentieth of a pixel is the bound, so a hundredth of full scale is two
-    // orders of magnitude outside it. A whole-pixel tolerance would pass this.
-    try testing.expectError(Fault.CentreLineWrong, silence(canvas.flat(0.01)));
+    // **Chosen to sit between the two bounds, which is what makes this a test of
+    // the twentieth of a pixel rather than of being off-centre at all.** A whole
+    // backing pixel at this height is 0.0041 of full scale and a twentieth of one
+    // is 0.00021, so 0.001 is refused by the bound this judge states and accepted
+    // by the one `pixelTolerance` gives. Planted at 0.01, widening the bound
+    // twentyfold changed nothing and the arm asserted only that the sign of the
+    // error was detectable.
+    try testing.expectError(Fault.CentreLineWrong, silence(canvas.flat(0.001)));
 
     // A sine lights every column too, so this is refused for its depth rather
     // than for being absent, which is the distinction the two faults draw.
@@ -1326,7 +1331,13 @@ test "the background is the palette at zero, and four ways of not being it" {
         // Dark, neutral, blue-leading and opaque, and still not what the
         // gradient's first entry puts on an unlit pixel. This is #60's own open
         // question asserted rather than argued.
-        .{ .bytes = .{ 6, 6, 9, 255 }, .fault = Fault.BackgroundNotThePaletteAtZero },
+        //
+        // Five levels off rather than one, deliberately: at one level the
+        // per-pixel loop below would refuse it anyway, within its own slack, and
+        // removing this check would trade one fault for another instead of
+        // letting the picture through. Planted, that is the difference between
+        // an arm that discriminates and one that does not.
+        .{ .bytes = .{ 10, 10, 14, 255 }, .fault = Fault.BackgroundNotThePaletteAtZero },
     };
 
     for (cases) |case| {
