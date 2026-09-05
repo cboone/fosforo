@@ -171,7 +171,7 @@ Row five is the one that justifies the depth decision. `refAllDecls(@This())` al
 
 ## Commits
 
-1. `test: reference every public declaration in the thirteen modules with no sweep (#95)`
+1. `test: reference every public declaration in the modules with no sweep (#95)`
 2. `test: complete the sweep in the three modules that had a partial one (#95)`
 3. `test: refuse a module that arrives without a declaration sweep (#95)`
 4. `docs: record which half of the lazy-analysis gotcha the sweep retires (#95)`
