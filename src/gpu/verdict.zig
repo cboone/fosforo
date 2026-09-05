@@ -1056,6 +1056,14 @@ test "silence refuses a line off the centre, a line that is not flat, and no lin
     // than for being absent, which is the distinction the two faults draw.
     try testing.expectError(Fault.TraceNotFlat, silence(canvas.wave(3.0, 0.5)));
 
+    // **One column short, which is what "divide x by `sample_count` rather than
+    // `sample_count - 1`" cost at a full window.** #51 planted it and this judge
+    // reported "silence lit 959 of 960 columns"; the broad net fires before the
+    // three-sample probe that makes the same error 320 columns wide.
+    _ = canvas.flat(0.0);
+    for (0..540) |y| canvas.pixels[(y * 64 + 63) * 4 + 1] = 0.0;
+    try testing.expectError(Fault.TraceNotDrawn, silence(canvas.image()));
+
     try testing.expectError(Fault.TraceNotDrawn, silence(canvas.dark()));
 }
 
