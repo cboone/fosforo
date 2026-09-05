@@ -256,6 +256,45 @@ pub fn maxChannel(image: Image, c: usize) f32 {
     return peak;
 }
 
+/// The energy one row holds, summed across its whole width.
+///
+/// A cross-section, and the quantity a check on the beam's *profile* is stated
+/// in: at a row a single steep segment crosses, this is the integral of the
+/// profile through it, so it reads out energy per unit length directly.
+///
+/// Summed over the whole row rather than over the lit part, on `centroidRow`'s
+/// argument: the biweight has compact support, so an unlit pixel holds exactly
+/// 0.0 and thresholding first would only add a bias that depends on where the
+/// beam falls between two pixel centres.
+pub fn rowEnergy(image: Image, y: usize) f32 {
+    var total: f32 = 0;
+
+    var x: usize = 0;
+    while (x < image.width) : (x += 1) total += image.green(x, y);
+
+    return total;
+}
+
+/// Every joule the frame deposited, summed over the whole image.
+///
+/// **The quantity velocity weighting conserves**, which is what makes it the one
+/// measurement that can state that relationship rather than describe a picture.
+/// A segment's deposit is spread over its screen length, so per-pixel energy and
+/// per-column energy both change enormously with the signal while this does not:
+/// see `segmentEnergy`, whose whole content is that the product is flat.
+///
+/// Additive blending is what makes the sum meaningful where segments overlap.
+/// Overlap adds rather than replacing, so a total is a total whatever the
+/// geometry did, which is exactly the property a peak or a lit count lacks.
+pub fn totalEnergy(image: Image) f32 {
+    var total: f32 = 0;
+
+    var y: usize = 0;
+    while (y < image.height) : (y += 1) total += rowEnergy(image, y);
+
+    return total;
+}
+
 /// The sample value a row implies, inverting the shader's mapping.
 ///
 /// The row's *centre* rather than its edge, since a pixel is a square and the
@@ -334,6 +373,60 @@ pub fn railRow(height: usize) f32 {
 /// The row a sample of zero lands on, as a continuous position.
 pub fn centreRow(height: usize) f32 {
     return @as(f32, @floatFromInt(height)) / 2.0 - 0.5;
+}
+
+// ---------------------------------------------------------------------------
+// What one segment deposits
+// ---------------------------------------------------------------------------
+
+/// How much of a segment's deposit survives, given how fast the beam crossed it.
+///
+/// `trace_fragment`'s velocity term restated on this side, from the one constant
+/// it reads, on `expectedRow`'s precedent: an assertion then compares two
+/// independent derivations rather than the shader against itself.
+///
+/// **ADR 0007's "single relationship" in one line (#58).** The beam sweeps at a
+/// constant *time* rate and covers a varying *screen* distance, so deposited
+/// brightness per unit length is inversely proportional to a segment's screen
+/// length. `TraceUniforms.density` is the other factor and is not this one: that
+/// is the time a segment stands for, one number per frame from the window length
+/// and the drawable width, and this varies per segment with the signal.
+///
+/// **Why `h + len` rather than a floor at some epsilon**, which is what the issue
+/// asked for and is not what it needed. Both asymptotics are wanted: proportional
+/// to `1 / len` for a segment longer than the beam, and constant below it, since
+/// a beam moving less than its own width does not reduce a pixel's dwell.
+/// `h / (h + len)` is the one-parameter form with both, and `segmentEnergy` fixes
+/// the parameter at `h` by derivation rather than by taste. It also cannot divide
+/// by zero, so a stationary beam needs no guard at all.
+pub fn beamWeight(len_px: f32, half_width_px: f32) f32 {
+    return half_width_px / (half_width_px + len_px);
+}
+
+/// The total energy one weighted segment deposits, over every pixel it touches.
+///
+/// **The invariant the whole of #58 comes down to, and the reason `beamWeight`'s
+/// constant is derived rather than chosen.** A capsule's integral of the biweight
+/// is `(16/15) * h` per unit length, plus `(pi/3) * h^2` for the two half-disc
+/// caps, which together are the two terms below. Multiplied by `h / (h + len)`
+/// that product varies by **under 2% across every length this display can draw**,
+/// from a stationary beam to one crossing the drawable in a single sample: the
+/// limits are `(pi/3) * h^2` at zero and `(16/15) * h^2` at infinity, whose ratio
+/// is 0.982.
+///
+/// So the physical statement is executable. A segment carries one sample interval
+/// of beam time whatever it does with it, so the energy it lays down is constant
+/// and only its *distribution* changes. `checkVelocityWeighting` in
+/// `src/smoke.zig` asserts exactly that against the GPU; unweighted, the same
+/// arms span a factor of 197.
+///
+/// The 2% is a property of the profile rather than slack in the model, which is
+/// why it is stated here rather than absorbed into a tolerance at the call site.
+pub fn segmentEnergy(len_px: f32, half_width_px: f32) f32 {
+    const along = 16.0 / 15.0 * half_width_px * len_px;
+    const caps = std.math.pi / 3.0 * half_width_px * half_width_px;
+
+    return beamWeight(len_px, half_width_px) * (along + caps);
 }
 
 /// Periods of a periodic trace, counted as excursions above a half-amplitude
@@ -483,6 +576,24 @@ pub fn sine(out: []f32, cycles: f32, amplitude: f32) void {
     for (out, 0..) |*slot, i| {
         const phase = 2.0 * std.math.pi * cycles * @as(f32, @floatFromInt(i)) / span;
         slot.* = amplitude * @sin(phase);
+    }
+}
+
+/// A window flipping sign every sample, so **every segment has one length**.
+///
+/// The probe velocity weighting needs and the reason a sine will not do. A sine's
+/// segments run from the pitch at a turning point to many times it at a crossing,
+/// so a measurement over the whole image mixes the entire range and cannot state
+/// a relationship between energy and length. Here the length is one number the
+/// caller chose, `hypot(pitch, 2 * amplitude * full_scale * height / 2)`, and the
+/// image's total energy is the segment count times `segmentEnergy` of it.
+///
+/// It is the Nyquist signal, which is not a coincidence: the fastest thing the
+/// window can hold is what draws the longest segments, and the longest segments
+/// are where the weighting has the most to do.
+pub fn alternating(out: []f32, amplitude: f32) void {
+    for (out, 0..) |*slot, i| {
+        slot.* = if (i % 2 == 0) amplitude else -amplitude;
     }
 }
 
@@ -887,4 +998,131 @@ test "a plateau is measured but says nothing about level" {
 
     try testing.expect(at_full > 0);
     try testing.expect(at_rail > 0);
+}
+
+test "the beam's velocity weight falls as one over length and never diverges" {
+    const h = model_half_width;
+
+    // At rest it is exactly one, which is what keeps `whitePoint`'s derivation
+    // from the dwell asymptote a statement about a beam that never moves.
+    try testing.expectEqual(@as(f32, 1.0), beamWeight(0.0, h));
+
+    // Monotone, and asymptotically `h / len`: at a hundred half-widths the two
+    // forms agree to within a percent, which is the regime a fast crossing and a
+    // transport stop's step both live in.
+    var previous: f32 = 1.0;
+    for ([_]f32{ 0.5, 1.0, 2.0, 10.0, 100.0, 1000.0 }) |multiple| {
+        const len = multiple * h;
+        const seen = beamWeight(len, h);
+
+        try testing.expect(seen < previous);
+        try testing.expect(seen > 0.0);
+        previous = seen;
+    }
+
+    try testing.expectApproxEqRel(@as(f32, 0.01), beamWeight(99.0 * h, h), 1e-5);
+
+    // **The floor the issue asked for, answered by construction rather than by a
+    // guard.** The denominator is `h + len`, so there is no length at which this
+    // divides by zero and none at which it amplifies; a plain `h / len` would
+    // return 3.0 at half a pixel here and 1.5e6 at a nanometre.
+    try testing.expect(beamWeight(1e-9, h) <= 1.0);
+    try testing.expect(!std.math.isNan(beamWeight(0.0, h)));
+}
+
+test "a segment's total deposit does not depend on its length" {
+    const h = model_half_width;
+
+    // **The whole of #58, as a property rather than a picture.** A segment carries
+    // one sample interval of beam time whatever it does with it, so the energy it
+    // lays down is constant and only the distribution changes. The limits are
+    // `(pi/3) h^2` at rest and `(16/15) h^2` at infinity; everything between is
+    // bracketed by them.
+    const at_rest = std.math.pi / 3.0 * h * h;
+    const at_infinity = 16.0 / 15.0 * h * h;
+
+    try testing.expectApproxEqRel(at_rest, segmentEnergy(0.0, h), 1e-5);
+
+    // Every length the display can draw, from under a pixel to twice the diagonal
+    // of the harness's own surface, inside a 2% band.
+    for ([_]f32{ 0.25, 1.0, 4.0, 24.3, 97.2, 218.7, 486.0, 2000.0 }) |len| {
+        const seen = segmentEnergy(len, h);
+        try testing.expect(seen >= @min(at_rest, at_infinity) * 0.999);
+        try testing.expect(seen <= @max(at_rest, at_infinity) * 1.001);
+    }
+
+    // The band's own width, stated rather than left to be inferred from the loop
+    // above: 1.8%, which is what sets the tolerance `checkVelocityWeighting` can
+    // reasonably ask of a GPU.
+    try testing.expectApproxEqRel(@as(f32, 0.982), at_rest / at_infinity, 1e-3);
+
+    // And unweighted it is nothing of the kind. This is the margin the offscreen
+    // check discriminates by: the same eight lengths span a factor of 197 with the
+    // velocity term removed.
+    const bare_short = 16.0 / 15.0 * h * 1.001 + at_rest;
+    const bare_long = 16.0 / 15.0 * h * 486.0 + at_rest;
+    try testing.expect(bare_long / bare_short > 190.0);
+}
+
+test "an alternating window gives every segment the same length" {
+    var window: [8]f32 = undefined;
+    alternating(&window, 0.45);
+
+    for (window, 0..) |sample, i| {
+        try testing.expectEqual(if (i % 2 == 0) @as(f32, 0.45) else @as(f32, -0.45), sample);
+    }
+
+    // Which is the point: consecutive samples sit at ±0.45, so every segment's
+    // vertical travel is the same and the whole image is one length rather than a
+    // sine's continuum of them.
+    const height: usize = 540;
+    const travel = expectedRow(-0.45, height) - expectedRow(0.45, height);
+    try testing.expectApproxEqAbs(@as(f32, 218.7), travel, 1e-3);
+}
+
+test "row and total energy sum what the profile deposited" {
+    const width: usize = 64;
+    const height: usize = 32;
+
+    var pixels: [width * height * 4]f32 = @splat(0);
+    const image: Image = .{ .width = width, .height = height, .pixels = &pixels };
+
+    try testing.expectEqual(@as(f32, 0.0), totalEnergy(image));
+
+    pixels[(5 * width + 10) * 4 + 1] = 1.0;
+    pixels[(5 * width + 11) * 4 + 1] = 0.25;
+    pixels[(9 * width + 40) * 4 + 1] = 2.5;
+
+    try testing.expectApproxEqAbs(@as(f32, 1.25), rowEnergy(image, 5), 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 2.5), rowEnergy(image, 9), 1e-6);
+    try testing.expectEqual(@as(f32, 0.0), rowEnergy(image, 0));
+
+    // Green only, on `Image.green`'s convention, so a red-channel value is not
+    // counted twice into a number the harness reads as energy.
+    pixels[(5 * width + 10) * 4 + 0] = 99.0;
+    try testing.expectApproxEqAbs(@as(f32, 3.75), totalEnergy(image), 1e-6);
+}
+
+test "a rasterized cross-section integrates to the biweight" {
+    const width: usize = 64;
+    const height: usize = 128;
+
+    var pixels: [width * height * 4]f32 = undefined;
+    var window: [width]f32 = undefined;
+
+    // A flat trace, so every column holds one profile and a row through it is not
+    // a cross-section at all; the integral wanted here is down a column. This is
+    // the model's counterpart to `checkBeamProfile`'s measurement on the GPU, and
+    // it exists so the constant `(16/15) * h` is asserted somewhere without one.
+    constant(&window, 0.0);
+    const image = rasterize(&pixels, width, height, &window);
+
+    var total: f32 = 0;
+    var y: usize = 0;
+    while (y < height) : (y += 1) total += image.green(width / 2, y);
+
+    // The model deposits an unweighted profile, which is what makes this a check
+    // on `(16/15)` rather than on `beamWeight`; the shader's own weighting is
+    // measured against a GPU, where the lengths are real.
+    try testing.expectApproxEqRel(model_half_width * 16.0 / 15.0, total, 0.05);
 }

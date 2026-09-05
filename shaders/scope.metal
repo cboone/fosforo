@@ -136,13 +136,16 @@ fragment float4 decay_fragment(VertexOut in [[stage_in]],
 // attainable domain is (0, d / (1 - decay)], where d is the energy one frame
 // deposits on the pixel the beam dwells hardest on. Until #57 that was exactly
 // one, because a line strip's x is monotone in `vertex_id` so one frame could not
-// deposit twice on a pixel; oriented quads overlap at every joint, so it is now
-// about 2.6 and the domain is correspondingly wider. The conclusion survives the
-// premise and is strengthened by it. Plain Reinhard returns 0.909 at ten
-// and needs an energy of 167 to reach byte 255, seventeen times anything this
-// display can produce, so a palette running to white never arrives and the core
-// stays pale green. `1 - exp(-e)` fails from the other side, saturating by five
-// and resolving nothing above it, which #58 makes worse by widening the domain.
+// deposit twice on a pixel; oriented quads overlap at every joint, which took it
+// to about 2.6; and #58's velocity weighting brought the top back to about 1.56
+// while dropping the *bottom* by two orders of magnitude, since a full-height
+// segment now deposits about 0.003 where it used to deposit the same 1.0 a
+// dwelling one did. The conclusion has survived all three premises and the third
+// is the one that needed it. Plain Reinhard returns 0.909 at ten and needs an
+// energy of 167 to reach byte 255, seventeen times anything this display can
+// produce, so a palette running to white never arrives and the core stays pale
+// green. `1 - exp(-e)` fails from the other side, saturating by five and resolving
+// nothing above it, which a range this wide makes worse rather than better.
 //
 // **The clamp on `dwell` is what a hot-reloaded shader needs**, not what this
 // arithmetic needs. A fragment buffer no reloaded source declares reads zero, so
@@ -236,14 +239,21 @@ struct TraceUniforms {
 // arrives in.
 //
 // **`flat` rather than interpolated, and it is only correct because all four
-// corners compute the same pair.** A triangle strip's two triangles have
+// corners compute the same values.** A triangle strip's two triangles have
 // different provoking vertices, so a `trace_vertex` that derived *this corner's*
 // own endpoint instead would hand the two halves of one quad different segments
 // and draw a discontinuity along its diagonal, with nothing here to fail.
+//
+// `segment_length` is `distance(p0, p1)` and is carried rather than recomputed
+// because `trace_vertex` already has it: the quad's expansion needs it, so the
+// alternative is a square root per fragment for a number that is constant across
+// the whole quad. #58 is what reads it. Named in full rather than `length`, which
+// is a function in this scope and would read as one.
 struct TraceOut {
     float4 position [[position]];
     float2 p0 [[flat]];
     float2 p1 [[flat]];
+    float segment_length [[flat]];
 };
 
 // Clip space to the window space a fragment's `[[position]]` arrives in.
@@ -345,6 +355,7 @@ vertex TraceOut trace_vertex(uint vertex_id [[vertex_id]],
     out.position = float4(to_clip(at, viewport), 0.0, 1.0);
     out.p0 = a;
     out.p1 = b;
+    out.segment_length = len;
     return out;
 }
 
@@ -372,7 +383,31 @@ vertex TraceOut trace_vertex(uint vertex_id [[vertex_id]],
 // one. The line strip was idempotent in overdraw and had no such term. This factor
 // is identical for every segment in a frame and depends only on the window length
 // and the drawable width, never on the signal, which is exactly what distinguishes
-// it from #58's per-segment term.
+// it from the velocity term below.
+//
+// **The velocity term is `h / (h + len)`, and it is the whole of ADR 0007's
+// "single relationship" (#58).** The beam sweeps at a constant *time* rate and
+// covers a varying *screen* distance, so where the trace moves slowly it dwells
+// and deposits a lot per pixel, and where it moves fast the same energy smears
+// over hundreds of pixels. `density` is the time one segment stands for; this is
+// one over the distance it covers. Two divisions with different domains, and
+// collapsing them would make brightness track the sample rate again.
+//
+// **The constant is derived rather than chosen, which is why there is no epsilon
+// here.** A capsule's integral of the profile is `(16/15) * h * len` along its
+// length plus `(pi/3) * h * h` for the two caps, so the weight that makes a
+// segment's *total* deposit independent of its length is `1 / (1 + 1.019 * len /
+// h)`. This is that, to within 2% across every length the display can draw, and
+// `measure.segmentEnergy` is the same statement in Zig, asserted without a GPU.
+// Two things follow. The denominator is `h + len >= h > 0`, so the floor the
+// issue asked for against a stationary beam is answered by construction rather
+// than by a guard. And the floor's real job is physical: below the beam's own
+// width, moving stops reducing a pixel's dwell, and this rolls off smoothly there
+// instead of meeting a `max` at a kink.
+//
+// It also sharpens what `density` alone leaves ragged. Per-pixel energy on a flat
+// trace reads 1.56 at 48 kHz against 1.58 at 192 kHz, where before it was 2.6
+// against 1.85.
 //
 // **All four channels carry the same number**, so whichever one anything reads
 // means the same thing: `resolve_fragment` reads green, `measure.Image.green`
@@ -398,5 +433,7 @@ fragment float4 trace_fragment(TraceOut in [[stage_in]],
     const float u = min(d / beam.half_width_px, 1.0);
     const float falloff = 1.0 - u * u;
 
-    return float4(falloff * falloff * beam.density);
+    const float velocity = beam.half_width_px / (beam.half_width_px + in.segment_length);
+
+    return float4(falloff * falloff * beam.density * velocity);
 }
