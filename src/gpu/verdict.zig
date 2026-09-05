@@ -21,13 +21,20 @@
 //! `palette.max_elapsed_nanos` and predicts 0.7684 against a true 0.5451, and
 //! that was a defect in the check rather than in the shader.
 //!
-//! **Three vacuity holes were found by writing the tests, not by reading.**
+//! **Two vacuity holes and one asymmetry, and only planting told them apart.**
 //! `decay` and `realTimeDecay` used to divide by a first peak nothing checked,
 //! and `nan > 0.02 * want` is *false*, so a run that drew nothing at all read as
-//! a healthy fade. `periodRatio` used to index an `undefined` array written only
-//! inside a `switch` over a literal list. And `expectClose` scaled by one of its
-//! two arguments, so at zero its tolerance collapsed silently to exact equality.
-//! All three are closed below and each has a test that fails without the fix.
+//! a healthy fade; planted, that returns `void` where the test now demands a
+//! refusal. `periodRatio` used to index an `undefined` array written only inside
+//! a `switch` over a literal frequency list, which was sound exactly while that
+//! list stood. Both are closed below with a test that fails without the fix.
+//!
+//! The third was filed as a hole and is not one. #92 said `expectClose` was
+//! "undefined if a future caller passes zero"; it performed no division, and at
+//! zero it reduced to exact equality, which is the right answer. Planting the old
+//! spelling back made its test pass, which is what forced the diagnosis to be
+//! rewritten rather than encoded: the real defect was that it read its scale from
+//! one of its two arguments. See `expectClose`.
 //!
 //! **The judges print and the printing is gated.** A test binary has to stay
 //! silent: `std.debug.print` from inside one interleaves with the runner's
@@ -243,13 +250,22 @@ pub const decay_arms = arms: {
 
 /// `a` and `b` within `tolerance` relatively, or the caller's fault.
 ///
-/// **Scaled by the larger of the two, which is what removes a trap rather than
-/// guarding it.** This used to divide the comparison by `@abs(b)` alone, which
-/// made the predicate asymmetric in its arguments for no stated reason and, at
-/// `b == 0`, collapsed the tolerance to zero and turned the whole thing silently
-/// into exact equality. Taking the maximum is well defined everywhere: the only
-/// input that leaves a zero scale is `a == b == 0`, where equality already
-/// holds and the comparison passes for the right reason.
+/// **Scaled by the larger of the two, and the defect that fixes is asymmetry
+/// rather than zero.** #92 was filed saying this was "undefined if a future
+/// caller passes zero", and working it turned out to be wrong twice over: the
+/// old spelling was `@abs(a - b) > tolerance * @abs(b)`, which performs no
+/// division at all, and at `b == 0` it reduces to exact equality, which is the
+/// *right* answer for a relative tolerance since nothing is relatively close to
+/// zero but zero. Both spellings agree there, which was established by planting
+/// the old one and watching its test pass.
+///
+/// What the old spelling really got wrong is that it read its scale from one of
+/// its two arguments, so `expectClose(x, y, t)` and `expectClose(y, x, t)` could
+/// disagree: at `a = 2`, `b = 1` and a tolerance of 0.75 the old form refuses and
+/// the new one accepts. A caller that swapped its measured and predicted values
+/// would have got a different verdict for no reason it could see. Taking the
+/// maximum is symmetric by construction and still leaves a zero scale only where
+/// equality already holds.
 fn expectClose(a: f32, b: f32, tolerance: f32, fault: Fault) Fault!void {
     if (@abs(a - b) > tolerance * @max(@abs(a), @abs(b))) return fault;
 }
@@ -1465,19 +1481,31 @@ test "both arms span the same interval in whole steps" {
     }
 }
 
-test "a relative tolerance scaled by the larger argument is symmetric and safe at zero" {
+test "a relative tolerance reads the same whichever way its arguments are passed" {
     try expectClose(1.0, 1.0001, 1e-3, Fault.DecayWrong);
     try testing.expectError(Fault.DecayWrong, expectClose(1.0, 1.5, 1e-3, Fault.DecayWrong));
 
-    // **Zero is the case the old form got wrong**, silently: scaling by `@abs(b)`
-    // alone collapsed the tolerance to zero and turned the predicate into exact
-    // equality without saying so. Taking the larger of the two leaves a zero
-    // scale only where equality already holds.
+    // **The one arm that separates the two spellings.** Scaling by `@abs(b)`
+    // alone refuses this pair and scaling by the larger accepts it, so this is
+    // what fails if the old form is ever restored. Every other arm here agrees
+    // under both, including zero, which is why the issue's own diagnosis needed
+    // correcting rather than encoding.
+    try expectClose(2.0, 1.0, 0.75, Fault.DecayWrong);
+
+    // Symmetry over a sweep rather than at a point, because which pairs disagree
+    // is exactly what a spot check would miss.
+    const values = [_]f32{ 0.0, 1e-9, 0.5, 1.0, 2.0, 100.0 };
+    for (values) |a| {
+        for (values) |b| {
+            const forward = if (expectClose(a, b, 0.75, Fault.DecayWrong)) true else |_| false;
+            const backward = if (expectClose(b, a, 0.75, Fault.DecayWrong)) true else |_| false;
+            try testing.expectEqual(forward, backward);
+        }
+    }
+
+    // Zero is pinned rather than claimed: nothing is relatively close to zero but
+    // zero, and both spellings have always agreed about that.
     try expectClose(0.0, 0.0, 1e-3, Fault.DecayWrong);
     try testing.expectError(Fault.DecayWrong, expectClose(1e-9, 0.0, 1e-3, Fault.DecayWrong));
-
-    // And symmetric, which the old form was not: it read its scale from one
-    // argument, so swapping them could change the verdict.
     try testing.expectError(Fault.DecayWrong, expectClose(0.0, 1e-9, 1e-3, Fault.DecayWrong));
-    try expectClose(1.0001, 1.0, 1e-3, Fault.DecayWrong);
 }
