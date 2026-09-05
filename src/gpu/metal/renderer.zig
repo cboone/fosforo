@@ -278,9 +278,22 @@ const passes = [_]Pass{ decay_pass, trace_pass, resolve_pass };
 /// project's, and `[[buffer(0)]]` and `[[buffer(1)]]` in `shaders/scope.metal`
 /// are the other half of them. Nothing links the two declarations, which is why
 /// the test at the foot of this file searches the embedded source for the
-/// indices named here. Bind at one index and read at another and Metal reports
-/// an unbound buffer at draw time, inside a DAW, on the render thread, with
-/// nothing this project can print.
+/// indices named here.
+///
+/// **What happens when they disagree was measured under #77, and it is milder
+/// and worse than this comment used to claim.** It said Metal "reports an unbound
+/// buffer at draw time"; it does not. Rendered through `zig build smoke-trace`
+/// against a shader with one index moved, the draw completes, the process
+/// survives, and the unbound argument reads as zeros — so the failure is a
+/// confident wrong picture with no diagnostic anywhere. Three planted moves, one
+/// per index space, gave a flat trace at zero, a black background, and no trace at
+/// all. Only `MTL_DEBUG_LAYER=1` names it, and it names it precisely
+/// (`missing Buffer binding at index 3 for samples[0]`) before asserting, which is
+/// the manual check the gotchas already prescribe rather than anything CI runs.
+///
+/// That is the whole reason the table below exists and why `noteBindings` reads a
+/// reloaded shader as text: the picture is what nothing here can see (ADR 0013),
+/// and this is the one class of drift that reading the source can catch.
 const window_buffer_index: u64 = 0;
 const uniform_buffer_index: u64 = 1;
 
@@ -322,6 +335,66 @@ const accum_uniform_index: u64 = 0;
 /// one of them. Checked at the foot of this file by reading the index out of the
 /// parameter that carries it, like the rest.
 const palette_texture_index: u64 = 1;
+
+/// One binding the encoder sets, and the declaration in the shader that has to
+/// carry the same number.
+///
+/// **The anchor is the parameter declaration and never the bare attribute**, and
+/// that distinction was established the expensive way. `buffer(0)` appears in this
+/// shader whatever the constants above say, so `indexOf("buffer(0)")` passes when
+/// two indices are swapped, when a fragment binding drifts while a vertex one
+/// still uses the number, and when either fragment texture moves alone. All three
+/// were planted against the search that preceded this and all three passed it.
+///
+/// The residue that follows from anchoring on a name: renaming a *parameter*
+/// without moving its index reads as a mismatch. That is a false positive and it
+/// is priced in, because what it costs is one printed line naming the anchor it
+/// looked for, which tells the reader immediately what happened.
+const Binding = struct {
+    /// The text the index has to follow.
+    anchor: []const u8,
+    /// `buffer` or `texture`. Metal keeps fragment textures, fragment buffers and
+    /// vertex buffers in three separate index spaces, which is why three of the
+    /// indices below are zero and why the kind is part of the anchor rather than
+    /// something to infer.
+    kind: []const u8,
+    /// What this file binds at, so a shader that reads elsewhere is the mismatch.
+    index: u64,
+};
+
+/// Every binding the encoder sets, walked rather than listed twice.
+///
+/// **One table with two readers, and that is the point of it being a table.** The
+/// test at the foot of this file walks it over the embedded source at comptime;
+/// `noteBindings` walks it over a source read off disk at runtime. A binding added
+/// here is covered by both, and neither can drift from the other by someone
+/// updating one list.
+const bindings = [_]Binding{
+    .{ .anchor = "device const float *samples", .kind = "buffer", .index = window_buffer_index },
+
+    // **Both trace stages read `TraceUniforms` since #57, so the parameter names
+    // carry these rather than the type does.** Anchoring on `TraceUniforms &`
+    // alone would find the vertex function's binding twice and the fragment's
+    // never, and the fragment's is the one that is new: a fourth zero in a fourth
+    // index space, which a bare search proves nothing about at all.
+    .{ .anchor = "TraceUniforms &uniforms", .kind = "buffer", .index = uniform_buffer_index },
+    .{ .anchor = "TraceUniforms &beam", .kind = "buffer", .index = beam_uniform_index },
+
+    // **Both fullscreen passes read `AccumUniforms` since #60**, on the same
+    // reasoning: `AccumUniforms &` alone would test the decay's binding twice and
+    // the resolve's never, with the resolve's the one that is new.
+    .{ .anchor = "AccumUniforms &uniforms", .kind = "buffer", .index = accum_uniform_index },
+    .{ .anchor = "AccumUniforms &phosphor", .kind = "buffer", .index = accum_uniform_index },
+
+    // The two fragments that read the accumulation, named separately because each
+    // is a binding the encoder sets and either could drift alone.
+    .{ .anchor = "access::read> source", .kind = "texture", .index = accumulation_texture_index },
+    .{ .anchor = "access::read> energy", .kind = "texture", .index = accumulation_texture_index },
+
+    // The palette lookup, the first binding here that shares an index space with
+    // another and therefore the first whose number is not zero.
+    .{ .anchor = "access::read> palette", .kind = "texture", .index = palette_texture_index },
+};
 
 /// What the trace's vertex function needs beyond the samples themselves.
 ///
@@ -608,6 +681,7 @@ var shader_reloads: std.atomic.Value(u64) = .init(0);
 var shader_rejected: std.atomic.Value(u64) = .init(0);
 var shader_fallbacks: std.atomic.Value(u64) = .init(0);
 var shader_path_resolved: std.atomic.Value(bool) = .init(false);
+var shader_binding_mismatches: std.atomic.Value(u64) = .init(0);
 
 /// Say something once about the shader on disk, on the watcher's own thread.
 ///
@@ -629,6 +703,110 @@ var shader_path_resolved: std.atomic.Value(bool) = .init(false);
 fn sayShader(comptime fmt: []const u8, args: anytype) void {
     if (comptime !shader.live) return;
     std.debug.print("[fosforo] shader: " ++ fmt ++ "\n", args);
+}
+
+/// The index MSL attaches to the first parameter matching `anchor`, by reading the
+/// `[[<kind>(N)]]` that follows it.
+///
+/// **Works at comptime over the embedded copy and at runtime over a source read
+/// off disk, which is the whole reason it takes its source as a parameter.** The
+/// test at the foot of this file is the first caller and `noteBindings` is the
+/// second; a single implementation is what makes the reloaded shader checked by
+/// the same rule as the shipped one rather than by a second one that resembles it.
+///
+/// It walks the attributes after the anchor rather than searching for a formatted
+/// `"[[" ++ kind ++ "("`, which is what a runtime caller cannot build without
+/// allocating. Scanning to end of file and answering null is deliberate: a kind
+/// that never appears has to be distinguishable from one that appears with the
+/// wrong number, and the negative control at the foot of this file rests on it.
+fn bindingIndexIn(source: []const u8, anchor: []const u8, kind: []const u8) ?u64 {
+    const start = std.mem.indexOf(u8, source, anchor) orelse return null;
+    var rest = source[start + anchor.len ..];
+
+    while (std.mem.indexOf(u8, rest, "[[")) |at| {
+        const attribute = rest[at + "[[".len ..];
+        rest = attribute;
+
+        if (!std.mem.startsWith(u8, attribute, kind)) continue;
+        const argument = attribute[kind.len..];
+        if (!std.mem.startsWith(u8, argument, "(")) continue;
+
+        const digits = argument["(".len..];
+        const end = std.mem.indexOfScalar(u8, digits, ')') orelse return null;
+        return std.fmt.parseInt(u64, digits[0..end], 10) catch null;
+    }
+
+    return null;
+}
+
+/// A binding this file sets beside the index the shader reads it at.
+const Mismatch = struct {
+    binding: Binding,
+    /// Null when the anchor, or an attribute of its kind after it, was not found
+    /// at all. Kept apart from a wrong number because the two are different
+    /// mistakes and the one message that covered both would describe neither.
+    found: ?u64,
+};
+
+/// The first binding in `source` that does not read where this file binds.
+///
+/// The first rather than all of them, because moving one index usually moves
+/// several and a caller with a fixed diagnostic buffer wants the one that will fit.
+fn firstBindingMismatch(source: []const u8) ?Mismatch {
+    for (bindings) |binding| {
+        const found = bindingIndexIn(source, binding.anchor, binding.kind);
+        if (found) |index| {
+            if (index == binding.index) continue;
+        }
+        return .{ .binding = binding, .found = found };
+    }
+    return null;
+}
+
+/// [main-thread, watcher-thread] Say so if a source off disk binds elsewhere, and
+/// swap it in anyway.
+///
+/// **Warned rather than refused, which is the decision #77 owns.** Refusing the
+/// swap is what a reviewer reaches for first and it is the worse of the two: a
+/// developer mid-edit may have the file in a state they meant, and a reloader that
+/// declines to reload is how people stop trusting one. So this keeps the swap and
+/// puts a named line on the channel a developer is already told to read.
+///
+/// **What made that safe rather than merely defensible is measured** and is
+/// recorded in full above `window_buffer_index`: drawing through a moved index
+/// completes the frame, survives, and reads the unbound argument as zeros. The
+/// cost of keeping the swap is a wrong picture the next save fixes, not a wedged
+/// GPU, which is the fact the opposite decision would have rested on.
+///
+/// **It closes half a class and the docstring has to say which half.** Binding
+/// indices are checkable because MSL states them as literals in the text. A
+/// `TraceUniforms` field added or reordered on one side only is *not*: MSL
+/// computes its own offsets, so the text still describes the struct correctly and
+/// what comes out is a plausible trace at the wrong scale. Nothing here sees that,
+/// and #51 does not close it either — `zig build smoke-trace` measures the
+/// embedded copy and nothing reloads during a trace run. Closing it needs a
+/// readback of a *reloaded* shader, which ADR 0013 puts out of scope.
+///
+/// Reached only from the two paths that compile a source off disk, both already
+/// inside `shader.live`, so a release build never analyses this at all.
+fn noteBindings(source: []const u8) void {
+    const mismatch = firstBindingMismatch(source) orelse return;
+    _ = shader_binding_mismatches.fetchAdd(1, .release);
+
+    if (mismatch.found) |index| {
+        sayShader("`{s}` reads {s}({d}) where this build binds {d}; the picture will be wrong", .{
+            mismatch.binding.anchor,
+            mismatch.binding.kind,
+            index,
+            mismatch.binding.index,
+        });
+    } else {
+        sayShader("no {s} index follows `{s}`, where this build binds {d}; renaming a parameter reads this way too", .{
+            mismatch.binding.kind,
+            mismatch.binding.anchor,
+            mismatch.binding.index,
+        });
+    }
 }
 
 /// Whether this thread has ever been inside the render path.
@@ -935,6 +1113,21 @@ const Watcher = if (shader.live) struct {
         // otherwise unanswerable without another edit that does show.
         _ = shader_reloads.fetchAdd(1, .release);
         sayShader("recompiled {d} bytes from {s}", .{ self.buf.len, path });
+
+        // **After the compile rather than before it, and after the line above.** A
+        // source that does not compile is never swapped in, so its bindings are
+        // nobody's business; and a warning that preceded "recompiled" would read as
+        // the reason the reload did not happen, when the reload is exactly what did
+        // happen.
+        //
+        // **This call site is asserted by a canary and by nothing else**, which is
+        // stated here rather than left to be discovered. The smoke arm that plants
+        // a moved index goes through `probe` and therefore through the *other* call
+        // site, deliberately: an arm here would have to draw through the mismatch,
+        // and while that is survivable it aborts under the `MTL_DEBUG_LAYER=1`
+        // invocation the gotchas prescribe by hand. So the foot of this file counts
+        // the two call sites as text instead.
+        noteBindings(self.buf.source());
 
         self.mailbox.publish(pipelines);
     }
@@ -2070,6 +2263,7 @@ pub const Renderer = struct {
             .reloads = shader_reloads.load(.acquire),
             .rejected = shader_rejected.load(.acquire),
             .fallbacks = shader_fallbacks.load(.acquire),
+            .binding_mismatches = shader_binding_mismatches.load(.acquire),
         };
     }
 
@@ -2407,6 +2601,11 @@ fn buildPipelines(device: objc.Object, diags: *iface.Diagnostics) iface.Error!Pi
         if (readShader(&buf)) |source| {
             if (buildPipelinesFromSource(device, source, diags)) |pipelines| {
                 _ = shader_reloads.fetchAdd(1, .release);
+                // **The opening path as well as the watcher's**, which is not
+                // over-reach: this reads the same file the watcher does, so a
+                // moved index that was loud on every save and silent on every
+                // editor opening would be the more confusing half of the two.
+                noteBindings(source);
                 return pipelines;
             } else |_| {
                 // Counted separately from the read failure above, because they
@@ -2969,92 +3168,39 @@ test "the embedded shader defines the functions every pipeline asks for" {
     }
 }
 
-/// The index MSL attaches to the first parameter matching `needle`, by reading
-/// the `[[<kind>(N)]]` that follows it.
-///
-/// Searching for the bare attribute is what this replaces, and the difference is
-/// the whole point. `buffer(0)` appears in this shader whatever the Zig side
-/// says, so a test that only asks whether the string is present passes when two
-/// indices are swapped, or when one declaration drifts and another happens to
-/// still use the number. Anchoring on the declaration ties an index to the
-/// parameter that has to carry it.
-fn bindingIndexAfter(comptime needle: []const u8, comptime kind: []const u8) ?u64 {
-    const start = std.mem.indexOf(u8, shader_source, needle) orelse return null;
-    const rest = shader_source[start..];
-
-    const opener = "[[" ++ kind ++ "(";
-    const at = std.mem.indexOf(u8, rest, opener) orelse return null;
-    const digits = rest[at + opener.len ..];
-    const end = std.mem.indexOfScalar(u8, digits, ')') orelse return null;
-
-    return std.fmt.parseInt(u64, digits[0..end], 10) catch null;
-}
-
 test "every binding the encoder sets is read at the same index in the shader" {
     // The other half of five constants MSL states as literals inside attributes,
-    // against a coupling with no compiler behind it at all: binding at one index
-    // and reading at another is a validation failure that surfaces inside a DAW,
-    // on the render thread, with nothing printable.
+    // against a coupling with no compiler behind it at all. What binding at one
+    // index and reading at another actually does was measured under #77 and is
+    // recorded above `window_buffer_index`: the draw completes and the unbound
+    // argument reads as zeros, so the symptom is a confident wrong picture and no
+    // diagnostic outside the validation layer.
     //
-    // Anchored on each declaration rather than on the attribute alone, which is
-    // what makes it non-vacuous. Fragment textures, fragment buffers and vertex
-    // buffers are three separate index spaces, so three of these are zero and a
-    // bare search for `buffer(0)` proves nothing about any of them.
-    try testing.expectEqual(
-        @as(?u64, window_buffer_index),
-        bindingIndexAfter("device const float *samples", "buffer"),
-    );
-    // **Both trace stages read `TraceUniforms` since #57, so the parameter names
-    // carry these exactly as the two below do.** Anchoring on `TraceUniforms &`
-    // alone would find the vertex function's binding twice and the fragment's
-    // never, and the fragment's is the one that is new: it is a fourth zero in a
-    // fourth index space, so a bare search proves nothing about it at all.
-    try testing.expectEqual(
-        @as(?u64, uniform_buffer_index),
-        bindingIndexAfter("TraceUniforms &uniforms", "buffer"),
-    );
-    try testing.expectEqual(
-        @as(?u64, beam_uniform_index),
-        bindingIndexAfter("TraceUniforms &beam", "buffer"),
-    );
-    // **Both fullscreen passes read `AccumUniforms` since #60, so the parameter
-    // names carry these rather than the type does.** `indexOf` takes the first
-    // match, so anchoring on `AccumUniforms &` alone would test the decay's
-    // binding twice and the resolve's never — with the resolve's the one that is
-    // new and therefore the one worth checking.
-    try testing.expectEqual(
-        @as(?u64, accum_uniform_index),
-        bindingIndexAfter("AccumUniforms &uniforms", "buffer"),
-    );
-    try testing.expectEqual(
-        @as(?u64, accum_uniform_index),
-        bindingIndexAfter("AccumUniforms &phosphor", "buffer"),
-    );
+    // **Walks `bindings` rather than listing them**, which is what makes this and
+    // the runtime check over a reloaded shader one rule instead of two. A binding
+    // added to that table is checked here by having been added.
+    for (bindings) |binding| {
+        errdefer std.debug.print("the binding anchored on `{s}`\n", .{binding.anchor});
+        try testing.expectEqual(
+            @as(?u64, binding.index),
+            bindingIndexIn(shader_source, binding.anchor, binding.kind),
+        );
+    }
 
-    // Both fragments that read the accumulation, named separately because each
-    // is a binding the encoder sets and either could drift alone.
-    try testing.expectEqual(
-        @as(?u64, accumulation_texture_index),
-        bindingIndexAfter("access::read> source", "texture"),
-    );
-    try testing.expectEqual(
-        @as(?u64, accumulation_texture_index),
-        bindingIndexAfter("access::read> energy", "texture"),
-    );
-
-    // The palette lookup, which is the first binding here that shares an index
-    // space with another and therefore the first whose number is not zero.
-    try testing.expectEqual(
-        @as(?u64, palette_texture_index),
-        bindingIndexAfter("access::read> palette", "texture"),
-    );
+    // The table is the thing this test is, so an empty one has to fail rather
+    // than pass vacuously. Eight since #60: five buffers across three index
+    // spaces and three textures across one.
+    try testing.expectEqual(@as(usize, 8), bindings.len);
 }
 
 test "the binding reader finds nothing rather than guessing" {
     // The failure this has to avoid is answering `null` for a declaration that
     // moved and having that read as a pass. `expectEqual` against an optional
     // covers it, and this pins the two ways `null` is reached.
-    try testing.expectEqual(@as(?u64, null), bindingIndexAfter("no such parameter", "buffer"));
+    try testing.expectEqual(
+        @as(?u64, null),
+        bindingIndexIn(shader_source, "no such parameter", "buffer"),
+    );
 
     // **This one is now load-bearing beyond being a negative control.** It scans
     // to end of file, so it asserts there is no `sampler` anywhere in the shader
@@ -3064,7 +3210,144 @@ test "the binding reader finds nothing rather than guessing" {
     // half-texel convention between the shader and the model in
     // `src/gpu/palette.zig`. Switching the lookup to a sampler would fail here,
     // with a message about the accumulation's uniforms.
-    try testing.expectEqual(@as(?u64, null), bindingIndexAfter("AccumUniforms &", "sampler"));
+    try testing.expectEqual(
+        @as(?u64, null),
+        bindingIndexIn(shader_source, "AccumUniforms &", "sampler"),
+    );
+
+    // A kind that is a prefix of the one present must not match it, which is the
+    // way the attribute walk could be wrong and the search it replaced could not:
+    // `[[buffer(1)]]` starts with `buffe`, and only the `(` after the kind
+    // separates them.
+    try testing.expectEqual(
+        @as(?u64, null),
+        bindingIndexIn(shader_source, "TraceUniforms &uniforms", "buffe"),
+    );
+}
+
+test "the binding reader anchors on the declaration, which a bare attribute search cannot" {
+    // The three defects planted against the search this replaced, all three of
+    // which passed it. Synthetic rather than the real shader, because each has to
+    // be *wrong* and the real one is not.
+    const swapped =
+        \\vertex TraceOut trace_vertex(device const float *samples [[buffer(1)]],
+        \\                             constant TraceUniforms &uniforms [[buffer(0)]]) {
+    ;
+    try testing.expectEqual(@as(?u64, 1), bindingIndexIn(swapped, "device const float *samples", "buffer"));
+    try testing.expectEqual(@as(?u64, 0), bindingIndexIn(swapped, "TraceUniforms &uniforms", "buffer"));
+
+    // A fragment binding drifting while a vertex one still uses the number, so
+    // `buffer(0)` is present throughout and means nothing about either.
+    const fragment_drifted =
+        \\vertex TraceOut trace_vertex(device const float *samples [[buffer(0)]],
+        \\                             constant TraceUniforms &uniforms [[buffer(1)]]) {}
+        \\fragment float4 trace_fragment(constant TraceUniforms &beam [[buffer(2)]]) {}
+    ;
+    try testing.expect(std.mem.indexOf(u8, fragment_drifted, "buffer(0)") != null);
+    try testing.expectEqual(@as(?u64, 2), bindingIndexIn(fragment_drifted, "TraceUniforms &beam", "buffer"));
+
+    // One of two fragment textures moving alone, with the other still at the
+    // number the moved one left.
+    const texture_moved =
+        \\fragment float4 resolve_fragment(texture2d<float, access::read> energy [[texture(0)]],
+        \\                                 texture2d<float, access::read> palette [[texture(3)]]) {}
+    ;
+    try testing.expectEqual(@as(?u64, 0), bindingIndexIn(texture_moved, "access::read> energy", "texture"));
+    try testing.expectEqual(@as(?u64, 3), bindingIndexIn(texture_moved, "access::read> palette", "texture"));
+}
+
+test "the embedded shader is what a reloaded one is judged against, and it passes" {
+    // The positive control for the runtime check, and the thing that makes every
+    // assertion below a statement about a *defect* rather than about the checker
+    // refusing everything. It is also the strongest statement available that the
+    // two readers of `bindings` agree: the comptime walk above and this share an
+    // implementation, so the shipped shader passing here is the shipped shader
+    // passing there.
+    try testing.expectEqual(@as(?Mismatch, null), firstBindingMismatch(shader_source));
+}
+
+test "a moved index is caught and named, in each of the three index spaces" {
+    // One planted move per space, because they are three separate spaces and a
+    // check that only ever saw one of them would prove nothing about the others.
+    // These are the same three that were rendered under #77 to establish what a
+    // mismatch actually costs: a flat trace at zero, a black background, and no
+    // trace at all, with the process surviving each time.
+    const spaces = [_]struct { from: []const u8, to: []const u8, anchor: []const u8, moved: u64 }{
+        .{
+            .from = "device const float *samples [[buffer(0)]]",
+            .to = "device const float *samples [[buffer(3)]]",
+            .anchor = "device const float *samples",
+            .moved = 3,
+        },
+        .{
+            .from = "constant TraceUniforms &beam [[buffer(0)]]",
+            .to = "constant TraceUniforms &beam [[buffer(1)]]",
+            .anchor = "TraceUniforms &beam",
+            .moved = 1,
+        },
+        .{
+            .from = "access::read> palette [[texture(1)]]",
+            .to = "access::read> palette [[texture(2)]]",
+            .anchor = "access::read> palette",
+            .moved = 2,
+        },
+    };
+
+    var buf: [shader_source.len]u8 = undefined;
+    for (spaces) |space| {
+        const moved = try replaceOnce(&buf, shader_source, space.from, space.to);
+
+        const mismatch = firstBindingMismatch(moved) orelse return error.MovedIndexNotCaught;
+        try testing.expectEqualStrings(space.anchor, mismatch.binding.anchor);
+        try testing.expectEqual(@as(?u64, space.moved), mismatch.found);
+    }
+}
+
+test "a renamed parameter reads as a mismatch rather than as a pass" {
+    // The false positive this design accepts, asserted rather than described. The
+    // anchor is a parameter name, so renaming one without moving its index is
+    // caught as if the index had moved — which costs a printed line naming the
+    // anchor it looked for, and never a refused swap. The alternative is parsing
+    // MSL.
+    var buf: [shader_source.len]u8 = undefined;
+    const renamed = try replaceOnce(&buf, shader_source, "TraceUniforms &beam", "TraceUniforms &b");
+
+    const mismatch = firstBindingMismatch(renamed) orelse return error.RenamedParameterNotCaught;
+    try testing.expectEqualStrings("TraceUniforms &beam", mismatch.binding.anchor);
+
+    // Null rather than a number, which is the distinction `Mismatch.found` exists
+    // for: this is an anchor that was not found, and the message says so instead
+    // of claiming the shader reads at some index.
+    try testing.expectEqual(@as(?u64, null), mismatch.found);
+}
+
+/// `haystack` with the first `from` replaced by `to`, into caller-owned storage.
+///
+/// A test helper, and the reason it is one rather than a formatted literal: the
+/// defects above have to be the *shipped* shader with one thing changed, or they
+/// would be assertions about a synthetic file that resembles it.
+fn replaceOnce(buf: []u8, haystack: []const u8, from: []const u8, to: []const u8) ![]const u8 {
+    const at = std.mem.indexOf(u8, haystack, from) orelse return error.NothingToReplace;
+    const rest = haystack[at + from.len ..];
+    if (at + to.len + rest.len > buf.len) return error.ReplacementTooLong;
+
+    @memcpy(buf[0..at], haystack[0..at]);
+    @memcpy(buf[at..][0..to.len], to);
+    @memcpy(buf[at + to.len ..][0..rest.len], rest);
+
+    return buf[0 .. at + to.len + rest.len];
+}
+
+test "an attribute of another kind between the anchor and the index is stepped over" {
+    // `[[stage_in]]` and `[[vertex_id]]` sit in these parameter lists, so the walk
+    // has to pass attributes that are not indices at all rather than stopping at
+    // the first `[[` it meets. The real shader exercises this and a synthetic case
+    // states it as the property it is.
+    const stage_in =
+        \\fragment float4 trace_fragment(TraceOut in [[stage_in]],
+        \\                               constant TraceUniforms &beam [[buffer(0)]]) {
+    ;
+    try testing.expectEqual(@as(?u64, 0), bindingIndexIn(stage_in, "TraceOut in", "buffer"));
 }
 
 /// The bare number following `needle`, for a Python assignment like `RAIL = 0.98`.
@@ -3696,4 +3979,29 @@ test "the watcher's stop flag is still its futex word" {
         "self.halt.store(halting, .release);",
         "io.get().futexWake(u32, &self.halt.raw, 1);",
     ));
+}
+
+test "both paths that compile a source off disk check its bindings" {
+    const code = canary.implementation(@embedFile("renderer.zig"));
+
+    // **Two call sites, and only one of them is reachable from a smoke arm.**
+    // `buildPipelines` is exercised by `zig build smoke-gpu`, which plants a
+    // shader with one index moved and watches `binding_mismatches` move by one.
+    // `Watcher.poll` is not, and cannot be without drawing through the mismatch:
+    // that is survivable — measured, the frame completes and the unbound argument
+    // reads as zeros — but it aborts under the `MTL_DEBUG_LAYER=1` run the gotchas
+    // prescribe by hand, so planting one there would break a documented check with
+    // a deliberate fixture.
+    //
+    // So this counts them as text, which is what `src/canary.zig` is for. A
+    // reloaded shader that stopped being read would otherwise fail nothing at all,
+    // and the whole of #77 is that its symptom is a confident wrong picture.
+    try testing.expectEqual(1, canary.stated(code, "noteBindings(source);"));
+    try testing.expectEqual(1, canary.stated(code, "noteBindings(self.buf.source());"));
+
+    // Three rather than two: the two calls above and the declaration itself. This
+    // is the half `stated` cannot do, and it is the half that matters here — a
+    // third *caller* appearing somewhere else is as much a change to this design
+    // as a lost one, and every `stated` check above still passes with one.
+    try testing.expectEqual(3, canary.mentions(code, "noteBindings("));
 }
