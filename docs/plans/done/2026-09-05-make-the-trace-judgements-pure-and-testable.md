@@ -1,6 +1,6 @@
 # Make the trace half's judgements pure, and turn the plant table into tests
 
-Issue: [#92](https://github.com/cboone/fosforo/issues/92). Type: `refactor:` then `test:`. Item 4 of [the verification-gaps program](./2026-09-04-close-the-verification-gaps-in-the-test-suite.md), taken now because it is the largest gap in that program and because [#93](https://github.com/cboone/fosforo/issues/93) and [#98](https://github.com/cboone/fosforo/issues/98) both cite it.
+Issue: [#92](https://github.com/cboone/fosforo/issues/92). Type: `refactor:` then `test:`. Item 4 of [the verification-gaps program](../todo/2026-09-04-close-the-verification-gaps-in-the-test-suite.md), taken now because it is the largest gap in that program and because [#93](https://github.com/cboone/fosforo/issues/93) and [#98](https://github.com/cboone/fosforo/issues/98) both cite it.
 
 ## Context
 
@@ -21,6 +21,8 @@ That produced `src/gpu/measure.zig` and its 15 tests. It was never carried throu
 - `checkDecay` and `checkDecayIsInRealTime` divide the measured peak by `first` with no check that `first` is non-zero. A blank readback gives `0 / 0`, and `nan > 0.02 * want` is **false**, so the assertion passes. A run in which nothing was drawn at all reads as a healthy decay.
 - `checkPeriods` declares `var doubling: [3]usize = undefined` and writes it only inside a `switch` over the literal list `{1, 2, 4, 5, 8, 20}`. It is sound today and becomes unsound the moment that list changes.
 - `expectClose` scales its tolerance by `@abs(b)` alone. At `b == 0` the tolerance collapses to zero and the predicate silently becomes exact equality, and it is asymmetric in its two arguments for no stated reason.
+
+> **The third bullet is half wrong and is left standing rather than edited away**, on this directory's usual rule. The zero case is not a defect: with no division anywhere, `b == 0` reduces the predicate to exact equality, which is the right answer for a relative tolerance. Planting the old spelling back is what established that, because the test written for it passed. The clause that survives is the last one, the asymmetry, and it turned out to be the whole of it. See **Results**.
 
 ## The baseline
 
@@ -105,23 +107,23 @@ pub fn edgeColumns(image: measure.Image) Fault!Lit {
 
 Fifteen judges, from thirteen checks. Four checks fold a loop that drives a fresh probe per arm, so their judge takes the collected scalars rather than an image; that is what makes them testable at all, since the readback buffer is overwritten by the next probe:
 
-| Judge                                       | Takes                          | Replaces                 |
-| ------------------------------------------- | ------------------------------ | ------------------------ |
-| `silence(image)`                            | one image                      | `checkSilence`           |
-| `level(image, level)`                       | one image, per level           | `checkLevels`            |
-| `saturation(levels, rows, height)`          | the four measured rows         | `checkSaturation`        |
-| `symmetry(rows, height)`                    | the two measured rows          | `checkSymmetry`          |
-| `horizontalMapping(image)`                  | one image                      | `checkHorizontalMapping` |
-| `edgeColumns(image)`                        | one image                      | `checkEdgeColumns`       |
-| `beamProfile(image, row)`                   | one image and a row            | `checkBeamProfile`       |
-| `period(image, cycles)`                     | one image, per frequency       | `checkPeriods`           |
-| `periodRatio(counted)`                      | the six counts                 | `checkPeriods`           |
-| `depositIsScalar(image)`                    | one image                      | `checkDepositIsScalar`   |
-| `resolve(image, picture)`                   | both readbacks                 | `checkResolve`           |
-| `movingCore(image, picture)`                | both readbacks                 | `checkHotCore`           |
-| `dwellCore(image, picture)`                 | both readbacks                 | `checkHotCore`           |
-| `decay(peaks)`                              | the five measured peaks        | `checkDecay`             |
-| `realTimeDecay(ratios)`                     | the two measured ratios        | `checkDecayIsInRealTime` |
+| Judge                              | Takes                    | Replaces                 |
+| ---------------------------------- | ------------------------ | ------------------------ |
+| `silence(image)`                   | one image                | `checkSilence`           |
+| `level(image, level)`              | one image, per level     | `checkLevels`            |
+| `saturation(levels, rows, height)` | the four measured rows   | `checkSaturation`        |
+| `symmetry(rows, height)`           | the two measured rows    | `checkSymmetry`          |
+| `horizontalMapping(image)`         | one image                | `checkHorizontalMapping` |
+| `edgeColumns(image)`               | one image                | `checkEdgeColumns`       |
+| `beamProfile(image, row)`          | one image and a row      | `checkBeamProfile`       |
+| `period(image, cycles)`            | one image, per frequency | `checkPeriods`           |
+| `periodRatio(counted)`             | the six counts           | `checkPeriods`           |
+| `depositIsScalar(image)`           | one image                | `checkDepositIsScalar`   |
+| `resolve(image, picture)`          | both readbacks           | `checkResolve`           |
+| `movingCore(image, picture)`       | both readbacks           | `checkHotCore`           |
+| `dwellCore(image, picture)`        | both readbacks           | `checkHotCore`           |
+| `decay(peaks)`                     | the five measured peaks  | `checkDecay`             |
+| `realTimeDecay(ratios)`            | the two measured ratios  | `checkDecayIsInRealTime` |
 
 **The folds are transcript-identical, which was checked against the baseline rather than assumed.** `saturation` prints one line, from its first arm; `symmetry`, `decay` and `realTimeDecay` print after every arm has run. In each case nothing else prints between the first and last arm, so moving the print to the end of the fold does not reorder the transcript.
 
@@ -171,7 +173,7 @@ One import beside `gpu/measure.zig` at `src/main.zig:87`, with a comment on that
 
 ## The tests, written as the historical plants
 
-The plant table in [`docs/plans/done/2026-08-29-verify-the-shader-offscreen-against-the-constants.md`](./../done/2026-08-29-verify-the-shader-offscreen-against-the-constants.md) has **twelve rows and ten defects**: rows 3 and 4 are the same wrong divisor with a check relaxed, rows 5 and 6 the same negated y with checks skipped. The column has twelve cells to fill.
+The plant table in [`docs/plans/done/2026-08-29-verify-the-shader-offscreen-against-the-constants.md`](./2026-08-29-verify-the-shader-offscreen-against-the-constants.md) has **twelve rows and ten defects**: rows 3 and 4 are the same wrong divisor with a check relaxed, rows 5 and 6 the same negated y with checks skipped. The column has twelve cells to fill.
 
 **Two rows name errors that no longer exist**, and the column says so rather than pretending otherwise. `BeamNotOneColour` was retired by [#60](https://github.com/cboone/fosforo/issues/60) when the deposit stopped carrying a colour; `checkDepositIsScalar` replaced it with a different claim, so what gets a test is the standing claim and not the retired one. `ResolveNotAnAdd` is `ResolveNotTheTonemap` under the same issue, and there the claim survived the rename.
 
@@ -189,27 +191,62 @@ Tests beyond the table, each closing something the table never reached:
 
 Every one lands with the change, on the program plan's rule that a document updated later describes a state nobody checked.
 
-| Document                                             | Edit                                                                                              |
-| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `docs/adr/0013-gui-smoke-harness-as-a-build-step.md` | A `## Amended by issue #92:` section, appended after the #89 one                                   |
-| `docs/plans/done/2026-08-29-verify-...-constants.md` | The plant table gains a "Now covered by" column, twelve cells                                       |
-| `AGENTS.md`                                          | The `smoke-trace` bullet, and one line in the `src/` tree listing for `gpu/verdict.zig`             |
-| `docs/plans/todo/2026-09-04-close-the-verification-gaps-in-the-test-suite.md` | Item 4's acceptance ticked, with what it did and did not close                                     |
-| `docs/plans/todo/2026-07-25-repo-foundation-and-phased-build-plan.md` | The merge-order table, which records #92 against #80 and #58 as a conflict rather than a dependency |
+| Document                                                                      | Edit                                                                     |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `docs/adr/0013-gui-smoke-harness-as-a-build-step.md`                          | A `## Amended by issue #92:` section, appended after the #89 one         |
+| `docs/plans/done/2026-08-29-verify-the-shader-offscreen-against-the-...md`    | The plant table gains a "Now covered by" column, twelve cells            |
+| `AGENTS.md`                                                                   | The current state, the `smoke-trace` bullet, and the `src/` tree listing |
+| `docs/plans/todo/2026-09-04-close-the-verification-gaps-in-the-test-suite.md` | Item 4's acceptance ticked, with what it did and did not close           |
+| `docs/plans/todo/2026-07-25-repo-foundation-and-phased-build-plan.md`         | The status table and the paragraph naming this the largest gap           |
 
-**The ADR amendment must say what writing the guard established, not that the guard exists.** ADR 0015's #90 amendment is the model: it records that the compiler already enforced half the rule, which narrowed what a canary was for. The equivalent finding here is the three vacuity holes, and in particular that a blank readback passed the decay check because `nan` compares false. The heading follows the invariant form, `## Amended by issue #N: <lowercase clause>`, and the ADR's own rule is that superseded prose stays standing rather than being edited away.
+**The ADR amendment must say what writing the guard established, not that the guard exists.** ADR 0015's #90 amendment is the model: it records that the compiler already enforced half the rule, which narrowed what a canary was for. The heading follows the invariant form, `## Amended by issue #N: <lowercase clause>`, and the ADR's own rule is that superseded prose stays standing rather than being edited away.
 
 **Editing a `done/` plan in place is sanctioned here**, explicitly, by the issue's own acceptance criterion. That is the exception, not a new licence.
 
 ## Commits
 
-1. `refactor: move the trace half's judgements into src/gpu/verdict.zig (#92)`
-2. `test: share measure.zig's beam model with the new judges (#92)`
-3. `test: encode the plant table as tests of the judges (#92)`
-4. `fix: refuse a vacuous decay ratio and a degenerate relative tolerance (#92)`
-5. `docs: record that the trace half's judgements need no device (#92)`
+1. `docs: plan making the trace half's judgements pure and testable (#92)`
+2. `refactor: move the trace half's judgements into src/gpu/verdict.zig (#92)`
+3. `test: share measure.zig's beam model with the new judges (#92)`
+4. `test: encode the plant table as tests of the judges (#92)`
+5. `test: correct expectClose's diagnosis, which planting falsified (#92)`
+6. `test: make two arms discriminate, which planting showed they did not (#92)`
+7. `test: assert the arm a matching pair of wrong rates would slip past (#92)`
+8. `test: cover the wrong divisor at the width where it costs one column (#92)`
+9. `docs: record that the trace half's judgements need no device (#92)`
 
-Commit 1 must be transcript-identical on its own, which is what makes the comparison below a test of the move rather than of the whole branch.
+**One deviation from the sequence planned above, and it is worth naming rather than tidying.** Commit 4 was to be a separate `fix:` for the vacuity guards and `expectClose`; both were written into `src/gpu/verdict.zig` as it was created, so they landed inside the move at commit 2 instead of beside it. The move is still transcript-identical, which was verified before it was committed, so nothing about the acceptance changed; what was lost is that the two behaviour changes are not reviewable on their own. Commits 5 through 8 are the ones planting produced afterwards and were not foreseen at all.
+
+## Results
+
+| Check                                    | Result                                                |
+| ---------------------------------------- | ----------------------------------------------------- |
+| `zig build smoke-trace`, transcript diff | Byte-identical, 35 lines, at commit 2 and at the end  |
+| `zig build test`                         | 230 tests before, **252** after, all passing          |
+| `src/smoke.zig`                          | 2,240 lines to 1,712; `src/gpu/verdict.zig` is 1,001  |
+| Judges planted, one weakening at a time  | 22 planted, 18 refused by the test that names the row |
+| `zig fmt --check`, `typos`               | Clean                                                 |
+| `markdownlint-cli2`                      | Clean                                                 |
+
+**The transcript comparison excludes one line, and it has to.** `src/build_info.zig` stamps a provenance marker that names the branch, the commit and whether the tree is dirty, so it moves on every commit by construction. Everything from `rendering shaders/scope.metal into a 960x540 texture` down is compared.
+
+**The local baseline was checked against CI before it was trusted**, from run [33988812989](https://github.com/cboone/fosforo/actions/runs/33988812989) on `0de9bec`, which is this branch's own merge base. All 35 figure lines agree, so the comparison is against a reading two machines produced rather than against one machine's habit.
+
+### What planting the judges produced, which planting the shader did not
+
+The tests were written first as the historical plants, and then each judge was weakened in turn to see whether its test noticed. That second pass is where all four findings below came from, and none of them was visible in the first.
+
+**A blank readback used to pass the decay checks outright.** They divided the measured peak by a first peak nothing checked, and `nan > 0.02 * want` is **false**. Planted with the guard removed, the judge returns `void` where the test now demands a refusal, which is the executable form of that sentence.
+
+**The `expectClose` defect this issue named does not exist.** It performed no division, and at zero it reduced to exact equality, which is the right answer for a relative tolerance. The old spelling was planted back and the test written for it passed, so the test asserted nothing. The real defect was asymmetry, and the discriminating arm is `a = 2`, `b = 1` at a tolerance of 0.75.
+
+**Two tests encoded a plant without covering it.** The centreline plant sat at 0.01 of full scale, 2.4 times a whole backing pixel, so widening the twentieth-of-a-pixel bound twentyfold changed no verdict; it now sits at 0.001, between the two bounds. The background plant sat one byte off the palette's value at zero, which the per-pixel loop refuses anyway within its own slack; it is now five levels off. **This is #38's tolerance rule one level up:** a plant far enough outside a bound to be caught by something else is a plant that hides the arm it names.
+
+**And one arm cannot fire.** `movingCore` refuses a channel gap of zero or less before refusing a gap under 24, and for the shipped palette the second already refuses everything the first would, since green's non-lead tints are below 1.0. It stays for a palette whose non-lead tint reaches 1.0, and now says so at the source.
+
+### What survived its own weakening for a good reason
+
+Four of the 22 plants left every test passing, and none of them is a hole. Two did not compile, because removing the arm leaves an unused local, which is the same outcome the plant table already records for binding the wrong accumulation texture. The other two were caught by a sibling arm: `realTimeDecay`'s spread check catches a per-frame factor without its per-arm comparison, and `movingCore`'s `gap < 24` catches everything `gap <= 0` would. The first of those was the finding, not the survival: it meant nothing asserted the per-arm comparison's own case, a **pair** of arms wrong in the same way, which the spread between them cannot see. That test now exists.
 
 ## Verification
 
