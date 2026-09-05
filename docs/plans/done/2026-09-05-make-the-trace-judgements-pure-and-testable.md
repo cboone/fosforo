@@ -219,14 +219,18 @@ Every one lands with the change, on the program plan's rule that a document upda
 
 ## Results
 
-| Check                                    | Result                                                |
-| ---------------------------------------- | ----------------------------------------------------- |
-| `zig build smoke-trace`, transcript diff | Byte-identical, 35 lines, at commit 2 and at the end  |
-| `zig build test`                         | 230 tests before, **252** after, all passing          |
-| `src/smoke.zig`                          | 2,240 lines to 1,712; `src/gpu/verdict.zig` is 1,001  |
-| Judges planted, one weakening at a time  | 22 planted, 18 refused by the test that names the row |
-| `zig fmt --check`, `typos`               | Clean                                                 |
-| `markdownlint-cli2`                      | Clean                                                 |
+| Check                                    | Result                                                       |
+| ---------------------------------------- | ------------------------------------------------------------ |
+| `zig build smoke-trace`, transcript diff | Byte-identical, 35 lines, at the move and at the end         |
+| `zig build test`                         | 230 tests before, **252** after, all passing                 |
+| `zig build smoke-gpu`, `smoke-appkit`    | Pass; 10 open and close cycles clean                         |
+| `zig build smoke-leaks -Dleak-cycles=40` | 285 leaks, 18,416 bytes, inside the recorded 285-288 baseline |
+| `src/smoke.zig`                          | 2,240 lines to 1,712; `src/gpu/verdict.zig` is 1,557         |
+| Judges planted, one weakening at a time  | 22 planted, **21** refused by the test that names the row    |
+| `zig fmt --check`, `typos`               | Clean                                                        |
+| `markdownlint-cli2`                      | Clean                                                        |
+
+`ruff` is not installed on this machine, so its two commands were not run; no Python changed, and `scripts/measure-trace` is untouched.
 
 **The transcript comparison excludes one line, and it has to.** `src/build_info.zig` stamps a provenance marker that names the branch, the commit and whether the tree is dirty, so it moves on every commit by construction. Everything from `rendering shaders/scope.metal into a 960x540 texture` down is compared.
 
@@ -234,7 +238,7 @@ Every one lands with the change, on the program plan's rule that a document upda
 
 ### What planting the judges produced, which planting the shader did not
 
-The tests were written first as the historical plants, and then each judge was weakened in turn to see whether its test noticed. That second pass is where all four findings below came from, and none of them was visible in the first.
+The tests were written first as the historical plants, and then each judge was weakened in turn to see whether its test noticed. **That second pass is where every finding below came from, and none of them was visible in the first.** Writing a test named for a plant is cheap; establishing that it refuses the plant and would not refuse a correct picture is the part that costs a sweep.
 
 **A blank readback used to pass the decay checks outright.** They divided the measured peak by a first peak nothing checked, and `nan > 0.02 * want` is **false**. Planted with the guard removed, the judge returns `void` where the test now demands a refusal, which is the executable form of that sentence.
 
@@ -244,9 +248,13 @@ The tests were written first as the historical plants, and then each judge was w
 
 **And one arm cannot fire.** `movingCore` refuses a channel gap of zero or less before refusing a gap under 24, and for the shipped palette the second already refuses everything the first would, since green's non-lead tints are below 1.0. It stays for a palette whose non-lead tint reaches 1.0, and now says so at the source.
 
-### What survived its own weakening for a good reason
+### What survived its own weakening, and why exactly one still does
 
-Four of the 22 plants left every test passing, and none of them is a hole. Two did not compile, because removing the arm leaves an unused local, which is the same outcome the plant table already records for binding the wrong accumulation texture. The other two were caught by a sibling arm: `realTimeDecay`'s spread check catches a per-frame factor without its per-arm comparison, and `movingCore`'s `gap < 24` catches everything `gap <= 0` would. The first of those was the finding, not the survival: it meant nothing asserted the per-arm comparison's own case, a **pair** of arms wrong in the same way, which the spread between them cannot see. That test now exists.
+**One of the 22 plants leaves every test passing, and it is the dead arm rather than a hole.** `movingCore`'s `gap <= 0` cannot fire for the shipped palette, so removing it changes no verdict any test can reach. It stays for a palette whose non-lead tint reaches 1.0, and the source now says so.
+
+Two more survived on the first sweep and do not on the last, which is the sweep earning its cost. `realTimeDecay`'s spread check catches a per-frame factor without the per-arm comparison, so removing that comparison broke nothing: what it meant was that **nothing asserted the per-arm case at all**, a *pair* of arms wrong in the same way, which the spread between them is blind to by construction. And `silence`'s flatness arm had no plant sitting between its bound and the next net. Both now have one.
+
+**The sweep needed its own negative control, and it was wrong the first time.** The first version matched failures with `grep -oE "test\.[^']+' failed"`, and three test names here contain an apostrophe, so the character class stopped early and four *caught* plants were reported as uncaught. It reads the exit code now. An instrument that reports absences has to be checked against a case it should find, which is the rule `scripts/ring-race-check` already applies to a sanitizer and which this sweep had to learn separately.
 
 ## Verification
 
