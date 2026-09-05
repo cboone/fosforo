@@ -264,7 +264,7 @@ pub fn buildPalette(out: []f32) void {
 /// sampler would put a half-texel convention between the two sides that nothing
 /// could check, and it would also put a `sampler` in the shader, which the
 /// negative assertion in `src/gpu/metal/renderer.zig` refuses for an unrelated
-/// reason: `bindingIndexAfter` scans to end of file, so a sampler anywhere below
+/// reason: `bindingIndexIn` scans to end of file, so a sampler anywhere below
 /// the accumulation's uniforms fails a test whose message names those uniforms.
 pub fn paletteAt(table: []const f32, palette: Palette, t: f32) [3]f32 {
     const row = @intFromEnum(palette);

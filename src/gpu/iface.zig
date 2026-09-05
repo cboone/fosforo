@@ -317,10 +317,13 @@ pub const Readback = struct {
 /// What the backend has done about the shader on disk, for a caller that cannot
 /// see the picture.
 ///
-/// One struct rather than four `fn () usize`, because the four numbers are only
-/// ever read together and every assertion about them has the same shape: this one
-/// moved and those did not. Four separate seam operations would also be four
-/// separate `assertSignature` lines pinning nothing the struct does not.
+/// One struct rather than a `fn () usize` per number, because they are only ever
+/// read together and every assertion about them has the same shape: this one moved
+/// and those did not. Separate seam operations would also be that many separate
+/// `assertSignature` lines pinning nothing the struct does not — and a field is
+/// what lets #77 add a fifth number without touching the seam's signature list at
+/// all, which is the count `Renderer`'s own docstring has now been wrong about
+/// twice.
 ///
 /// It names nothing Metal owns, which is what lets it sit above this line at all.
 /// `reloads` and `rejected` are the pair that matters: a counter alone cannot
@@ -355,6 +358,31 @@ pub const ShaderStats = struct {
     /// unreadable *or* unusable, so this moves alongside `rejected` as well as on
     /// its own. The editor opens either way, which is the point of counting it.
     fallbacks: u64 = 0,
+
+    /// Sources off disk that compiled but read a binding somewhere this backend
+    /// does not bind it.
+    ///
+    /// **It moves alongside `reloads`, never instead of it**, which is the whole
+    /// of #77's decision stated as a type: the swap happens and the mismatch is
+    /// said out loud, because a reloader that silently declines to reload is how
+    /// people stop trusting one. Refusing was the alternative and what settled it
+    /// was a measurement rather than a preference — drawing through a moved index
+    /// completes the frame and reads the unbound argument as zeros, so keeping the
+    /// swap costs a wrong picture the next save fixes rather than a wedged GPU.
+    ///
+    /// It exists so the check can be *asserted* rather than trusted: a warning on
+    /// a stream nothing reads is indistinguishable from a check that never ran,
+    /// which is the distinction ADR 0013 keeps insisting on. `src/smoke.zig` plants
+    /// a shader with one index moved and watches this move by one.
+    ///
+    /// **Half a class, and the half it leaves open is the sharper one.** MSL states
+    /// binding indices as literals, so they can be read out of the text. It
+    /// computes struct offsets itself, so a `TraceUniforms` field added or
+    /// reordered on one side only leaves text that still describes the struct
+    /// correctly and draws a plausible trace at the wrong scale. Nothing counts
+    /// that, here or anywhere: seeing it needs a readback of a *reloaded* shader,
+    /// and `zig build smoke-trace` deliberately reads the embedded copy.
+    binding_mismatches: u64 = 0,
 };
 
 /// The one backend. Aliased rather than dispatched through a vtable, because

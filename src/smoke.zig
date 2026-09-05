@@ -375,6 +375,36 @@ fn renameResolve(buf: []u8) ![]const u8 {
     return buf[0 .. len + rest.len];
 }
 
+/// The embedded shader reading its samples somewhere the encoder does not bind
+/// them.
+///
+/// **Compiles cleanly and defines everything the pipelines ask for**, which is
+/// what makes it a different fixture from `renameResolve` rather than a variation
+/// on it: every check that existed before #77 passes this file. The vertex buffer
+/// rather than one of the other two index spaces because it is the one whose
+/// symptom was measured end to end — rendered through `zig build smoke-trace`, a
+/// moved `samples` binding draws a flat trace at zero, the frame completes and the
+/// process survives.
+///
+/// Three is a free index rather than another binding's, so this is a binding that
+/// went nowhere in particular. Swapping two would be the sharper-looking fixture
+/// and a worse one: it would pass if the checker only ever noticed *absent*
+/// indices.
+fn moveBinding(buf: []u8) ![]const u8 {
+    const from = "device const float *samples [[buffer(0)]]";
+    const to = "device const float *samples [[buffer(3)]]";
+
+    const at = std.mem.indexOf(u8, shader.embedded, from) orelse return error.FixtureAnchorMissing;
+    const rest = shader.embedded[at + from.len ..];
+    if (at + to.len + rest.len > buf.len) return error.FixtureTooLarge;
+
+    @memcpy(buf[0..at], shader.embedded[0..at]);
+    @memcpy(buf[at..][0..to.len], to);
+    @memcpy(buf[at + to.len ..][0..rest.len], rest);
+
+    return buf[0 .. at + to.len + rest.len];
+}
+
 /// The invariant that can otherwise ruin a day: **a debug build opens its editor
 /// whatever is on disk.**
 ///
@@ -413,6 +443,15 @@ fn reloadFallbackArms() !void {
     if (gpu.Renderer.shaderStats().reloads == start.reloads) return error.ShaderNotReadFromDisk;
     if (gpu.Renderer.shaderStats().fallbacks != start.fallbacks) return error.UnexpectedShaderFallback;
 
+    // **The negative control for the binding check**, and it belongs on this arm
+    // rather than on its own: this is the file the shipped shader *is*, so a
+    // checker that refused everything would fail here and the arm below would
+    // still pass. Without it, "the mismatch was noticed" cannot be told apart from
+    // "every reload is reported as a mismatch".
+    if (gpu.Renderer.shaderStats().binding_mismatches != start.binding_mismatches) {
+        return error.UnexpectedBindingMismatch;
+    }
+
     // A path that does not exist. The editor still opens.
     const missing = gpu.Renderer.shaderStats();
     if (setenv(shader.path_env, "/nonexistent/fosforo-smoke.metal", 1) != 0) {
@@ -435,12 +474,31 @@ fn reloadFallbackArms() !void {
     try probeSucceeds("a shader missing the functions the pipelines ask for");
     if (gpu.Renderer.shaderStats().rejected != renamed.rejected + 1) return error.RenamedShaderNotRefused;
 
+    // Compiles, defines everything, and reads a binding where nothing is bound.
+    // **This is the arm #77 exists for, and it asserts a decision rather than a
+    // mechanism**: the mismatch is counted *and* the shader is swapped in anyway,
+    // which is the whole of "warn rather than refuse" stated as two comparisons.
+    // Refusing the swap would fail the second one, which is what makes reversing
+    // that decision a change something notices.
+    try fixture.write(try moveBinding(&buf));
+    const moved = gpu.Renderer.shaderStats();
+    try probeSucceeds("a shader that binds elsewhere");
+
+    const after_moved = gpu.Renderer.shaderStats();
+    if (after_moved.binding_mismatches != moved.binding_mismatches + 1) {
+        return error.MovedBindingNotNoticed;
+    }
+    if (after_moved.reloads != moved.reloads + 1) return error.MovedBindingWasRefused;
+    if (after_moved.rejected != moved.rejected) return error.MovedBindingWasRejected;
+    if (after_moved.fallbacks != moved.fallbacks) return error.MovedBindingFellBack;
+
     // And back to something good, so a later arm in the same process starts from
     // a state this one understands.
     try fixture.write(try editedShader(&buf, "smoke: recovered"));
     try probeSucceeds("a good shader again");
 
     say("  the editor starts against a missing, malformed and mismatched shader", .{});
+    say("  a shader that binds elsewhere is swapped in and said out loud", .{});
 }
 
 fn probeSucceeds(what: []const u8) !void {
@@ -580,10 +638,11 @@ fn waitForReload(want: struct { reloads: ?u64 = null, rejected: ?u64 = null }, w
                 reload_timeout_us / std.time.us_per_ms,
                 what,
             });
-            say("  reloads={d} rejected={d} fallbacks={d} path_resolved={}", .{
+            say("  reloads={d} rejected={d} fallbacks={d} mismatches={d} path_resolved={}", .{
                 now.reloads,
                 now.rejected,
                 now.fallbacks,
+                now.binding_mismatches,
                 now.path_resolved,
             });
             return error.ShaderNeverReloaded;
