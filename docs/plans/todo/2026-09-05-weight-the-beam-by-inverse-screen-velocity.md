@@ -212,3 +212,81 @@ Grouped so each is reviewable on its own, all referencing `(#58)`:
 2. `test: make the harness's lit threshold a fraction of the frame's peak (#58)` -- `src/smoke.zig` call sites and `checkBeamProfile`'s expectation.
 3. `test: assert the beam's deposit is invariant to slope and sample density (#58)` -- `checkVelocityWeighting`.
 4. `docs: re-anchor the energy figures and settle the white point (#58)` -- ADRs, `CLAUDE.md`, the renderer's density docstrings, and `white_headroom` if the host session moves it.
+
+---
+
+## Results
+
+Everything offscreen is done and green. **The host arm is outstanding**, and it is the only thing between here and closing the issue.
+
+### Where the plan was wrong
+
+**The lit threshold is derived from constants, not taken as a fraction of the frame's peak.** The fraction-of-peak policy was chosen and then falsified by `checkPeriods`. Velocity weighting correlates brightness with height, and `measure.periods` reads height: the trace is _moving_ where it crosses the half-amplitude band, so at two cycles it deposits 0.635 against a frame peak of 1.544, a contour at half the peak read it as dark, and the two runs fragmented into **eight**. The form that works is `trace_threshold * beamWeight(len, h)`, which restores the constant's original meaning exactly, since 0.5 was always half of what one segment deposits at its core. Recorded at the constant.
+
+**The unweighted spread across the four slopes is 197, not 214.** Arithmetic slip in the plan; the test asserts against 190 and the figure is corrected everywhere.
+
+**"Fast segments hold and slow ones halve" under resize was wrong in both halves.** Measured rather than predicted, below.
+
+**`checkBeamProfile` catches more plants than predicted.** The plan expected the pitch-for-half-width confusion to be visible only to the dense-window arms; at 960 samples the pitch is 1.001 against a half-width of 1.5, so it fails the cross-section immediately.
+
+### What the harness measures
+
+| Measurement                                      | Result                                                               |
+| ------------------------------------------------ | -------------------------------------------------------------------- |
+| Total energy across 4 slopes x 2 densities       | spans **1.0094**, against 197 unweighted                             |
+| Per unit length, 3 rods over an 18x length range | within **1.3%** of `beamWeight`, and biased low by a consistent 1.2% |
+| `checkDecay` one deposit                         | **1.5674**, from 2.6133                                              |
+| `checkBeamProfile` cross-section                 | **0.005400** against a predicted 0.005468                            |
+| `checkResolve` worst channel                     | off by **-1**, unchanged from #57                                    |
+| `checkHotCore` one deposit / thirty              | `RGB(102, 207, 119)` / `RGB(255, 255, 255)`                          |
+| `smoke-leaks` at 40 cycles                       | 283 leaks, 18,560 bytes, inside the band                             |
+| `clap-validator`                                 | 44 run, 21 passed, 0 failed, 0 warnings                              |
+
+### The dwell range, which is the issue's real subject
+
+Turning point against zero crossing, amplitude 0.5, measured offscreen with the weight planted out for the baseline. 100 Hz is 2 cycles in a 20 ms window and 1 kHz is 20.
+
+| signal | before | after    |
+| ------ | ------ | -------- |
+| 100 Hz | 1.36   | **1.84** |
+| 1 kHz  | 1.34   | **7.50** |
+
+The order of magnitude the issue promised is real at 1 kHz and is not real at 100 Hz, and every figure the prediction rested on came from a 100 Hz sine. That signal's fastest crossing is 1.88 times the speed of its turning point, so nothing can widen it. **What changed is that the range now discriminates between signals**, where before both read about 1.35.
+
+### Resize, the finding `density` owes
+
+Peak energy on a flat trace and on a full-scale zigzag, one 960-sample window:
+
+| drawable | flat  | fast   | contrast |
+| -------- | ----- | ------ | -------- |
+| 960x540  | 1.198 | 0.0136 | 88.1     |
+| 480x540  | 1.193 | 0.0110 | 108.5    |
+| 480x270  | 1.193 | 0.0219 | 54.5     |
+
+A slow trace holds to 0.4% in both directions. A fast one dims by a fifth on a half-width editor and brightens by 1.61 on a half-size one, so the _contrast_ moves with the window by up to 1.6x where the physics says everything should simply double. Follow-up issue, not this one.
+
+### Planted defects
+
+| Plant                                                | Caught by                                                    |
+| ---------------------------------------------------- | ------------------------------------------------------------ |
+| The weight dropped (`velocity = 1.0`)                | `checkBeamProfile`, 1.5796 against 0.005468                  |
+| `h / len`, the floor term removed                    | **only** arm 2, 5690.3 against 2276.4; arm 1 passes it       |
+| `len` taken in clip space                            | `checkBeamProfile`, 0.7595                                   |
+| `segment_length` derived per corner                  | `checkBeamProfile`, 0.3303, and the centroid moves to 479.99 |
+| The weight applied to the geometry                   | `checkSilence`, 0 of 960 columns lit                         |
+| The contour reverted to an absolute 0.5              | `checkHorizontalMapping`, `TraceNotDrawn`                    |
+| The weight computed from the pitch                   | `checkBeamProfile`, 0.003607                                 |
+| `segment_length` interpolated rather than `[[flat]]` | **nothing, and it is not a defect**                          |
+
+The second row is why there are two arms rather than one: `h / len` is within 5% of the right answer for every long segment, so the per-unit-length arm passes it and only the conservation arm sees it.
+
+The last row was planted expecting a catch and is a correction to the plan. A value equal at all four corners interpolates to itself, so `[[flat]]` here is a cost saving and a statement of intent rather than a correctness requirement. `TraceOut`'s existing comment is about _deriving_ per-corner values, which is the row above it and is caught.
+
+### Outstanding
+
+The host session, which nothing offscreen can substitute for. `smoke-trace` renders a window it supplied itself and says nothing about the audio path, the ring, the display link or the compositor.
+
+1. **`white_headroom`, on `sine-1000hz-0.5.wav` and `click-2hz.wav`**, not the 100 Hz sine, for the reason above. The prediction is that 0.8 survives unchanged.
+2. **[#79](https://github.com/cboone/fosforo/issues/79)**: stop the transport and look. A full-height segment now deposits 0.0034 against 1.57, so it should be dim by construction; if it is, close #79 as covered.
+3. **Resize during playback**, to see the contrast change above with eyes on it.
+4. The level sweep and the 48/96/192 kHz arm, which exercise the ring and `windowSamples` rather than the weight.
