@@ -129,6 +129,14 @@ fn severityName(severity: c.clap_log_severity) []const u8 {
 
 const testing = std.testing;
 
+test {
+    // `severityName`'s only caller returns early under `builtin.is_test`, so no
+    // arm of it runs in this binary. That is #97's to assert; this is what makes
+    // it compile here rather than at the first release build that reaches it.
+    testing.refAllDecls(@This());
+    testing.refAllDecls(Log);
+}
+
 /// Zig runs a test binary's tests sequentially on one thread, so a file-scope
 /// capture is safe here and avoids threading a context through the C ABI.
 var captured: [message_size]u8 = undefined;

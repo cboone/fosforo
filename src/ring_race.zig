@@ -395,6 +395,13 @@ fn valid(window: []const f32) bool {
 
 const testing = std.testing;
 
+test {
+    // `main` has only ever been analysed for the Linux target the harness runs on,
+    // because `zig build ring-race` refuses on a macOS host and nothing else
+    // referenced it. This is the first thing that compiles it here.
+    testing.refAllDecls(@This());
+}
+
 test "a window of consecutive samples behind a zero pad is valid" {
     try testing.expect(valid(&[_]f32{ 0, 0, 1, 2, 3 }));
     try testing.expect(valid(&[_]f32{ 7, 8, 9 }));

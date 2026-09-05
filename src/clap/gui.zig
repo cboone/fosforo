@@ -1028,6 +1028,17 @@ const canary = @import("../canary.zig");
 // thread protocol are testable on a machine with no window server, and the
 // calls are verified by opening the editor in a host.
 
+test {
+    // Three of these are named separately because `refAllDecls` does not descend.
+    // `Gate` is not among them: it is private, so `std.meta.declarations` cannot
+    // see it, and it is analysed because `Editor` calls it. What guards `Gate` is
+    // the canary below and #91's sanitizer arm, not this.
+    testing.refAllDecls(@This());
+    testing.refAllDecls(Pending);
+    testing.refAllDecls(HostGui);
+    testing.refAllDecls(Editor);
+}
+
 test "only embedded cocoa is accepted" {
     try testing.expect(Editor.isApiSupported(&c.CLAP_WINDOW_API_COCOA, false));
 

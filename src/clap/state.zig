@@ -108,6 +108,14 @@ fn readAll(stream: *const c.clap_istream_t, buffer: []u8) LoadError!void {
 
 const testing = std.testing;
 
+test {
+    // `TestStream` is public so `plugin.zig`'s tests can drive the same fixture,
+    // which makes it a public declaration of this file like any other and a method
+    // nothing happened to call would go unanalysed the same way.
+    testing.refAllDecls(@This());
+    testing.refAllDecls(TestStream);
+}
+
 /// An in-memory stream that can be told to move fewer bytes per call than asked
 /// for, which is the behaviour the loops above exist for and the one no real
 /// host reproduces on demand.

@@ -56,6 +56,15 @@ pub fn setCocoaView(window: *c.clap_window_t, view: ?*anyopaque) void {
     window.unnamed_0.cocoa = view;
 }
 
+test {
+    // Deliberately no `// Tests` banner in this file, unlike every other one. The
+    // comptime layout block below sits *after* these tests, so a banner would tell
+    // `canary.implementation` to cut above real implementation code. Spelled fully
+    // qualified for the same reason the tests below are: this file has no alias.
+    std.testing.refAllDecls(@This());
+    std.testing.refAllDecls(feature);
+}
+
 test "restated version macros match the vendored headers" {
     try std.testing.expectEqual(c.CLAP_VERSION.major, version_major);
     try std.testing.expectEqual(c.CLAP_VERSION.minor, version_minor);

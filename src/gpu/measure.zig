@@ -492,6 +492,19 @@ pub fn sine(out: []f32, cycles: f32, amplitude: f32) void {
 
 const testing = std.testing;
 
+test {
+    // The analysis half of `zig build smoke-trace`, whose only caller is an
+    // executable this binary never compiles. Without these, this module's public
+    // surface is checked by the one build step that needs a GPU, which is the
+    // opposite of why ADR 0013 split it out of `src/smoke.zig`.
+    testing.refAllDecls(@This());
+    testing.refAllDecls(Image);
+    testing.refAllDecls(Extremes);
+    testing.refAllDecls(Centres);
+    testing.refAllDecls(Span);
+    testing.refAllDecls(Point);
+}
+
 /// Rasterize a window the way the shader does, so a test knows its own answers.
 ///
 /// **Deliberately reproduces the behaviour that broke #38's first counter**: a
