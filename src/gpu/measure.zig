@@ -487,10 +487,8 @@ pub fn sine(out: []f32, cycles: f32, amplitude: f32) void {
 }
 
 // ---------------------------------------------------------------------------
-// Tests
+// The beam model, which two test suites share
 // ---------------------------------------------------------------------------
-
-const testing = std.testing;
 
 /// Rasterize a window the way the shader does, so a test knows its own answers.
 ///
@@ -508,12 +506,18 @@ const testing = std.testing;
 /// against the primitive it was written to replace: an estimator that reads a
 /// beam's centre would look correct on images that have no interior to read.
 ///
+/// **Public since #92, and above the tests banner because of it.** `src/gpu/
+/// verdict.zig`'s tests need the same beam to judge a centroid, a level and a
+/// cross-section against, and a second model of one thing is a second thing to
+/// keep in step. It writes the green channel alone, which is what the analysis
+/// reads; a caller that needs all four asks for them.
+///
 /// The profile is the biweight the shader deposits, applied to the distance from
 /// a pixel's centre to the column's segment rather than to a point, which is the
 /// one-dimensional form of the shader's distance-to-segment. That keeps the
 /// property the centroid depends on — symmetry about the centreline — without
 /// reproducing the oriented quad, which this file has no business knowing about.
-fn rasterize(pixels: []f32, width: usize, height: usize, window: []const f32) Image {
+pub fn rasterize(pixels: []f32, width: usize, height: usize, window: []const f32) Image {
     @memset(pixels, 0);
     const image: Image = .{ .width = width, .height = height, .pixels = pixels };
 
@@ -558,10 +562,21 @@ fn rasterize(pixels: []f32, width: usize, height: usize, window: []const f32) Im
 ///
 /// `iface.beam_width_points / 2` at a scale of one, which is the geometry
 /// `Renderer.initOffscreen` runs and therefore the one every number in
-/// `src/smoke.zig` is stated at. Held here rather than imported so this file's
-/// tests describe the analysis at a geometry they choose, the way they already
-/// choose 960x540.
-const model_half_width: f32 = iface.beam_width_points / 2.0;
+/// `src/smoke.zig` is stated at. Stated here beside the model rather than read
+/// out of the seam at each call site, so a test describes the analysis at a
+/// geometry it chooses, the way they already choose 960x540.
+///
+/// Deliberately equal to `verdict.beam_half_width_px` without either being
+/// derived from the other: this is what the *model* draws and that is what the
+/// *judgement* expects, and a test in which those two are the same expression
+/// would assert nothing about the beam.
+pub const model_half_width: f32 = iface.beam_width_points / 2.0;
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+const testing = std.testing;
 
 /// Scratch for one rasterized image.
 ///
