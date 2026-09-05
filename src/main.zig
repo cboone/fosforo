@@ -93,6 +93,63 @@ test {
     _ = @import("ring_race.zig");
 }
 
+test "every module a test build compiles carries a declaration sweep" {
+    const canary = @import("canary.zig");
+
+    // Zig analyses lazily per declaration, so a `pub fn` nothing reaches is never
+    // type-checked however the file it lives in was imported (#95). Every module
+    // below answers that with a `refAllDecls` block. Nothing but this makes the
+    // convention hold for the module added next month: the sweep itself is a
+    // one-time edit, and the hole it closed reopens silently without a check.
+    //
+    // Every `.zig` file under `src/` except `smoke.zig`, which `zig build test`
+    // compiles none of; #92 owns that one.
+    const sources = .{
+        .{ "main.zig", @embedFile("main.zig") },
+        .{ "build_info.zig", @embedFile("build_info.zig") },
+        .{ "canary.zig", @embedFile("canary.zig") },
+        .{ "ring_race.zig", @embedFile("ring_race.zig") },
+        .{ "clap/c.zig", @embedFile("clap/c.zig") },
+        .{ "clap/gui.zig", @embedFile("clap/gui.zig") },
+        .{ "clap/log.zig", @embedFile("clap/log.zig") },
+        .{ "clap/plugin.zig", @embedFile("clap/plugin.zig") },
+        .{ "clap/state.zig", @embedFile("clap/state.zig") },
+        .{ "dsp/ring.zig", @embedFile("dsp/ring.zig") },
+        .{ "gpu/iface.zig", @embedFile("gpu/iface.zig") },
+        .{ "gpu/measure.zig", @embedFile("gpu/measure.zig") },
+        .{ "gpu/palette.zig", @embedFile("gpu/palette.zig") },
+        .{ "gpu/metal/renderer.zig", @embedFile("gpu/metal/renderer.zig") },
+        .{ "gpu/metal/shader.zig", @embedFile("gpu/metal/shader.zig") },
+        .{ "platform/displaylink.zig", @embedFile("platform/displaylink.zig") },
+        .{ "platform/io.zig", @embedFile("platform/io.zig") },
+        .{ "platform/objc.zig", @embedFile("platform/objc.zig") },
+        .{ "platform/view.zig", @embedFile("platform/view.zig") },
+    };
+
+    // Split so this line is not itself a match. The needle would otherwise appear
+    // verbatim in this file's own source and count as a second statement, which is
+    // the hazard `canary.implementation` exists for and which cannot help here:
+    // this file has no tests banner to cut at.
+    //
+    // `canary.mentions` rather than `indexOf` for the reason it exists: it does not
+    // count comment lines, so a file that documented the convention instead of
+    // following it fails. `src/smoke.zig` names `testing.refAllDecls` in its
+    // docstring and follows nothing, which is what that would look like.
+    const sweep = "refAllDecls(" ++ "@This());";
+    inline for (sources) |module| {
+        errdefer std.debug.print("\nsrc/{s} carries no declaration sweep\n", .{module[0]});
+        try std.testing.expectEqual(1, canary.mentions(module[1], sweep));
+    }
+
+    // The two lists tied together, so adding one without the other fails here
+    // rather than quietly narrowing what the sweep covers. `sources` holds four
+    // entries the block above does not name: this file, the two it imports at file
+    // scope, and `gpu/palette.zig`, whose tests are collected only because
+    // `Renderer`'s method bodies reference it. Split for the same reason as above.
+    const listed = canary.mentions(@embedFile("main.zig"), "_ = @imp" ++ "ort(\"");
+    try std.testing.expectEqual(sources.len, listed + 4);
+}
+
 test "the entry hands back the plugin factory, and only for its own id" {
     const got = fosforo_clap_get_factory(&c.CLAP_PLUGIN_FACTORY_ID);
     try std.testing.expect(got == @as(?*const anyopaque, &plugin.factory));
