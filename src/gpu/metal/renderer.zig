@@ -376,7 +376,7 @@ const TraceUniforms = extern struct {
     /// logical point, so a correction computed in pixels makes brightness track
     /// the display's backing scale, which ADR 0019 forbids.
     ///
-    /// **Not velocity weighting, which is #58's.** Quads overlap at every joint,
+    /// **Not velocity weighting, which #58 landed beside it.** Quads overlap at every joint,
     /// so a pixel collects roughly `1 + 1.6 * s` deposits for `s` samples per
     /// logical point: about 2.6 at one, and 7.4 at four, where a *moving* trace
     /// saturates to white. Four is reachable at 96 kHz on the smallest editor and
@@ -388,7 +388,34 @@ const TraceUniforms = extern struct {
     /// What makes it not velocity weighting is that it is one number for the whole
     /// frame, derived from the window length and the drawable width and from
     /// nothing about the signal. #58's term varies per segment with how fast the
-    /// beam is moving, which is the whole of what the name means.
+    /// beam is moving, which is the whole of what the name means. The two compose
+    /// rather than overlapping, which `checkVelocityWeighting` asserts by driving
+    /// four slopes across two sample densities and finding the total energy flat
+    /// to 0.94%.
+    ///
+    /// **The drawable width in that sentence is a defect, and #58 is where it
+    /// became visible.** This term is meant to be the *time* one segment stands
+    /// for, which is a function of the window length alone; taking it as the pitch
+    /// ties it to the editor's geometry as well, and the velocity term responds to
+    /// that same geometry in the opposite direction. Measured offscreen against
+    /// the same 960-sample window, as peak energy on a flat trace and on a
+    /// full-scale zigzag:
+    ///
+    /// | drawable | flat  | fast   | contrast |
+    /// | -------- | ----- | ------ | -------- |
+    /// | 960x540  | 1.198 | 0.0136 | 88.1     |
+    /// | 480x540  | 1.193 | 0.0110 | 108.5    |
+    /// | 480x270  | 1.193 | 0.0219 | 54.5     |
+    ///
+    /// So dragging an editor narrower holds a slow trace and dims a fast one by a
+    /// fifth, and halving both axes holds a slow trace and brightens a fast one by
+    /// 1.61: the *contrast* moves with the window in both cases, by up to 1.6x,
+    /// where the physics says a beam covering half the distance in the same time
+    /// should simply be twice as bright everywhere. #58's own brief asked for that
+    /// brightening and does not get it, because this term cancels exactly the
+    /// extra coverage a narrower window produces. Left alone deliberately: it is a
+    /// second relationship, it needs a reference geometry to fix absolute
+    /// brightness against, and it reopens a correction #57 measured and settled.
     ///
     /// It also retires an assumption behind `iface.max_window_samples`, which was
     /// sized on the reasoning that extra samples are free. Under additive quads
@@ -2159,7 +2186,9 @@ fn traceGeometry(window_len: usize) ?TraceGeometry {
 /// `1 + (16/15) * half_width / pitch` deposits. This attenuates by the pitch so
 /// that product stays put, which is what stops a moving trace saturating to white
 /// at a high sample rate; `TraceUniforms.density` carries the rest of the
-/// argument, including why this is not #58's velocity weighting.
+/// argument, including why this is not #58's velocity weighting and the measured
+/// respect in which taking it as the *pitch* rather than as the time a segment
+/// stands for is now known to be wrong.
 ///
 /// **The pitch is in points, not backing pixels, and that is the whole of what
 /// this function exists to get right.** The overlap it corrects depends on

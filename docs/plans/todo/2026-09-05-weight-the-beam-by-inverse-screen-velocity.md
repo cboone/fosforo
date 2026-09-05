@@ -4,11 +4,11 @@ Closes [#58](https://github.com/cboone/fosforo/issues/58). Phase 3, step 5.
 
 ## Context
 
-[ADR 0007](../../adr/0007-renderer-simulates-a-crt.md) calls this "the single relationship" that produces the phosphor look, and the build plan calls it the step where the render stops looking like a plot. The beam sweeps at a constant *time* rate and covers a varying *screen* distance, so where the signal moves slowly the beam dwells and deposits a lot of energy per pixel, and where it moves fast the same energy is smeared over hundreds of pixels. That is what an electron beam and a phosphor physically do, and it costs a division.
+[ADR 0007](../../adr/0007-renderer-simulates-a-crt.md) calls this "the single relationship" that produces the phosphor look, and the build plan calls it the step where the render stops looking like a plot. The beam sweeps at a constant _time_ rate and covers a varying _screen_ distance, so where the signal moves slowly the beam dwells and deposits a lot of energy per pixel, and where it moves fast the same energy is smeared over hundreds of pixels. That is what an electron beam and a phosphor physically do, and it costs a division.
 
-Everything it waits on has landed. [#57](https://github.com/cboone/fosforo/issues/57) made each inter-sample segment an oriented quad shaded by distance from the segment, so there are segments to weight and `trace_vertex` already computes their screen length. [#60](https://github.com/cboone/fosforo/issues/60) put a tonemap and a palette in the resolve, so accumulated energy past 1.0 is legible rather than clipped. [#51](https://github.com/cboone/fosforo/issues/51) built `zig build smoke-trace`, which is the only instrument that can measure a *relationship* rather than a picture, and which was pulled forward on exactly this argument: "it looks like a scope" cannot tell `1/length` from `1/sqrt(length)` from a constant with a lucky palette.
+Everything it waits on has landed. [#57](https://github.com/cboone/fosforo/issues/57) made each inter-sample segment an oriented quad shaded by distance from the segment, so there are segments to weight and `trace_vertex` already computes their screen length. [#60](https://github.com/cboone/fosforo/issues/60) put a tonemap and a palette in the resolve, so accumulated energy past 1.0 is legible rather than clipped. [#51](https://github.com/cboone/fosforo/issues/51) built `zig build smoke-trace`, which is the only instrument that can measure a _relationship_ rather than a picture, and which was pulled forward on exactly this argument: "it looks like a scope" cannot tell `1/length` from `1/sqrt(length)` from a constant with a lucky palette.
 
-Two things ride on it. [ADR 0019](../../adr/0019-brightness-is-a-fixed-transfer-function.md) holds `white_headroom` at 0.8 marked **provisional**, because a 2:1 dwell range is too narrow for any white point to carve a core out of, and hands the re-judgement here. And [#79](https://github.com/cboone/fosforo/issues/79), the bright vertical line a transport stop draws, is expected to close as *covered* rather than fixed, because a segment spanning hundreds of rows is precisely what this relationship makes dim by construction.
+Two things ride on it. [ADR 0019](../../adr/0019-brightness-is-a-fixed-transfer-function.md) holds `white_headroom` at 0.8 marked **provisional**, because a 2:1 dwell range is too narrow for any white point to carve a core out of, and hands the re-judgement here. And [#79](https://github.com/cboone/fosforo/issues/79), the bright vertical line a transport stop draws, is expected to close as _covered_ rather than fixed, because a segment spanning hundreds of rows is precisely what this relationship makes dim by construction.
 
 No new ADR. ADR 0007 already specifies this as a consequence; this executes it and resolves ADR 0019's provisional constant.
 
@@ -25,7 +25,7 @@ return float4(falloff * falloff * beam.density * w);
 
 `in.length` is a new `[[flat]]` member of `TraceOut`, assigned from the `len` that `trace_vertex` already computes in window space at line 334. Flat rather than interpolated for the reason `p0` and `p1` already carry: all four corners compute the same value.
 
-**The constant is derived, not chosen.** A capsule's integral of the biweight is `(16/15)·h·len` along its length plus `(π/3)·h²` for the two caps, so the weight that makes a segment's *total* deposited energy independent of its length is `1 / (1 + 1.019·len/h)`. `h / (h + len)` is that, to within 2% across the whole range. Two consequences that make this the form rather than an approximation of it:
+**The constant is derived, not chosen.** A capsule's integral of the biweight is `(16/15)·h·len` along its length plus `(π/3)·h²` for the two caps, so the weight that makes a segment's _total_ deposited energy independent of its length is `1 / (1 + 1.019·len/h)`. `h / (h + len)` is that, to within 2% across the whole range. Two consequences that make this the form rather than an approximation of it:
 
 - **The floor the issue asks for is answered by construction.** The denominator is `h + len ≥ h > 0`, so there is no division by zero to guard and no epsilon to justify. The floor's real job is physical, not numerical: below the beam's own width, moving stops reducing a pixel's dwell, and this form handles that smoothly rather than with a kink.
 - **It improves sample-rate stability**, which `density` alone leaves imperfect. Per-pixel energy for a flat trace goes 1.56 at 48 kHz against 1.58 at 192 kHz, where today it is 2.6 against 1.85.
@@ -66,13 +66,13 @@ Nothing that is actually asserted is lost. Absolute brightness is covered by `ch
 
 Pure, no GPU, tested at the foot of the file, on `beamDensity`'s precedent that the property worth asserting should not need a device.
 
-| Addition | What it is |
-| ------------------------------------------------- | ----------------------------------------------------------------------- |
-| `beamWeight(len_px, half_width_px) f32`            | The model of the shader's term, so the harness states expectations through it rather than restating the formula |
-| `segmentEnergy(len_px, half_width_px) f32`         | The closed form `beamWeight * ((16/15)·h·len + (π/3)·h²)`, which is the invariant under test |
-| `rowEnergy(image, y) f32`                          | Sums green across one row. `checkBeamProfile` sums inline today because no helper exists; both callers use this |
-| `totalEnergy(image) f32`                           | Sums green over the whole image |
-| `alternating(out, amplitude)`                      | Window builder beside `constant`, `ramp` and `sine`: every sample flips sign, so every segment has the same known length |
+| Addition                                   | What it is                                                                                                               |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| `beamWeight(len_px, half_width_px) f32`    | The model of the shader's term, so the harness states expectations through it rather than restating the formula          |
+| `segmentEnergy(len_px, half_width_px) f32` | The closed form `beamWeight * ((16/15)·h·len + (π/3)·h²)`, which is the invariant under test                             |
+| `rowEnergy(image, y) f32`                  | Sums green across one row. `checkBeamProfile` sums inline today because no helper exists; both callers use this          |
+| `totalEnergy(image) f32`                   | Sums green over the whole image                                                                                          |
+| `alternating(out, amplitude)`              | Window builder beside `constant`, `ramp` and `sine`: every sample flips sign, so every segment has the same known length |
 
 Tests: `beamWeight` is 1 at zero length, monotone decreasing, asymptotically proportional to `1/len`, and never negative or NaN; `segmentEnergy` varies by under 2% across the whole length range, which is the property the whole issue rests on; `alternating` and the two sums against hand-built images.
 
@@ -82,7 +82,7 @@ Tests: `beamWeight` is 1 at zero length, monotone decreasing, asymptotically pro
 2. `checkBeamProfile`'s expectation gains the weight: `beam_half_width_px * 16/15 * measure.beamWeight(len, beam_half_width_px)`, with `len` computed from `measure.expectedRow` on ±0.9 and the segment pitch. It stays a statement about the biweight and becomes a plant detector for the weight as well.
 3. **New `checkVelocityWeighting`**, added to `traceHalf`'s call list after `checkBeamProfile`. Two arms, and the pairing is the point.
 
-**Arm 1, per unit length.** Three isolated rods: a window that steps from `+a` to `-a` at its midpoint, at `a` of 0.05, 0.2 and 0.9, so one segment crosses the middle row and its neighbours are the flat runs far above and below. `rowEnergy` at row 270 is the cross-section integral, which is the deposit *per unit length*, and it must equal `(16/15)·h·beamWeight(len)`. This is the issue's own sentence made executable.
+**Arm 1, per unit length.** Three isolated rods: a window that steps from `+a` to `-a` at its midpoint, at `a` of 0.05, 0.2 and 0.9, so one segment crosses the middle row and its neighbours are the flat runs far above and below. `rowEnergy` at row 270 is the cross-section integral, which is the deposit _per unit length_, and it must equal `(16/15)·h·beamWeight(len)`. This is the issue's own sentence made executable.
 
 | `a`  | segment length | predicted weight | predicted cross-section |
 | ---- | -------------- | ---------------- | ----------------------- |
@@ -92,13 +92,13 @@ Tests: `beamWeight` is 1 at zero length, monotone decreasing, asymptotically pro
 
 **Arm 2, total energy is invariant to slope and to sample density.** Four slopes crossed with two window lengths, eight probes, one assertion. Total accumulated energy must agree across all eight within 5%, and match `instances * density * segmentEnergy(len)` within 10%. Unweighted, the four slopes alone span a factor of **197**.
 
-| window | slope                | pitch | segment length | predicted total |
-| ------ | -------------------- | ----- | -------------- | --------------- |
-| 960    | flat                 | 1.001 | 1.001          | 2277            |
-| 960    | alternating ±0.05    | 1.001 | 24.32          | 2300            |
-| 960    | alternating ±0.45    | 1.001 | 218.70         | 2302            |
-| 960    | alternating ±1.0     | 1.001 | 486.00         | 2302            |
-| 3840   | the same four        | 0.250 | as above       | 2267 to 2303    |
+| window | slope             | pitch | segment length | predicted total |
+| ------ | ----------------- | ----- | -------------- | --------------- |
+| 960    | flat              | 1.001 | 1.001          | 2277            |
+| 960    | alternating ±0.05 | 1.001 | 24.32          | 2300            |
+| 960    | alternating ±0.45 | 1.001 | 218.70         | 2302            |
+| 960    | alternating ±1.0  | 1.001 | 486.00         | 2302            |
+| 3840   | the same four     | 0.250 | as above       | 2267 to 2303    |
 
 The 3840-sample arms are what no other check here reaches: they drive `density` to 0.25 while the slopes drive the weight, and the totals still agreeing is the executable form of "these are two terms with different domains". The window is a stack array in the check, on `checkHorizontalMapping`'s precedent.
 
@@ -146,13 +146,13 @@ zig build install-clap
 
 Provenance first, capture with `screencapture -o -x -t png -W`, read every capture with `scripts/measure-trace --explain --refresh 120`, and verify at 48 kHz.
 
-**Arm 1, the material that shows the range, and it is not the 100 Hz sine.** Every figure ADR 0019 and the issue's own comment quote comes from `sine-100hz-0.5.wav`, and that signal's physical velocity ratio is **1.88:1**: at 1920 px over 20 ms the sweep runs at 96,000 px/s, and a 0.5 sine at 100 Hz reaches 152,681 px/s vertically, so its fastest crossing is only 1.88 times the speed of its turning point. **No velocity weighting can widen that**, because 1.88 is what the beam actually does. Today's measured 2.2-to-3.0 against roughly 1 *overstates* it, because the joint overlap grows as `1/len` for shallow segments and saturates near 1 for steep ones. So expect the 100 Hz sine's range to come back near 2:1 and possibly slightly narrower than today, and **that is correct rather than a regression.** The order of magnitude is real and lives on higher-slope material: `sine-1000hz-0.5.wav` has a ratio of **15.9:1** on the same arithmetic, and `click-2hz.wav` is ADR 0007's own kick-and-click example. Judge the core on those two.
+**Arm 1, the material that shows the range, and it is not the 100 Hz sine.** Every figure ADR 0019 and the issue's own comment quote comes from `sine-100hz-0.5.wav`, and that signal's physical velocity ratio is **1.88:1**: at 1920 px over 20 ms the sweep runs at 96,000 px/s, and a 0.5 sine at 100 Hz reaches 152,681 px/s vertically, so its fastest crossing is only 1.88 times the speed of its turning point. **No velocity weighting can widen that**, because 1.88 is what the beam actually does. Today's measured 2.2-to-3.0 against roughly 1 _overstates_ it, because the joint overlap grows as `1/len` for shallow segments and saturates near 1 for steep ones. So expect the 100 Hz sine's range to come back near 2:1 and possibly slightly narrower than today, and **that is correct rather than a regression.** The order of magnitude is real and lives on higher-slope material: `sine-1000hz-0.5.wav` has a ratio of **15.9:1** on the same arithmetic, and `click-2hz.wav` is ADR 0007's own kick-and-click example. Judge the core on those two.
 
 **Arm 2, `white_headroom`.** With the weight in, a dwelling pixel at 120 Hz converges on about 30 against a white point of 15.6, so the core arrives; a 1 kHz crossing tonemaps to about 0.083, which the sRGB toe puts at green 81 over a background of 5, so the dim end is dim rather than black. The prediction is that **0.8 survives unchanged** and stops being provisional. Turn it live with #61's hot reload while looking at `click-2hz.wav`, and if it does survive, drop "provisional" from the shader, `src/gpu/palette.zig`, ADR 0019 and the issue comment together.
 
 **Arm 3, [#79](https://github.com/cboone/fosforo/issues/79).** Play any tone and stop the transport. The step to silence is a segment spanning hundreds of rows, so its weight is on the order of 0.003 against a signal's 1.5, roughly 500 times dimmer. If the line is no longer distracting, comment on #79 with the measurement and close it as **covered rather than fixed**, which is what its own body and the build plan both ask for. What survives afterwards is whether a deliberate discontinuity should be drawn at all, which is [#53](https://github.com/cboone/fosforo/issues/53)'s.
 
-**Arm 4, resize.** Drag the editor from the default to its minimum during playback and record what happens to brightness. The prediction, and it is the finding this issue owes: **fast segments hold and slow ones halve**, because `density` is the segment pitch in *points* and therefore cancels the velocity term's response to geometry. The physics says everything should get brighter. See Follow-ups.
+**Arm 4, resize.** Drag the editor from the default to its minimum during playback and record what happens to brightness. The prediction, and it is the finding this issue owes: **fast segments hold and slow ones halve**, because `density` is the segment pitch in _points_ and therefore cancels the velocity term's response to geometry. The physics says everything should get brighter. See Follow-ups.
 
 **Arm 5, sample rate.** Change REAPER's device rate to 96 and 192 kHz and confirm the picture's brightness and contrast hold. The harness covers this offscreen through arm 2's 3840-sample probes, so this arm is about the ring, `windowSamples` and the upload path rather than about the weight.
 
@@ -162,30 +162,30 @@ Then `clap-validator`, `typos`, `markdownlint-cli2` (never `--fix`), `ruff forma
 
 Written down in advance because at the keyboard every one of these reads as "the change is wrong".
 
-| Symptom | Response |
-| ------------------------------------------------------- | ------------------------------------------------------------------ |
-| The 100 Hz sine's range did not widen | Expected. Judge on 1 kHz and the click; do not touch the weight |
-| The whole picture is dimmer than before | Expected, by about 0.6 on slow material. Re-judge `white_headroom`, do not add a gain |
-| Fast crossings are invisible rather than dim | Read the byte, not the eye. Below green 20 or so, suspect the weight; at 81 it is the design |
-| Brightness tracks the signal's *level* | Not a defect, and ADR 0019 says so: a quieter sine moves fewer rows per sample and genuinely dwells |
-| Brightness tracks the *frame's peak* | Stop. Something made the transfer function depend on the frame's contents, which ADR 0019 forbids without a superseding ADR |
-| The totals in arm 2 disagree between the two window lengths | The two terms have been collapsed. Check that the weight reads `half_width_px` and never the pitch |
+| Symptom                                                     | Response                                                                                                                    |
+| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| The 100 Hz sine's range did not widen                       | Expected. Judge on 1 kHz and the click; do not touch the weight                                                             |
+| The whole picture is dimmer than before                     | Expected, by about 0.6 on slow material. Re-judge `white_headroom`, do not add a gain                                       |
+| Fast crossings are invisible rather than dim                | Read the byte, not the eye. Below green 20 or so, suspect the weight; at 81 it is the design                                |
+| Brightness tracks the signal's _level_                      | Not a defect, and ADR 0019 says so: a quieter sine moves fewer rows per sample and genuinely dwells                         |
+| Brightness tracks the _frame's peak_                        | Stop. Something made the transfer function depend on the frame's contents, which ADR 0019 forbids without a superseding ADR |
+| The totals in arm 2 disagree between the two window lengths | The two terms have been collapsed. Check that the weight reads `half_width_px` and never the pitch                          |
 
 ### Planted defects
 
 Each planted on a passing run, committed first so `git restore` cannot revert the fix with the plant, and with an unconditional trigger.
 
-| Plant | Must be caught by |
-| ------------------------------------------------ | ------------------------------------------------------------------ |
-| The weight dropped entirely (`w = 1.0`) | `checkVelocityWeighting` arm 2, whose totals then span 197x |
-| `h / len` with the `h +` term removed | Arm 2's flat probe, 2.5x off, and nothing else; this is why the floor is asserted |
-| `len` taken in clip space rather than window space | Arm 1, since the aspect ratio makes the weight anisotropic |
-| `length` declared interpolated rather than `[[flat]]` | Arm 1's cross-sections, which then differ across a quad's diagonal |
-| The weight applied to `out.position` instead of the deposit | `checkLevels` and `checkSilence`, on geometry rather than energy |
-| The relative threshold reverted to an absolute 0.5 | `checkHorizontalMapping`, with `TraceNotDrawn` |
-| The weight computed from the pitch rather than `half_width_px` | Arm 2's 3840-sample probes, and **nothing else here** |
+| Plant                                                          | Must be caught by                                                                 |
+| -------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| The weight dropped entirely (`w = 1.0`)                        | `checkVelocityWeighting` arm 2, whose totals then span 197x                       |
+| `h / len` with the `h +` term removed                          | Arm 2's flat probe, 2.5x off, and nothing else; this is why the floor is asserted |
+| `len` taken in clip space rather than window space             | Arm 1, since the aspect ratio makes the weight anisotropic                        |
+| `length` declared interpolated rather than `[[flat]]`          | Arm 1's cross-sections, which then differ across a quad's diagonal                |
+| The weight applied to `out.position` instead of the deposit    | `checkLevels` and `checkSilence`, on geometry rather than energy                  |
+| The relative threshold reverted to an absolute 0.5             | `checkHorizontalMapping`, with `TraceNotDrawn`                                    |
+| The weight computed from the pitch rather than `half_width_px` | Arm 2's 3840-sample probes, and **nothing else here**                             |
 
-That last row is the point of the 3840-sample arms existing, and it is the gap #57 hit from the other side: the harness runs at scale 1.0 and could not see a density term that tracked the backing scale, so `beamDensity`'s properties had to be asserted without a GPU. Here the window length is something the harness *can* vary, so the arm exists rather than the gap.
+That last row is the point of the 3840-sample arms existing, and it is the gap #57 hit from the other side: the harness runs at scale 1.0 and could not see a density term that tracked the backing scale, so `beamDensity`'s properties had to be asserted without a GPU. Here the window length is something the harness _can_ vary, so the arm exists rather than the gap.
 
 ## Deliberately not done
 
@@ -197,12 +197,12 @@ That last row is the point of the 3840-sample arms existing, and it is the gap #
 
 ## Follow-ups
 
-| What | Where it goes |
-| --------------------------------------------------- | ------------------------------------------------------ |
-| `density`'s width dependence versus the physics | New issue, with arm 4's measurement |
-| #79 closes as covered | Comment with arm 3's measurement, then close |
-| #83's toe measurement | Unblocked: it wanted the energy distribution this produces before measuring the banding that will ship |
-| The build plan's phase 3 table and issue order | `docs/plans/todo/2026-07-25-repo-foundation-and-phased-build-plan.md` |
+| What                                            | Where it goes                                                                                          |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `density`'s width dependence versus the physics | New issue, with arm 4's measurement                                                                    |
+| #79 closes as covered                           | Comment with arm 3's measurement, then close                                                           |
+| #83's toe measurement                           | Unblocked: it wanted the energy distribution this produces before measuring the banding that will ship |
+| The build plan's phase 3 table and issue order  | `docs/plans/todo/2026-07-25-repo-foundation-and-phased-build-plan.md`                                  |
 
 ## Commits
 

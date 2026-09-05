@@ -402,15 +402,33 @@ pub fn decayOver(elapsed_nanos: u64) f32 {
 /// set at the asymptote itself would never arrive: the core would be pale green
 /// forever. At 0.8 a dwelt pixel goes white after sixteen frames.
 ///
-/// **Provisional, and #58 settles it rather than a tuning session.** Measured in
-/// REAPER against a 100 Hz sine: the picture peaked at 2.2 and 3.0 deposits on
-/// two successive frames, against roughly 1 for a fast crossing. **No white point
-/// can carve a visible core out of a 2:1 range** — set it high and nothing reaches
-/// white, set it low and everything does, and dropping this to 0.2 moved fifty
-/// pixels of thirty-two thousand. Velocity weighting widens that ratio by an order
-/// of magnitude, at which point there is a range to map. The value here is what
-/// the paragraph above argues for on its own terms; it is not tuned to a picture,
-/// because the picture cannot yet distinguish one value from another.
+/// **#58 has landed and the range exists, but it is not the range that was
+/// predicted.** This was held provisional because no white point can carve a
+/// visible core out of the 2:1 dwell range a 100 Hz sine showed, on the
+/// prediction that velocity weighting would widen it by an order of magnitude.
+/// Measured offscreen, turning point against zero crossing, at an amplitude of
+/// 0.5 in a 20 ms window:
+///
+/// | signal | cycles | before | after |
+/// | ------ | ------ | ------ | ----- |
+/// | 100 Hz | 2      | 1.36   | 1.84  |
+/// | 1 kHz  | 20     | 1.34   | 7.50  |
+///
+/// The order of magnitude is real at 1 kHz and is **not** real at 100 Hz, and
+/// every figure the prediction rested on came from a 100 Hz sine. That signal's
+/// fastest crossing is only 1.88 times the speed of its turning point, since the
+/// sweep runs at 96,000 px/s against the trace's 152,681 px/s, so no weighting can
+/// widen it further and 1.84 is the beam being honest rather than the term
+/// failing. **What changed is that the range now discriminates between signals**:
+/// before, a slow tone and a fast one both read about 1.35, so the display said
+/// the same thing about them, which is what a plot does.
+///
+/// The value is unchanged and no longer rests on the derivation alone. At 1 kHz it
+/// puts a turning point at green 191 and a crossing at 98 over a background of 5,
+/// and the frame-rate invariance test below still holds a single deposit steady
+/// and still requires the dwell steady state to reach exactly 255. Outstanding is
+/// the by-eye judgement in a host on real material, which is the one thing an
+/// offscreen measurement cannot make.
 pub const white_headroom: f32 = 0.8;
 
 /// The gradient `shaders/scope.metal` selects, restated on this side because the
@@ -455,13 +473,17 @@ pub fn whitePoint(decay: f32) f32 {
 /// to exactly one at `white` rather than approaching one asymptotically.
 ///
 /// **Plain Reinhard is the obvious choice and is wrong here.** The attainable
-/// domain is `(0, 1 / (1 - decay)]`, which is ten at the shipped factor, because
-/// a line strip's x is monotone in `vertex_id` so one frame cannot deposit twice
-/// on a pixel. Plain Reinhard returns 0.909 at ten and needs an energy of 167 to
+/// domain is `(0, d / (1 - decay)]`, where `d` is what one frame deposits on the
+/// pixel the beam dwells hardest on. That figure has moved twice and the
+/// conclusion has survived both: it was exactly 1 under a line strip, whose x is
+/// monotone in `vertex_id` so one frame could not deposit twice on a pixel; #57's
+/// overlapping quads took it to 2.61; and #58's velocity weighting brought it back
+/// to 1.57 while taking the *bottom* of the range to 0.0034 on a full-height
+/// segment. Plain Reinhard returns 0.909 at ten and needs an energy of 167 to
 /// reach byte 255, seventeen times anything this display can produce, so a palette
 /// running to white never arrives and the hot core is pale green. `1 - exp(-e)`
 /// fails from the other side: it saturates by five and resolves nothing above it,
-/// which #58 makes worse by widening the domain.
+/// which a range this wide makes worse rather than better.
 ///
 /// A rational function rather than a curve with an exponent in it, which is not
 /// only taste: `buildPipelinesFromSource` passes no `MTLCompileOptions`, so the

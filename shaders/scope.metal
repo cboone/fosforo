@@ -51,17 +51,32 @@ using namespace metal;
 // itself would never arrive and the core would stay pale green. At 0.8 a dwelt
 // pixel goes white after sixteen frames.
 //
-// **Provisional at 0.8, and #58 is what settles it.** Measured in REAPER against
-// a 100 Hz sine: the picture peaked at 2.2 and 3.0 deposits on two successive
-// frames, against roughly 1 for a fast crossing. **No white point can carve a
-// visible core out of a 2:1 range** — set it high and nothing reaches white, set
-// it low and everything does. Dropping this to 0.2 put white at 2.0 deposits and
-// moved fifty pixels of thirty-two thousand, which is invisible, so the knob has
-// almost no useful travel today. Velocity weighting divides the deposit by
-// segment screen length and widens that ratio by an order of magnitude, at which
-// point a core appears at a sensible white point because there is a range to map.
-// Re-judge this when #58 lands rather than tuning it now; 0.8 is the value the
-// paragraph above argues for on its own terms.
+// **The range this was waiting for exists (#58), and it is not the one that was
+// promised.** ADR 0019 held the value provisional on the grounds that no white
+// point can carve a visible core out of a 2:1 dwell range, and predicted that
+// velocity weighting would widen that range by an order of magnitude. Measured
+// offscreen, turning point against zero crossing, at 0.5:
+//
+//   100 Hz (2 cycles in the window)   1.36 before   1.84 after
+//   1 kHz  (20 cycles)                1.34 before   7.50 after
+//
+// So the order of magnitude is real at 1 kHz and is **not** real at 100 Hz, which
+// matters because every figure the prediction was made from came from a 100 Hz
+// sine. That signal's fastest crossing is only 1.88 times the speed of its
+// turning point — at 1920 px in 20 ms the sweep runs at 96,000 px/s and a 0.5
+// sine at 100 Hz reaches 152,681 px/s vertically — so no weighting can widen it
+// further, and the 1.84 measured is the beam telling the truth about it.
+//
+// **What actually changed is that the range now discriminates between signals.**
+// Before, 100 Hz and 1 kHz both read about 1.35 and the display said the same
+// thing about a slow tone and a fast one. That is what a plot does. Now they read
+// 1.84 and 7.50, and the difference between them is information.
+//
+// 0.8 is unchanged and no longer rests on the derivation alone: at 1 kHz it puts
+// a turning point at green 191 and a crossing at 98 over a background of 5, and
+// `checkHotCore` still takes thirty deposits to exactly 255. What is outstanding
+// is the by-eye judgement in a host on real material, which is the one thing an
+// offscreen measurement cannot make.
 //
 // The 2.2-against-3.0 swing between frames is worth carrying too: the sweep is
 // free-running, so how hard the beam dwells depends on where the phase happens to
