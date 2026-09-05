@@ -357,6 +357,7 @@ test {
     // type-checked in the file that owns them rather than at the first call site
     // in `gui.zig`.
     testing.refAllDecls(@This());
+    testing.refAllDecls(Delegate);
     testing.refAllDecls(View);
 }
 

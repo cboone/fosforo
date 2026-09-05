@@ -109,7 +109,15 @@ const testing = std.testing;
 test {
     // Forces the message-send signatures above to be type-checked here rather
     // than at whichever call site happens to reach them first.
+    //
+    // The four below carry no declarations today and are named anyway, because
+    // the rule "types that currently have methods" reopens the hole the moment
+    // one acquires a method, silently and in the file that added it.
     testing.refAllDecls(@This());
+    testing.refAllDecls(CGPoint);
+    testing.refAllDecls(CGSize);
+    testing.refAllDecls(CGRect);
+    testing.refAllDecls(autoresizing);
 }
 
 test "CGRect nests the point and size the way AppKit reads it" {
