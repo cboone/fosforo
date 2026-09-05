@@ -219,16 +219,16 @@ Every one lands with the change, on the program plan's rule that a document upda
 
 ## Results
 
-| Check                                    | Result                                                       |
-| ---------------------------------------- | ------------------------------------------------------------ |
-| `zig build smoke-trace`, transcript diff | Byte-identical, 35 lines, at the move and at the end         |
-| `zig build test`                         | 230 tests before, **252** after, all passing                 |
-| `zig build smoke-gpu`, `smoke-appkit`    | Pass; 10 open and close cycles clean                         |
+| Check                                    | Result                                                        |
+| ---------------------------------------- | ------------------------------------------------------------- |
+| `zig build smoke-trace`, transcript diff | Byte-identical, 35 lines, at the move and at the end          |
+| `zig build test`                         | 230 tests before, **252** after, all passing                  |
+| `zig build smoke-gpu`, `smoke-appkit`    | Pass; 10 open and close cycles clean                          |
 | `zig build smoke-leaks -Dleak-cycles=40` | 285 leaks, 18,416 bytes, inside the recorded 285-288 baseline |
-| `src/smoke.zig`                          | 2,240 lines to 1,712; `src/gpu/verdict.zig` is 1,557         |
-| Judges planted, one weakening at a time  | 22 planted, **21** refused by the test that names the row    |
-| `zig fmt --check`, `typos`               | Clean                                                        |
-| `markdownlint-cli2`                      | Clean                                                        |
+| `src/smoke.zig`                          | 2,240 lines to 1,712; `src/gpu/verdict.zig` is 1,557          |
+| Judges planted, one weakening at a time  | 22 planted, **21** refused by the test that names the row     |
+| `zig fmt --check`, `typos`               | Clean                                                         |
+| `markdownlint-cli2`                      | Clean                                                         |
 
 `ruff` is not installed on this machine, so its two commands were not run; no Python changed, and `scripts/measure-trace` is untouched.
 
