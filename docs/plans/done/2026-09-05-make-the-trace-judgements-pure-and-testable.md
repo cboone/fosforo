@@ -230,7 +230,7 @@ Every one lands with the change, on the program plan's rule that a document upda
 | `zig fmt --check`, `typos`               | Clean                                                         |
 | `markdownlint-cli2`                      | Clean                                                         |
 
-`ruff` is not installed on this machine, so its two commands were not run; no Python changed, and `scripts/measure-trace` is untouched.
+**`ruff` has no binary on this machine and is still runnable, which is worth recording because the first attempt here concluded the opposite.** It is not on `PATH`, not a Homebrew formula and not in `uv tool list`, so `which ruff` fails; `uvx ruff@0.16.5` runs it, pinned to the version `ci.yml` installs. Both commands pass, and `ruff format --check .` reports **`1 file already formatted`**, which is the tell `ruff.toml` calls for: this repository's only Python file has no extension, so a run that reads zero files also exits zero. No Python changed here and `scripts/measure-trace` is untouched, so this is a control rather than a test.
 
 **The transcript comparison excludes one line, and it has to.** `src/build_info.zig` stamps a provenance marker that names the branch, the commit and whether the tree is dirty, so it moves on every commit by construction. Everything from `rendering shaders/scope.metal into a 960x540 texture` down is compared.
 
