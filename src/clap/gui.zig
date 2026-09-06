@@ -1300,6 +1300,87 @@ const TestHostGui = struct {
 
 const test_host_gui: HostGui = .{ .ext = &TestHostGui.ext, .host = null };
 
+/// The shared host literal, from the file whose `Log.init` this file's
+/// `HostGui.init` was copied from. See its docstring for why it is shared and
+/// why the responders below are not.
+const testHost = log_mod.testHost;
+
+const empty_gui_ext: c.clap_host_gui_t = .{
+    .resize_hints_changed = null,
+    .request_resize = null,
+    .request_show = null,
+    .request_hide = null,
+    .closed = null,
+};
+
+fn getGuiExtension(
+    host: [*c]const c.clap_host_t,
+    extension_id: [*c]const u8,
+) callconv(.c) ?*const anyopaque {
+    _ = host;
+    if (std.mem.eql(u8, std.mem.span(extension_id), &c.CLAP_EXT_GUI)) return &TestHostGui.ext;
+    return null;
+}
+
+fn getEmptyGuiExtension(
+    host: [*c]const c.clap_host_t,
+    extension_id: [*c]const u8,
+) callconv(.c) ?*const anyopaque {
+    _ = host;
+    if (std.mem.eql(u8, std.mem.span(extension_id), &c.CLAP_EXT_GUI)) return &empty_gui_ext;
+    return null;
+}
+
+fn getNothing(
+    host: [*c]const c.clap_host_t,
+    extension_id: [*c]const u8,
+) callconv(.c) ?*const anyopaque {
+    _ = host;
+    _ = extension_id;
+    return null;
+}
+
+// `TestHostGui` and `test_host_gui` above build a `HostGui` by hand, which is
+// right for the tests that drive the pushback and means nothing here had ever
+// run `init` itself. Every editor in a real host gets its `HostGui` from this
+// function and from nowhere else (`plugin.zig:254`).
+test "the host's gui extension is found through init rather than assembled by hand" {
+    const host = testHost(getGuiExtension);
+    const host_gui = HostGui.init(&host);
+
+    try testing.expect(host_gui.ext == &TestHostGui.ext);
+    try testing.expect(host_gui.host == &host);
+
+    // And the vtable it found is callable, which is the only thing the lookup
+    // is for: `request_resize` is the one mechanism CLAP offers for a minimum
+    // size, because `clap_gui_resize_hints_t` carries no bounds at all.
+    TestHostGui.reset();
+    try testing.expect(host_gui.requestResize(.{ .width = 640, .height = 480 }));
+    try testing.expectEqual(@as(u32, 1), TestHostGui.calls);
+    try testing.expectEqual(gpu.Size{ .width = 640, .height = 480 }, TestHostGui.last);
+}
+
+test "a host without the gui extension is survivable" {
+    // The same three shapes `log.zig` names for `Log.init`, which this is the
+    // structural twin of: no `get_extension` at all, one that does not know the
+    // id, and one that answers with a vtable it never filled in. All three have
+    // to leave `ext` null rather than producing a null call, and a caller sees
+    // that as a refusal rather than as a crash.
+    inline for (.{ null, getNothing, getEmptyGuiExtension }) |get_extension| {
+        const host = testHost(get_extension);
+        const host_gui = HostGui.init(&host);
+
+        // Before the call, or a null vtable is dereferenced by the `.?` inside
+        // `requestResize` before this assertion could report anything.
+        try testing.expect(host_gui.ext == null);
+        try testing.expect(host_gui.host == &host);
+
+        TestHostGui.reset();
+        try testing.expect(!host_gui.requestResize(.{ .width = 640, .height = 480 }));
+        try testing.expectEqual(@as(u32, 0), TestHostGui.calls);
+    }
+}
+
 test "the render thread opens with the size the host actually asked for" {
     var editor: Editor = .{};
     defer editor.destroy();

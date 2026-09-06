@@ -181,7 +181,22 @@ fn getNothing(
     return null;
 }
 
-fn testHost(get_extension: @FieldType(c.clap_host_t, "get_extension")) c.clap_host_t {
+/// A host offering whatever `get_extension` answers, and nothing else.
+///
+/// Public because `gui.zig`'s tests drive the same fixture through
+/// `HostGui.init`, which is `Log.init`'s structural twin and survives the same
+/// three host shapes. A second `clap_host_t` written out there would drift from
+/// this one and only one of the two would ever be exercised, which is the
+/// argument `plugin.test_host` already makes for the fixture it shares with
+/// `src/smoke.zig`. That file's own fixture is unreachable from `gui.zig`,
+/// because `plugin.zig` imports `gui.zig` and the import cannot run both ways.
+///
+/// The line is drawn at this struct and not past it: an eleven-field literal
+/// written out twice can drift, while a responder that returns null
+/// unconditionally cannot, so those stay local to whichever file needs them.
+/// Nothing outside a test references this, so it is never analysed into a
+/// release build.
+pub fn testHost(get_extension: @FieldType(c.clap_host_t, "get_extension")) c.clap_host_t {
     return .{
         .clap_version = clap.version,
         .host_data = null,
