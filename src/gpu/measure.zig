@@ -608,6 +608,43 @@ test "every level at or above the rail lands on one row" {
     try testing.expect(expectedRow(1.0, height) > railRow(height) + 1.0);
 }
 
+// The mirror of the test above, which drives four positive levels and would
+// pass with the negative bound of the clamp set to any wrong constant. Written
+// against a local restatement rather than a `railRowBelow` sibling to `railRow`:
+// that one has a caller outside the tests (`smoke.zig`'s `checkRail`), and a
+// `pub fn` whose only reader is one test in its own file is the shape #95 is
+// open about. The restatement is bit-exact rather than approximate, because
+// `1.0 - (-x)` and `1.0 + x` are the same operation on the same bits.
+test "the rail below the centre line clamps as tightly as the one above it" {
+    const height: usize = 540;
+    const rail_below = (1.0 + iface.trace_rail) / 2.0 * @as(f32, @floatFromInt(height)) - 0.5;
+
+    for ([_]f32{ -1.111, -2.0, -8.0, -1000.0 }) |under| {
+        try testing.expectEqual(rail_below, expectedRow(under, height));
+    }
+
+    // Approached from just inside, for the reason the positive test gives.
+    const threshold = iface.trace_rail / iface.trace_full_scale;
+    try testing.expectEqual(rail_below, expectedRow(-threshold * 1.001, height));
+
+    // And the direction that keeps it from going vacuous, which is worth more
+    // here than above: a negative bound set to `trace_full_scale` rather than
+    // `trace_rail` moves this row from 534.1 to 512.5 and nothing else here
+    // would notice.
+    try testing.expect(expectedRow(-1.0, height) < rail_below - 1.0);
+
+    // The two rails straddle the centre by the same distance. Stated with a
+    // tolerance rather than as an equality because the sum is only exact in
+    // real arithmetic: in f32 it misses `height - 1` at h = 5 and h = 65, and
+    // an exact assertion here would be a test of rounding rather than of the
+    // clamp, which is the trap the positive test's own comment names.
+    try testing.expectApproxEqAbs(
+        @as(f32, @floatFromInt(height)) - 1.0,
+        railRow(height) + rail_below,
+        1e-4,
+    );
+}
+
 test "the rail sits inside the drawable at every geometry the editor permits" {
     // The smallest editor is 270 points tall, at a backing scale of 1.
     try testing.expect(railRow(270) >= 1.0);
