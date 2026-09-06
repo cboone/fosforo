@@ -126,3 +126,20 @@ test "a default-constructed rect is the zero rect" {
     try testing.expectEqual(@as(CGFloat, 0), rect.origin.x);
     try testing.expectEqual(@as(CGFloat, 0), rect.size.height);
 }
+
+// Deliberately not named after AppKit, on `src/clap/c.zig:69`'s precedent and
+// for its reason. `NSView.h` is Objective-C, `translate-c` cannot read it, and
+// there is no surviving symbol to compare against the way the version macros in
+// that file compare against `CLAP_VERSION`. So this restates the literals a
+// second time and catches a one-sided edit; it proves nothing about AppKit.
+// A transposed digit here silently breaks view autoresizing and nothing else in
+// this project would say so.
+test "restated autoresizing masks are pinned against a careless edit" {
+    try testing.expectEqual(@as(u64, 2), autoresizing.width_sizable);
+    try testing.expectEqual(@as(u64, 16), autoresizing.height_sizable);
+
+    // The value `src/platform/view.zig` actually sends, and the only one with an
+    // observable effect. Asserted as well as the two above rather than instead
+    // of them, because the OR alone cannot see the pair swapped.
+    try testing.expectEqual(@as(u64, 18), autoresizing.width_sizable | autoresizing.height_sizable);
+}
