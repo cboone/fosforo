@@ -232,16 +232,29 @@ test {
 //
 // A thousand readings measured **26,792 ns** on this machine, against a 41.67 ns
 // tick on a 24 MHz timebase, so the strict advance clears its floor by nearly
-// three orders of magnitude. The one-second ceiling is the other direction, and
-// it is the only assertion here with any flake surface: it sits about 37,000x
-// above the measured loop, which is what a `* 1000` scale error would eat and
-// no amount of runner load would. If it ever fires the ceiling moves, not the
-// loop.
+// three orders of magnitude, and a clock truncated to milliseconds fails it.
 //
-// What it cannot prove: that the unit is nanoseconds, and that this is the
-// clock that stops while the machine sleeps. Both are properties of the
+// **The scale is checked against a second clock rather than against a constant,
+// and that was measured rather than chosen.** The first version of this test
+// bounded the span by one second, on the reasoning that a `* 1000` error would
+// eat the margin. It does not: a thousand readings is 26.8 µs, so scaling by a
+// thousand yields 26.8 ms and passes a one-second ceiling with room to spare.
+// The plant proved it, passing where the other two failed. A ceiling tight
+// enough to catch it would sit near 10 ms, which is 373x over the measured loop
+// and one scheduler preemption away from a false red on a loaded runner.
+//
+// `Clock.real` is a different clock and is unaffected by anything wrong with
+// this wrapper, so the *ratio* is what carries the claim. Both clocks measure
+// one interval, so a preemption moves them together and cancels; a scale error
+// moves only one, by three orders of magnitude, against a 100x bound. The
+// shipping code still reads one clock and only one, which is what the docstring
+// above claims; this is a test reaching for a second on purpose.
+//
+// What it still cannot prove: that the unit is nanoseconds, and that this is
+// the clock that stops while the machine sleeps. Both are properties of the
 // declaration this wraps and are argued in its docstring.
 test "the render clock advances rather than repeating, and never runs backwards" {
+    const reference_before = std.Io.Clock.real.now(io.get()).nanoseconds;
     const first = monotonicNanos();
     var previous = first;
 
@@ -251,9 +264,20 @@ test "the render clock advances rather than repeating, and never runs backwards"
         previous = now;
     }
 
+    const reference_after = std.Io.Clock.real.now(io.get()).nanoseconds;
+
     // It counts from boot, so a stub returning zero is caught here rather than
     // by the monotonicity above, which any constant satisfies.
     try testing.expect(first > 0);
     try testing.expect(previous > first);
-    try testing.expect(previous - first < std.time.ns_per_s);
+
+    // Checked before the cast, because `real` is settable and a backwards NTP
+    // step inside a 27 µs window would otherwise be a panic rather than a red.
+    const reference_delta = reference_after - reference_before;
+    try testing.expect(reference_delta > 0);
+
+    const reference_span: u64 = @intCast(reference_delta);
+    const span = previous - first;
+    try testing.expect(span < reference_span * 100);
+    try testing.expect(span * 100 > reference_span);
 }
