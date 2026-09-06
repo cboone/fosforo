@@ -1,6 +1,6 @@
 # Close the eleven cheap assertions
 
-Issue: [#97](https://github.com/cboone/fosforo/issues/97). Type: `test:`. Item 9 of [the verification-gap program](2026-09-04-close-the-verification-gaps-in-the-test-suite.md), which stays in `todo/` until the other ten land.
+Issue: [#97](https://github.com/cboone/fosforo/issues/97). Type: `test:`. Item 9 of [the verification-gap program](../todo/2026-09-04-close-the-verification-gaps-in-the-test-suite.md), which stays in `todo/` until the other ten land.
 
 ## Context
 
@@ -140,7 +140,7 @@ Rows 3 and 10 are the two that matter most, for opposite reasons: one plant is a
 
 ## Documents
 
-**The build plan**, [`2026-07-25-repo-foundation-and-phased-build-plan.md`](2026-07-25-repo-foundation-and-phased-build-plan.md), in one commit:
+**The build plan**, [`2026-07-25-repo-foundation-and-phased-build-plan.md`](../todo/2026-07-25-repo-foundation-and-phased-build-plan.md), in one commit:
 
 - Line 429, #97's status, `Open` to `Done`.
 - Line 422, **#90's status, also `Open` and also wrong**. It landed at `dc2b2ae` through `0b67da5` and is a non-negotiable in `AGENTS.md`. A status table that lies about a neighbouring row while this row is being edited is the stale-claim class #89's sweep was about.
