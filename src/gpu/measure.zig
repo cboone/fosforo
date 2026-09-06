@@ -891,6 +891,42 @@ test "a sine window holds whole cycles across the drawn span" {
     try testing.expectApproxEqAbs(@as(f32, 0.0), window[window.len - 1], 1e-5);
 }
 
+// Both builders divide by a span of `out.len - 1`, so a window of one sample
+// divides by zero and a window of none reads past its own end. Both already
+// have an arm for it and no test reached either, which is what these two close.
+// Split by length rather than by builder, because the property is about the
+// window and not about which function filled it.
+//
+// A sentinel-filled buffer with the slice taken out of the middle of it, so
+// each test says "this slot, not the buffer" as well as "this value".
+test "a one-sample window holds the value it starts at rather than a nan" {
+    const sentinel: f32 = -7.0;
+
+    var ramped: [4]f32 = @splat(sentinel);
+    ramp(ramped[0..1], -1.0, 1.0);
+    try testing.expectEqual(@as(f32, -1.0), ramped[0]);
+    try testing.expectEqual(sentinel, ramped[1]);
+
+    var sined: [4]f32 = @splat(sentinel);
+    sine(sined[0..1], 2.0, 1.0);
+    try testing.expectEqual(@as(f32, 0.0), sined[0]);
+    try testing.expectEqual(sentinel, sined[1]);
+}
+
+test "an empty window is left alone rather than read past" {
+    const sentinel: f32 = -7.0;
+
+    // The empty slice comes from a `var`: a `*const [0]f32` literal will not
+    // coerce to `[]f32`, so `ramp(&[_]f32{}, ...)` does not compile at all.
+    var ramped: [4]f32 = @splat(sentinel);
+    ramp(ramped[0..0], -1.0, 1.0);
+    try testing.expectEqual(sentinel, ramped[0]);
+
+    var sined: [4]f32 = @splat(sentinel);
+    sine(sined[0..0], 2.0, 1.0);
+    try testing.expectEqual(sentinel, sined[0]);
+}
+
 test "a plateau is measured but says nothing about level" {
     const width: usize = 960;
     const height: usize = 540;
