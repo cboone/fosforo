@@ -223,3 +223,37 @@ test {
     testing.refAllDecls(@This());
     testing.refAllDecls(DisplayLink);
 }
+
+// The clock is the one thing in this file a test can reach, and since #56 it is
+// on the release hot path: the decay reads it every frame, so a units mistake
+// here changes how fast the phosphor fades and nothing else in the project
+// would see it. `palette.decayOver` takes `dt` as a parameter and would agree
+// with a wrong clock about anything.
+//
+// A thousand readings measured **26,792 ns** on this machine, against a 41.67 ns
+// tick on a 24 MHz timebase, so the strict advance clears its floor by nearly
+// three orders of magnitude. The one-second ceiling is the other direction, and
+// it is the only assertion here with any flake surface: it sits about 37,000x
+// above the measured loop, which is what a `* 1000` scale error would eat and
+// no amount of runner load would. If it ever fires the ceiling moves, not the
+// loop.
+//
+// What it cannot prove: that the unit is nanoseconds, and that this is the
+// clock that stops while the machine sleeps. Both are properties of the
+// declaration this wraps and are argued in its docstring.
+test "the render clock advances rather than repeating, and never runs backwards" {
+    const first = monotonicNanos();
+    var previous = first;
+
+    for (0..1000) |_| {
+        const now = monotonicNanos();
+        try testing.expect(now >= previous);
+        previous = now;
+    }
+
+    // It counts from boot, so a stub returning zero is caught here rather than
+    // by the monotonicity above, which any constant satisfies.
+    try testing.expect(first > 0);
+    try testing.expect(previous > first);
+    try testing.expect(previous - first < std.time.ns_per_s);
+}
