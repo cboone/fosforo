@@ -104,7 +104,11 @@ const truncation_marker = "...";
 /// every message would take this path and interleave with the test runner's own
 /// stream, which the build runner reads as a failed step. That does mean this
 /// function has no automated coverage; it is verified by running the plugin in
-/// a host, which is the only place it is meant to do anything.
+/// a host, which is the only place it is meant to do anything. The early return
+/// used to take `severityName` down with it, since this is its only caller and
+/// no arm of it ran in any build a test could observe; the table below is
+/// asserted directly now (#97), which leaves the formatting uncovered and not
+/// the strings.
 fn mirror(severity: c.clap_log_severity, msg: []const u8) void {
     if (builtin.mode != .Debug or builtin.is_test) return;
     std.debug.print("[fosforo] {s}: {s}\n", .{ severityName(severity), msg });
@@ -228,4 +232,29 @@ test "a host without the extension is survivable" {
         const log = Log.init(&host);
         try testing.expect(log.ext == null);
     }
+}
+
+// `severityName` is reached only from `mirror`, which returns before calling it
+// under `builtin.is_test`, so no arm of this switch ran in any build a test
+// could watch and a transposed string would have shipped. Calling it directly
+// is the whole of the fix; it is file-private and these tests are in its file.
+//
+// `expectEqualStrings` rather than `expectEqual`, and that is not a stylistic
+// choice: `expectEqual` on a slice compares `.ptr` and `.len` and never the
+// bytes (`std/testing.zig:129-140`), so it would answer a question about string
+// interning instead of about this table.
+test "every severity the header defines has its own name, and anything else is unknown" {
+    try testing.expectEqualStrings("debug", severityName(c.CLAP_LOG_DEBUG));
+    try testing.expectEqualStrings("info", severityName(c.CLAP_LOG_INFO));
+    try testing.expectEqualStrings("warning", severityName(c.CLAP_LOG_WARNING));
+    try testing.expectEqualStrings("error", severityName(c.CLAP_LOG_ERROR));
+    try testing.expectEqualStrings("fatal", severityName(c.CLAP_LOG_FATAL));
+    try testing.expectEqualStrings("host-misbehaving", severityName(c.CLAP_LOG_HOST_MISBEHAVING));
+    try testing.expectEqualStrings("plugin-misbehaving", severityName(c.CLAP_LOG_PLUGIN_MISBEHAVING));
+
+    // Seven is the next value a CLAP bump would define and the severity is a
+    // signed int32, so a host can hand over either. The else arm is what keeps
+    // a severity this build has never heard of from printing as a debug line.
+    try testing.expectEqualStrings("unknown", severityName(7));
+    try testing.expectEqualStrings("unknown", severityName(-1));
 }
