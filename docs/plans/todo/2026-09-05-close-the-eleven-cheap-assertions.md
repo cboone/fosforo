@@ -59,6 +59,8 @@ The file's first named test, after the existing "No test creates a display link"
 
 The strict-advance assertion is what makes this worth its lines and it is safe by three orders of magnitude — the timebase is 24 MHz, about 41.67 ns a tick, against a loop of tens of microseconds. It catches the realistic defect for a clock feeding a 158 ms time constant, which is a units mistake. The one-second bound catches the other direction, a `* 1000` scale error that **nothing else in this project would see**, since `palette.decayOver` takes `dt` as a parameter and would agree with a wrong clock. Measure the loop during implementation and quote the figure in the comment, in this file's style.
 
+**The paragraph above is wrong about the one-second bound and stands as written**, on the rule that a superseded sentence is corrected rather than edited away. The plant falsified it; see the results below for what replaced it.
+
 It cannot prove the unit is nanoseconds, or that this is the clock that stops while the machine sleeps. Both are properties of the declaration and are already argued in the docstring.
 
 Plants: `return 0;`; `/ 1_000_000`; `* 1000`.
@@ -157,6 +159,45 @@ Rows 3 and 10 are the two that matter most, for opposite reasons: one plant is a
 **Plant the checker as well as the code.** A test named for a defect does not necessarily catch it: after each row's production plant passes, weaken that test's own assertions one at a time and confirm the weakened test stops failing. That is what separates "the test fires" from "something in the file fires", and rows 3 and 10 above are the two where the distinction has already been shown to bite.
 
 Then `zig fmt --check build.zig src/` before each commit, and `markdownlint-cli2` in check mode only for the plan and the build plan — never `--fix`, which ignores its file argument and rewrites every Markdown file in the tree. `typos` over the whole tree at the end.
+
+## Results
+
+**Done.** Fourteen tests added across eight files; the suite goes from **224 named tests to 238**, and from 238 to 244 total runs counting the anonymous `refAllDecls` blocks. Every row was planted and every plant behaved as recorded below. **This column is what happened, not what was expected**, and two entries falsify what this plan predicted.
+
+| Row | Plant                                            | Result                                                     |
+| --- | ------------------------------------------------ | ---------------------------------------------------------- |
+| 1   | `CLAP_LOG_ERROR => "fatal"`                      | the named test, at `log.zig:250`                           |
+| 1   | delete the `else` arm                            | compile error, `switch must handle all possibilities`      |
+| 2   | `&c.CLAP_EXT_GUI` to `&c.CLAP_EXT_LOG`           | the control test, at `gui.zig:1351`                        |
+| 2   | delete the `request_resize == null` guard        | the survivability test, at `gui.zig:1374`                  |
+| 3   | `-iface.trace_rail` to `-iface.trace_full_scale` | the named test, at `measure.zig:623`                       |
+| 3   | drop the minus, as a control                     | **three** tests, two of them pre-existing                  |
+| 4   | `return 0;`                                      | `first > 0`, at `displaylink.zig:271`                      |
+| 4   | truncate to milliseconds                         | `previous > first`, at `displaylink.zig:272`               |
+| 4   | scale by 1000                                    | the upper ratio bound, at `displaylink.zig:281`            |
+| 4   | scale by 1/1000                                  | the lower ratio bound, at `displaylink.zig:282`            |
+| 5   | `else 1` in `bit`                                | the named test                                             |
+| 6   | null id answers `&audio_ports`                   | the named test                                             |
+| 7   | guard split so a null `info` returns true        | the named test                                             |
+| 8   | `const endian` to `.big`                         | **only the two new tests**; all ten pre-existing passed    |
+| 9   | remove `ramp`'s length-1 arm                     | the one-sample test, at `measure.zig:903`                  |
+| 9   | remove `sine`'s degenerate arm                   | the one-sample test, plus an abort in the empty-window one |
+| 10  | field default `reloads: u64 = 1`                 | the named test, through the equality half                  |
+| 10  | atomic seeded `.init(1)`                         | the named test, through both halves                        |
+| 10  | field default **and** atomic both 1              | the named test, through the explicit-zeros half alone      |
+| 10  | drop `!builtin.is_test` from `shader.live`       | `shader.zig`'s own test, **not** this one, as predicted    |
+| 11  | transpose 16 to 61                               | the named test                                             |
+| 11  | swap the two constants                           | the named test, through the separate pair alone            |
+
+### Two things this plan got wrong
+
+**The one-second ceiling on `monotonicNanos` did not catch a scale error, and this plan asserted that it would.** A thousand readings measured 26,792 ns, so a `* 1000` error yields 26.8 ms and passes a one-second bound with room to spare. A ceiling tight enough to catch it sits near 10 ms, which is 373x over the measured loop and one scheduler preemption from a false red on a loaded runner. The repair is a ratio against `std.Io.Clock.real` over the same interval: both clocks measure one span, so a preemption moves them together and cancels, while a scale error moves one of them by three orders of magnitude against a 100x bound. It landed as its own commit rather than a rewrite of the first, and the four plants now fail at four different assertions, which is the discrimination the single ceiling never had.
+
+**The first two clock plants did not compile, and the failure looked like a pass.** `@intCast(...) / 1_000_000` has no inferable result type, so `zig build test` exited non-zero with a compile error rather than a test failure — and a grep looking for `test.` and `failed:` reported "no failure" for both. Rewritten as `@as(u64, @intCast(...))` they compile and the truth above emerged. **A plant that does not compile is not a passing plant**, and the check that separates them is the build's own exit code rather than the shape of its output.
+
+### One deviation from the commit list
+
+Commits 6 and 7 landed as a single commit, `4600db3`, whose message names only `bit()`. The two null-guard tests are in it as well. The split was worth having and the mistake was staging the whole file; it is recorded here rather than rewritten, since the branch's history is not amended.
 
 ## Commits
 
