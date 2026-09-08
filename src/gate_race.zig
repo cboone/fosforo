@@ -409,6 +409,14 @@ test "the replica is the gate with exactly one ordering removed" {
     // The defect itself, stated once, so a control that quietly stopped being
     // weakened fails here rather than passing as a clean arm.
     try testing.expectEqual(1, canary.stated(code, "_ = self.state.fetchSub(one_tick, .monotonic);"));
+
+    // And that those five are all of them, which is the assertion that makes the
+    // four above mean "exactly one difference" rather than "at least these
+    // lines". Without it the replica could acquire a sixth operation, and a
+    // control carrying an ordering the subject does not have can flag a race the
+    // real `Gate` could never produce. This is the same bound `src/clap/gate.zig`
+    // and the rendezvous check below both carry; it was missing here alone.
+    try testing.expectEqual(5, canary.mentions(code, "self.state."));
 }
 
 test "the rendezvous cannot become an ordering" {

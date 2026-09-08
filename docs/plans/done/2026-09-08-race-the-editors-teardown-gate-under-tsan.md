@@ -104,7 +104,7 @@ Rename the `ring-race` job to `race` and give it a second step. One job, one run
 
 **Re-measure `timeout-minutes` rather than keeping 6.** The current value is 4x an 88s cold maximum over 8 runs, and a second instrumented binary changes the numerator. Measure on this pull request's own runs, per #17, and record the figure and sample size in the comment beside it.
 
-**Measured at 84s max over 8 runs with both harnesses**, against the ring's 88s alone, so the ceiling stays at 6. The second binary is not what this job spends its time on: warm runs land at 40s to 44s and cold ones at 74s to 84s, because the sanitizer runtime is built from compiler-rt once per cold job and both binaries reuse it. That is also the argument for one job rather than two.
+**Measured at 84s max over 12 runs with both harnesses**, against the ring's 88s over 8 alone, so the ceiling stays at 6. The second binary is not what this job spends its time on: the range is 33s to 84s and splits by cache state rather than by harness count, because the sanitizer runtime is built from compiler-rt once per cold job and both binaries reuse it. That is also the argument for one job rather than two.
 
 ### 7. Measure `Pending`
 

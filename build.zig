@@ -33,7 +33,8 @@ pub fn build(b: *std.Build) void {
     // at configure time, and zig-objc's calls `appleSDKPath`, which panics on any
     // OS that is not Darwin. So `zig build ring-race` on Linux aborted inside a
     // dependency's build script before a single step ran, which is what the first
-    // CI run of the `ring-race` job did (#44). Fetching the tarball is a cost;
+    // CI run of the race job did, when it was still named `ring-race` (#44).
+    // Fetching the tarball is a cost;
     // describing the graph is the failure, and only the second one is fatal.
     //
     // Everything past this line is macOS-only anyway (ADR 0001), so the early
