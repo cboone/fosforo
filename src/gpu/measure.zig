@@ -64,8 +64,21 @@ pub const Image = struct {
     /// than refusing, on `upload`'s precedent, so a caller that sized its buffer
     /// wrongly gets a partly-filled image rather than an error. Without this the
     /// symptom is an index out of bounds deep inside a loop.
+    ///
+    /// **A geometry too large to size is refused rather than multiplied.**
+    /// `width * height * 4` is `usize` arithmetic, so a product past 2^64 is
+    /// illegal behaviour: a panic in Debug and a wrapped value in
+    /// `--release=fast`, where the wrap would report an undersized buffer as
+    /// complete and hand the caller an out-of-bounds read. No drawable comes
+    /// near it, and the margin is not the point: real geometries here are 960 by
+    /// 540 and overflow needs a product of 2^62, nine trillion times larger. What
+    /// makes it worth closing is that this is `pub`, so a caller supplies both
+    /// numbers, and [#94](https://github.com/cboone/fosforo/issues/94) intends to
+    /// run this suite under the optimize mode that ships.
     pub fn complete(self: Image) bool {
-        return self.pixels.len >= self.width * self.height * 4;
+        const pixels = std.math.mul(usize, self.width, self.height) catch return false;
+        const floats = std.math.mul(usize, pixels, 4) catch return false;
+        return self.pixels.len >= floats;
     }
 };
 
@@ -487,10 +500,8 @@ pub fn sine(out: []f32, cycles: f32, amplitude: f32) void {
 }
 
 // ---------------------------------------------------------------------------
-// Tests
+// The beam model, which two test suites share
 // ---------------------------------------------------------------------------
-
-const testing = std.testing;
 
 test {
     // The analysis half of `zig build smoke-trace`, whose only caller is an
@@ -521,14 +532,66 @@ test {
 /// against the primitive it was written to replace: an estimator that reads a
 /// beam's centre would look correct on images that have no interior to read.
 ///
+/// **Public since #92, and above the tests banner because of it.** `src/gpu/
+/// verdict.zig`'s tests need the same beam to judge a centroid, a level and a
+/// cross-section against, and a second model of one thing is a second thing to
+/// keep in step. It writes the green channel alone, which is what the analysis
+/// reads; a caller that needs all four asks for them.
+///
 /// The profile is the biweight the shader deposits, applied to the distance from
 /// a pixel's centre to the column's segment rather than to a point, which is the
 /// one-dimensional form of the shader's distance-to-segment. That keeps the
 /// property the centroid depends on — symmetry about the centreline — without
 /// reproducing the oriented quad, which this file has no business knowing about.
-fn rasterize(pixels: []f32, width: usize, height: usize, window: []const f32) Image {
-    @memset(pixels, 0);
+pub fn rasterize(pixels: []f32, width: usize, height: usize, window: []const f32) Image {
     const image: Image = .{ .width = width, .height = height, .pixels = pixels };
+
+    // The buffer has to hold the geometry it was asked for, on
+    // `palette.buildPalette`'s precedent: an assertion rather than a refusal,
+    // because this takes no error union and its only callers are this
+    // repository's own tests, where a short buffer is a mistake in the test
+    // rather than input from anywhere. That is the same reason `Image.complete()`
+    // is *checked* on the harness side, where the input is a readback.
+    //
+    // Asking `complete` rather than restating its product is what keeps the two
+    // from drifting, and it is why the overflow that method refuses does not
+    // need refusing twice. Note that `--release=fast` removes this line entirely,
+    // which is the whole difference between an assertion and a guard.
+    std.debug.assert(image.complete());
+
+    @memset(pixels, 0);
+
+    // **A window of one draws nothing, and saying so is what `pub` costs.** The
+    // horizontal mapping divides by `window.len - 1`, so a single sample makes
+    // `x_ndc` a `0 / 0` nan. It was unreachable while this was private and every
+    // caller sized its window from a drawable, and it became reachable at #92
+    // when this went public beside `ramp` and `sine`, both of which already
+    // refuse a short window at their first line.
+    //
+    // **The failure is silent, which is why this is a guard and not a comment.**
+    // `@intFromFloat` of a non-finite float is illegal behaviour, so the obvious
+    // expectation is a Debug panic naming it. Planted, there is none: the
+    // one-sample case lights exactly **one column**, at a position `@min` clamps
+    // out of whatever the cast produced, and reports a plausible image. A wrong
+    // picture from a model whose whole job is to let a test know its own answers
+    // is worse than a trap, and the absence of the trap here is not a guarantee
+    // to lean on either way.
+    //
+    // Zero samples returns here too, though on its own it would need no guard:
+    // the loop below simply never runs. Naming both is what stops the next
+    // reader wondering which case this is for.
+    //
+    // **A zero-sized drawable is the third case and it fails differently.**
+    // `width - 1` and `height - 1` are `usize`, so at zero they wrap rather than
+    // going negative: a Debug build panics with `integer overflow` and a
+    // `--release=fast` one writes at an index near the top of the address space.
+    // No caller here asks for one, and every caller could once this is public.
+    //
+    // A cleared image rather than a lit column, because this models the beam as
+    // inter-sample *segments* and fewer than two samples describe none. That is
+    // also what the shader draws from such a window, so the model and the thing
+    // it models agree at the degenerate end as well.
+    if (width == 0 or height == 0 or window.len < 2) return image;
 
     var previous: ?f32 = null;
     for (window, 0..) |sample, i| {
@@ -571,10 +634,21 @@ fn rasterize(pixels: []f32, width: usize, height: usize, window: []const f32) Im
 ///
 /// `iface.beam_width_points / 2` at a scale of one, which is the geometry
 /// `Renderer.initOffscreen` runs and therefore the one every number in
-/// `src/smoke.zig` is stated at. Held here rather than imported so this file's
-/// tests describe the analysis at a geometry they choose, the way they already
-/// choose 960x540.
-const model_half_width: f32 = iface.beam_width_points / 2.0;
+/// `src/smoke.zig` is stated at. Stated here beside the model rather than read
+/// out of the seam at each call site, so a test describes the analysis at a
+/// geometry it chooses, the way they already choose 960x540.
+///
+/// Deliberately equal to `verdict.beam_half_width_px` without either being
+/// derived from the other: this is what the *model* draws and that is what the
+/// *judgement* expects, and a test in which those two are the same expression
+/// would assert nothing about the beam.
+pub const model_half_width: f32 = iface.beam_width_points / 2.0;
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+const testing = std.testing;
 
 /// Scratch for one rasterized image.
 ///
@@ -900,4 +974,71 @@ test "a plateau is measured but says nothing about level" {
 
     try testing.expect(at_full > 0);
     try testing.expect(at_rail > 0);
+}
+
+test "a window too short to hold a segment rasterizes to nothing" {
+    const width: usize = 16;
+    const height: usize = 8;
+    var pixels: [width * height * 4]f32 = undefined;
+
+    // One sample is the case that goes wrong quietly: the mapping divides by
+    // `window.len - 1`, so this is `0 / 0`, and planted without the guard it
+    // lights exactly one column rather than trapping. `ramp` and `sine` have
+    // always refused a short window and this became public beside them at #92.
+    const one = [_]f32{0.5};
+    const from_one = rasterize(&pixels, width, height, &one);
+    try testing.expect(litColumns(from_one, 0.5) == 0);
+    try testing.expect(maxChannel(from_one, 1) == 0.0);
+
+    // Zero needs no guard, because the loop never runs. Asserted anyway, since
+    // "it happens to work" and "it is refused" are different claims and only one
+    // of them survives an edit.
+    const none = [_]f32{};
+    const from_none = rasterize(&pixels, width, height, &none);
+    try testing.expect(maxChannel(from_none, 1) == 0.0);
+
+    // The negative control: two samples do draw, so the guard above refuses the
+    // degenerate case rather than everything.
+    const two = [_]f32{ 0.5, -0.5 };
+    try testing.expect(maxChannel(rasterize(&pixels, width, height, &two), 1) > 0.5);
+}
+
+test "a drawable with no area rasterizes to nothing rather than wrapping" {
+    // `width - 1` and `height - 1` are `usize`, so a zero dimension wraps rather
+    // than going negative: planted without the guard this panics with `integer
+    // overflow` in Debug and writes near the top of the address space under
+    // `--release=fast`. An empty slice is the whole buffer such a geometry needs.
+    var none: [0]f32 = undefined;
+    const window = [_]f32{ 0.5, -0.5 };
+
+    const no_width = rasterize(&none, 0, 8, &window);
+    try testing.expectEqual(@as(usize, 0), litColumns(no_width, 0.5));
+
+    const no_height = rasterize(&none, 16, 0, &window);
+    try testing.expectEqual(@as(usize, 0), litColumns(no_height, 0.5));
+
+    // Both at once, which is the shape an uninitialised geometry would have.
+    const neither = rasterize(&none, 0, 0, &window);
+    try testing.expectEqual(@as(usize, 0), litColumns(neither, 0.5));
+    try testing.expect(neither.complete());
+}
+
+test "a geometry too large to size is incomplete rather than overflowing" {
+    // `width * height * 4` is `usize` arithmetic, so this product is past 2^64.
+    // Without the overflow-safe form it is illegal behaviour: this very test
+    // panics with `integer overflow` in Debug, and `--release=fast` wraps to a
+    // small number and calls an empty buffer complete.
+    const huge: Image = .{ .width = 1 << 32, .height = 1 << 32, .pixels = &.{} };
+    try testing.expect(!huge.complete());
+
+    // The `* 4` overflows on its own too, one step later, which the two-step
+    // form is what catches.
+    const wide: Image = .{ .width = 1 << 61, .height = 1, .pixels = &.{} };
+    try testing.expect(!wide.complete());
+
+    // The negative control: an ordinary geometry still reads as complete, so
+    // this refuses the unrepresentable rather than everything.
+    var pixels: [16 * 8 * 4]f32 = @splat(0);
+    const ordinary: Image = .{ .width = 16, .height = 8, .pixels = &pixels };
+    try testing.expect(ordinary.complete());
 }

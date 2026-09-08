@@ -208,9 +208,15 @@ Two arithmetic details to fix while the code is open, both currently correct and
 
 ### Acceptance
 
-- Every test added is verified by the plant it encodes, run against the judge in isolation rather than against the GPU.
-- `zig build smoke-trace` on this machine reports figures identical to the ones it reports today, printed and compared, since a refactor that moved a number is a refactor that changed the check.
-- The plan document's plant table gains a column naming the test that now covers each row, and the rows that cannot be covered say so.
+- [x] Every test added is verified by the plant it encodes, run against the judge in isolation rather than against the GPU.
+- [x] `zig build smoke-trace` on this machine reports figures identical to the ones it reports today, printed and compared, since a refactor that moved a number is a refactor that changed the check.
+- [x] The plan document's plant table gains a column naming the test that now covers each row, and the rows that cannot be covered say so.
+
+**Landed.** Plan: [`2026-09-05-make-the-trace-judgements-pure-and-testable.md`](../done/2026-09-05-make-the-trace-judgements-pure-and-testable.md). `src/gpu/verdict.zig` holds fifteen judges, `src/smoke.zig` lost 528 lines, the suite went from 230 tests to 252, and the transcript is byte-identical. Two of the three items above were satisfied as written; the third needed the table's twelve rows read as ten defects, with two rows saying why they are not coverable.
+
+**Two corrections to this section as it was written.** The `decay_span_nanos / interval` item was right and is now a `@compileError` on a comptime table both the driver and the judge read. The `expectClose` item was **wrong**: that helper performed no division, and at zero it reduced to exact equality, which is the right answer for a relative tolerance. Planting the old spelling back made the test written for it pass, which is what surfaced the real defect, that it read its scale from one of its two arguments and so could return different verdicts for swapped arguments.
+
+**And the acceptance was not enough, which is worth carrying to the rest of this program.** "Every test added is verified by the plant it encodes" was satisfied by tests that did not discriminate: two arms sat far enough outside their bound to be caught by a sibling check, so weakening the arm they named changed nothing. Planting the *judge* rather than the shader is what found them, and that second pass is the one this criterion should have asked for.
 
 ### What it does not close
 

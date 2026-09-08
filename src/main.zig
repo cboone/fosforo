@@ -86,6 +86,15 @@ test {
     // would never see.
     _ = @import("gpu/measure.zig");
 
+    // The other half of that same argument, and it was left unmade for four
+    // issues. `measure.zig` holds the extraction and this holds the
+    // *expectations*, which is where the tolerances, the loops and the guards
+    // against going vacuous live. Its one caller is `src/smoke.zig` too, so
+    // without this line the thirteen hardest claims this project makes about
+    // what the pixels became would again be checked only by the build step that
+    // needs a GPU.
+    _ = @import("gpu/verdict.zig");
+
     // Not reached from the plugin at all: it is the root of the race harness,
     // which `zig build ring-race` builds as its own executable. Named here so its
     // pure parts are still checked by `zig build test`, because the machine that
