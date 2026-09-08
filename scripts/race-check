@@ -1,0 +1,303 @@
+#!/usr/bin/env bash
+# race-check — run both arms of a race harness under Thread Sanitizer and judge them in order
+# Author: Christopher Boone
+# Date: 2026-08-20
+#
+# Two harnesses use this, and each verifies a release/acquire pairing that every
+# test of its subject is too single-threaded to see. `src/dsp/ring.zig` publishes
+# its cursor with a release store and reads it with an acquire load, which is the
+# whole of ADR 0010's protocol between the audio thread and the render thread;
+# `src/clap/gate.zig` gives a tick back its place with a release store that
+# `close` acquires, which is what stands between a host's main thread and memory
+# the render thread is still reading. Weakening either passes every unit test.
+# This is what notices. See ADR 0016.
+#
+# Each harness has two arms and one of them must fail:
+#
+#   <weakened-arm>  the same access pattern with one ordering relaxed
+#   <clean-arm>     the real thing on two threads
+#
+# **The order of the assertions below is the point**, and it is the order
+# `smoke-leak-check` uses for the same reason. Everything the clean arm proves is
+# an absence, and a search for absence succeeds for the wrong reason when the
+# instrument was never running. So:
+#
+#   1. The weakened arm ran, and TSan reported a data race in it. This is the
+#      positive control. An unlinked runtime, an uninstrumented access, a
+#      `pthread_create` TSan never saw, a job that built the wrong module: each
+#      makes both arms silent, and only this can tell that apart from a correct
+#      subject.
+#   2. The clean arm ran to completion and its progress counter moved, so a clean
+#      result describes two threads that met. Which counter that is differs by
+#      harness, which is why it is an argument: the ring counts windows its reader
+#      validated, and the gate counts rounds in which `close` actually spun.
+#   3. The clean arm reported no data race.
+#
+# TSan's exit code is not the whole signal. `exitcode=66` replaces the process
+# status whenever anything was reported, so the weakened arm exits 66 while still
+# printing its own `ok` line, and both facts are read separately here.
+#
+# Usage:
+#   race-check <path/to/harness> <clean-arm> <weakened-arm> <progress-field>
+#
+# Examples:
+#   race-check zig-out/bin/fosforo-ring-race ring weakened validated
+#   race-check zig-out/bin/fosforo-gate-race gate gate-weakened contended
+#
+# Exit codes:
+#   0  - the control was flagged, the subject was clean, and both arms overlapped
+#  64  - invalid arguments
+#  65  - an arm failed, the control was not flagged, or the subject raced
+#  66  - the harness binary does not exist or is not executable
+
+set -euo pipefail
+
+if [[ -n "${TRACE:-}" ]]; then
+  set -x
+fi
+
+readonly E_USAGE=64
+readonly E_DATAERR=65
+readonly E_NOINPUT=66
+
+readonly PROGRAM_NAME="${0##*/}"
+
+# What Thread Sanitizer prints when it finds one. Also the positive control: no
+# such line in the weakened arm means nothing below is measuring anything.
+readonly RACE_MARKER='WARNING: ThreadSanitizer: data race'
+
+# `halt_on_error=0` so the weakened arm runs to completion and prints its own
+# result rather than dying on the first report. `exitcode=66` is TSan's default
+# and is set explicitly because the assertions below depend on it.
+readonly TSAN_SETTINGS='halt_on_error=0 exitcode=66'
+
+# The line prefix both harnesses print under, so the greps below take one shape.
+readonly LINE_PREFIX='race: '
+
+# How far the clean arm's progress counter must move before a clean result means
+# anything. Each harness fails on its own if it cannot reach its own target, so
+# this is a second opinion held from outside the process, the way the leak script
+# refuses to trust a report it did not confirm was generated.
+readonly MINIMUM_PROGRESS=1
+
+# Write a message to stderr, prefixed with the program name.
+# Arguments:
+#   $@ - message parts
+function warn() {
+  echo "${PROGRAM_NAME}: ${*}" >&2
+}
+
+function usage() {
+  echo "Usage: ${PROGRAM_NAME} <path/to/harness> <clean-arm> <weakened-arm> <progress-field>" >&2
+}
+
+# Run one arm, capturing everything it and the sanitizer said.
+#
+# The status is recorded and not obeyed, because a flagged arm exits non-zero by
+# design and a clean one exits zero for a reason this script has not checked yet.
+# Globals:
+#   arm_status - the exit status of the run
+# Arguments:
+#   $1 - path to the harness
+#   $2 - arm name
+#   $3 - path to write the capture to
+function run_arm() {
+  local binary="${1}"
+  local arm="${2}"
+  local capture="${3}"
+
+  arm_status=0
+  TSAN_OPTIONS="${TSAN_SETTINGS}" "${binary}" "${arm}" > "${capture}" 2>&1 ||
+    arm_status="${?}"
+}
+
+# Whether an arm reached the end of its work.
+# Arguments:
+#   $1 - path to the capture
+#   $2 - arm name
+function arm_completed() {
+  local capture="${1}"
+  local arm="${2}"
+
+  grep -q "^${LINE_PREFIX}${arm} ok\$" "${capture}"
+}
+
+# How many data races the sanitizer reported.
+# Arguments:
+#   $1 - path to the capture
+# Outputs:
+#   A count on stdout
+function race_count() {
+  local capture="${1}"
+
+  grep -c "${RACE_MARKER}" "${capture}" || true
+}
+
+# The arm's progress counter, from its own statistics line.
+# Arguments:
+#   $1 - path to the capture
+#   $2 - arm name
+#   $3 - the field's name
+# Outputs:
+#   A count on stdout, empty when the line or the field is absent
+function progress_count() {
+  local capture="${1}"
+  local arm="${2}"
+  local field="${3}"
+
+  sed -n "s/^${LINE_PREFIX}${arm} .*${field}=\([0-9]\{1,\}\).*/\1/p" "${capture}"
+}
+
+# Report an arm's own summary line, so a passing run says what it measured.
+# Arguments:
+#   $1 - path to the capture
+#   $2 - arm name
+function announce() {
+  local capture="${1}"
+  local arm="${2}"
+  local line
+
+  line="$(grep -m 1 "^${LINE_PREFIX}${arm} .*=" "${capture}" || true)"
+  if [[ -n "${line}" ]]; then
+    warn "${line#"${LINE_PREFIX}"}"
+  fi
+}
+
+# Print the tail of a capture, for a failure that needs context.
+# Arguments:
+#   $1 - path to the capture
+function excerpt() {
+  local capture="${1}"
+
+  tail -n 25 "${capture}" >&2
+}
+
+# The positive control. Must run, and must be flagged.
+# Arguments:
+#   $1 - path to the harness
+#   $2 - the weakened arm's name
+#   $3 - path to write the capture to
+function check_control() {
+  local binary="${1}"
+  local arm="${2}"
+  local capture="${3}"
+  local races
+
+  warn "running the ${arm} arm, which Thread Sanitizer must flag"
+  run_arm "${binary}" "${arm}" "${capture}"
+
+  if ! arm_completed "${capture}" "${arm}"; then
+    warn "the ${arm} arm did not finish (exit ${arm_status}), so there is nothing to compare against"
+    excerpt "${capture}"
+    return "${E_DATAERR}"
+  fi
+
+  races="$(race_count "${capture}")"
+  if [[ "${races}" -eq 0 ]]; then
+    warn "Thread Sanitizer reported nothing against an arm built to race, so it is not detecting anything here"
+    warn "every check below would pass vacuously; this run's clean result means nothing"
+    excerpt "${capture}"
+    return "${E_DATAERR}"
+  fi
+
+  announce "${capture}" "${arm}"
+  warn "control flagged: ${races} data race report(s), as required"
+}
+
+# The subject. Must run, must overlap, and must be clean.
+# Arguments:
+#   $1 - path to the harness
+#   $2 - the clean arm's name
+#   $3 - the progress field's name
+#   $4 - path to write the capture to
+function check_subject() {
+  local binary="${1}"
+  local arm="${2}"
+  local field="${3}"
+  local capture="${4}"
+  local races
+  local progress
+
+  warn "running the ${arm} arm, which must be clean"
+  run_arm "${binary}" "${arm}" "${capture}"
+
+  if ! arm_completed "${capture}" "${arm}"; then
+    warn "the ${arm} arm did not finish (exit ${arm_status})"
+    excerpt "${capture}"
+    return "${E_DATAERR}"
+  fi
+
+  progress="$(progress_count "${capture}" "${arm}" "${field}")"
+  if [[ -z "${progress}" || "${progress}" -lt "${MINIMUM_PROGRESS}" ]]; then
+    warn "the ${arm} arm reported ${field}=${progress:-<absent>}, so the two threads never met"
+    warn "a clean sanitizer result over that is vacuous"
+    excerpt "${capture}"
+    return "${E_DATAERR}"
+  fi
+
+  races="$(race_count "${capture}")"
+  if [[ "${races}" -ne 0 ]]; then
+    warn "Thread Sanitizer reported ${races} data race(s) against the real ${arm}:"
+    excerpt "${capture}"
+    return "${E_DATAERR}"
+  fi
+
+  announce "${capture}" "${arm}"
+}
+
+function main() {
+  local binary=""
+  local clean_arm=""
+  local weakened_arm=""
+  local progress_field=""
+  local capture
+  local -a positional=()
+  local -i arm_status
+
+  while [[ ${#} -gt 0 ]]; do
+    case "${1}" in
+      -*)
+        warn "unknown option '${1}'"
+        usage
+        return "${E_USAGE}"
+        ;;
+      *)
+        positional+=("${1}")
+        ;;
+    esac
+    shift
+  done
+
+  if [[ "${#positional[@]}" -ne 4 ]]; then
+    warn "expected a harness path, a clean arm, a weakened arm and a progress field"
+    usage
+    return "${E_USAGE}"
+  fi
+
+  binary="${positional[0]}"
+  clean_arm="${positional[1]}"
+  weakened_arm="${positional[2]}"
+  progress_field="${positional[3]}"
+
+  if [[ ! -x "${binary}" ]]; then
+    warn "cannot execute '${binary}'"
+    return "${E_NOINPUT}"
+  fi
+
+  # An explicit template rather than `mktemp -t <prefix>`, which is what
+  # `smoke-leak-check` uses and is why the difference is worth a comment. BSD
+  # mktemp treats the argument as a prefix and appends its own suffix; GNU mktemp
+  # requires the X's and fails with "too few X's in template". That script only
+  # ever runs on macOS, and this one only ever runs on Linux, so the portable
+  # spelling is the one that belongs here.
+  capture="$(mktemp "${TMPDIR:-/tmp}/race-check.XXXXXX")"
+  # shellcheck disable=SC2064 # Expand now: the path must survive the function scope.
+  trap "rm -f '${capture}'" EXIT
+
+  check_control "${binary}" "${weakened_arm}" "${capture}"
+  check_subject "${binary}" "${clean_arm}" "${progress_field}" "${capture}"
+
+  warn "${clean_arm}'s release/acquire pairing held, and the control proves that was measured"
+}
+
+main "${@}"

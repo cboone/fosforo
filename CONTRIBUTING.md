@@ -106,6 +106,7 @@ zig build smoke        # runs Metal and AppKit for real; needs a GPU and a windo
 zig build smoke-trace  # renders into a texture and measures it; needs a GPU, no window
 zig build smoke-leaks  # 400 editor cycles under `leaks --atExit`
 zig build ring-race    # the history buffer under Thread Sanitizer; needs a Linux host
+zig build gate-race    # the editor's teardown gate, the same way and on the same host
 ```
 
 **CI runs all of them now.** The `smoke` job runs each half as its own step, and
@@ -113,7 +114,8 @@ zig build ring-race    # the history buffer under Thread Sanitizer; needs a Linu
 need a device and no window, and the third's window-server dependency was
 settled by the 65 green runs #72 cites. `smoke-leaks` runs beside them at
 `-Dleak-cycles=40` under `continue-on-error`, so it reports without being able
-to stop anything. The `ring-race` job runs on Linux, where it is required.
+to stop anything. The `race` job runs both race harnesses on Linux, as two
+steps, where they are required.
 
 `smoke-trace` is the one that answers what the shader drew, as opposed to whether
 it compiled or whether a frame was presented. It renders through the shipping
@@ -131,13 +133,20 @@ own account would fail it with nothing here being wrong. Running it locally is
 what has teeth. Its criteria do not vary with the cycle count while its cost
 does, which is why CI takes 40 against a default of 400 here.
 
-`zig build ring-race` refuses on macOS and says where it does run: Zig 0.16 links
-a `-fsanitize-thread` binary on Apple Silicon that segfaults before `main`, so it
-runs on Linux in CI. Compile-check it from a Mac with `zig build-exe
-src/ring_race.zig -fsanitize-thread -lc -target x86_64-linux-gnu`. The ring's
-memory ordering also has a source canary that fails `zig build test` on any
-machine, so weakening it is caught locally even though the sanitizer is not
-([ADR 0016](docs/adr/0016-verify-the-ring-ordering-with-tsan.md)).
+Both race steps refuse on macOS and say where they do run: Zig 0.16 links a
+`-fsanitize-thread` binary on Apple Silicon that segfaults before `main`, so
+they run on Linux in CI. Compile-check either from a Mac with `zig build-exe
+src/ring_race.zig -fsanitize-thread -lc -target x86_64-linux-gnu`, substituting
+`src/gate_race.zig`. Each subject also has a source canary that fails `zig build
+test` on any machine, so weakening an ordering is caught locally even though the
+sanitizer is not ([ADR 0016](docs/adr/0016-verify-the-ring-ordering-with-tsan.md)).
+
+`Gate` lives in `src/clap/gate.zig` rather than in `src/clap/gui.zig` so that a
+Linux target can reach it, and `src/gate_race.zig` races a plain buffer standing
+in for the editor's own fields. That payload is the whole reason the arm can
+discriminate anything: Thread Sanitizer reports unordered access to *non-atomic*
+memory, so an ordering that guards nothing but its own word is invisible to it.
+That is why `Pending` has no arm and keeps only its canary.
 
 ## Code Style
 
