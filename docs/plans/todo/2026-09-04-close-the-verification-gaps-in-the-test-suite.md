@@ -159,11 +159,11 @@ The arms worth having, given what each primitive is for:
 
 ### Acceptance
 
-- Both weakened arms are flagged with `WARNING: ThreadSanitizer: data race` before either clean arm's result is read, judged by a script on `scripts/ring-race-check`'s assertion order.
+- Both weakened arms are flagged with `WARNING: ThreadSanitizer: data race` before either clean arm's result is read, judged by `scripts/race-check`, which is `scripts/ring-race-check` renamed and generalized and carries the same control-first assertion order.
 - The defect is planted in the **real** primitives as well as the replicas, on ADR 0016's own reasoning that "a control that models the defect is not the subject exhibiting it".
 - `Gate`'s spin body is genuinely entered, confirmed by a counter the harness prints, so a `close` that never waited would be visible as a vacuous pass.
 
-**Landed.** Plan: [`2026-09-08-race-the-editors-teardown-gate-under-tsan.md`](../done/2026-09-08-race-the-editors-teardown-gate-under-tsan.md). `Gate` is now `src/clap/gate.zig`, `src/gate_race.zig` races it, `scripts/ring-race-check` became `scripts/race-check` and is parameterized for both harnesses, and the `ring-race` job became `race`. The suite went from 287 tests to 292.
+**Landed.** Plan: [`2026-09-08-race-the-editors-teardown-gate-under-tsan.md`](../done/2026-09-08-race-the-editors-teardown-gate-under-tsan.md). `Gate` is now `src/clap/gate.zig`, `src/gate_race.zig` races it, `scripts/ring-race-check` became `scripts/race-check` and is parameterized for both harnesses, and the `ring-race` job became `race`. The suite went from 265 named tests to 270, counted against `main` rather than against this branch's original base, which has since moved.
 
 **Three corrections to this section as it was written**, all of them measured rather than reasoned about, and all recorded in ADR 0016's #91 amendment.
 
