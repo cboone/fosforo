@@ -106,9 +106,8 @@ jobs:
   # `b.dependency("objc", ...)` panics at configure time on any other OS, so this
   # cannot move to a cheaper runner (ADR 0001).
   #
-  # 119s on its first run, which is the only sample so far, so 8 is 4x that rounded
-  # to the minute. Re-measure once there are more, on the rule the rest of this file
-  # follows. The breakdown is worth keeping, because the two steps do not cost what
+  # 119s max over 3 runs (119s, 69s, 87s), so 8 is 4x the slowest rounded to the
+  # minute. The breakdown is worth keeping, because the two steps do not cost what
   # their names suggest: setup-zig 11s, ReleaseSafe **77s**, ReleaseFast **18s**.
   # The asymmetry is ordering, not the mode. The first `zig build` in the job pays
   # the dependency fetch and the `zig cc -E` preprocess, and the second reuses both
@@ -166,7 +165,7 @@ jobs:
           xcrun --kill-cache
 
       # No `with:` block, and the absence is what reads build.zig.zon. This step
-      # and the four like it below used to pass `version-file: build.zig.zon`,
+      # and every other `setup-zig` here used to pass `version-file: build.zig.zon`,
       # which mlugg/setup-zig does not declare as an input at any version: it was
       # ignored, and every run said so in a warning nothing tracked. Leaving
       # `version` at its empty default is what makes the action read

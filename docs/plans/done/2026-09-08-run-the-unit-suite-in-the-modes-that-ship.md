@@ -166,27 +166,30 @@ attributable to a mode:
     runs-on: macos-latest
     timeout-minutes: 8
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        with:
-          version-file: build.zig.zon
       - name: Run unit tests at ReleaseSafe
         run: zig build test-safe
       - name: Run unit tests in the mode that ships
         run: zig build test-release
 ```
 
-Both pins copied verbatim from the `shaders` job (`ci.yml:83-116`), which is the nearest
-neighbour: macOS, repo-local, one concern. `macos-latest` is not negotiable — the module
-links five Apple frameworks and `b.dependency("objc", ...)` panics at configure time on any
-other OS (`build.zig:30-42`).
+Both pins copied verbatim from the `shaders` job, which is the nearest neighbour: macOS,
+repo-local, one concern. **No `with:` block on `setup-zig`**, which is not an omission —
+[#99](https://github.com/cboone/fosforo/issues/99) removed `version-file` from every job
+because the action does not declare it, and it reads `minimum_zig_version` out of
+`build.zig.zon` by itself. That is also the one thing nothing would have caught: `actionlint`
+cannot check `with:` inputs on a SHA-pinned third-party action, because its input database is
+keyed by tag. `macos-latest` is not negotiable either — the module links five Apple frameworks
+and `b.dependency("objc", ...)` panics at configure time on any other OS.
 
-**The `timeout-minutes` above is provisional and must not be merged unmeasured.** Every
-ceiling in this workflow carries its figure and sample size in a comment beside it. Open the
-PR with `8` (the value every other macOS job here uses), read the actual duration from the
-first two or three runs through the Actions API, and set the final value at roughly 4x with
-the measurement written into the comment. The local numbers bound the compile half at about
-20 s for the two modes together; the rest is checkout and the Zig install.
+**`timeout-minutes` was opened provisional and is now measured**, which every ceiling in this
+workflow is required to be. Three runs give 119 s, 69 s and 87 s, so 4x the slowest rounds to
+the `8` it started at and the value stands on evidence rather than on being what the other
+macOS jobs use. The step breakdown is the part worth keeping and is in the job's comment:
+ReleaseSafe 77 s against ReleaseFast 18 s, which is ordering rather than the mode, since the
+first `zig build` in the job pays the dependency fetch and the `zig cc -E` preprocess and the
+second reuses both.
 
 **Branch protection is a manual follow-up.** `test-modes` is a new check name and will not
 be required until it is added, the same way `smoke-appkit` needed a step outside the

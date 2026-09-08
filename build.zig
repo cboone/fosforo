@@ -43,8 +43,8 @@ pub fn build(b: *std.Build) void {
 
     // Deliberately below the early return above, so the one step that builds off
     // macOS never spawns a process it has no use for. Resolved once and handed to
-    // every graph below, so the four artifacts cannot disagree about which commit
-    // they came from.
+    // every graph below, so no artifact this build produces can disagree with
+    // another about which commit it came from.
     const provenance = gitProvenance(b);
 
     const core = coreAt(b, target, provenance, optimize);
@@ -331,8 +331,11 @@ const Core = struct {
     clap_c: *std.Build.Module,
     objc: *std.Build.Module,
 
-    /// Resolved once in `build` rather than per module, so the four artifacts
-    /// cannot disagree about which commit they came from.
+    /// Resolved once in `build` rather than per module, so no artifact this build
+    /// produces can disagree with another about which commit it came from.
+    /// Deliberately not a count any more: three test artifacts joined the two
+    /// libraries and the smoke harness at #94, and the number was wrong the moment
+    /// they did.
     provenance: Provenance,
 
     /// The file a debug build reloads the shader from, absolute, or "" for the
