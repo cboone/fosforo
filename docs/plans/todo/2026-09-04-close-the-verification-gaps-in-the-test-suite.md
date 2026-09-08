@@ -265,7 +265,7 @@ If any test does need to differ by mode, that is a finding worth recording rathe
 - [x] Both steps green locally and in CI.
 - [x] Plant a value that a trust boundary is supposed to refuse and confirm the ReleaseFast run refuses it rather than trapping, which is the property the split exists to make observable.
 
-**Landed.** Plan: [`2026-09-08-run-the-unit-suite-in-the-modes-that-ship.md`](2026-09-08-run-the-unit-suite-in-the-modes-that-ship.md). Three steps rather than two, because the secondary question above was answered yes: `test` still follows `-Doptimize`, `test-safe` is pinned to ReleaseSafe and `test-release` to ReleaseFast, all three from one `addTestStep`, with a `test-modes` job running the two pinned ones. Both "measure rather than assume" items came back clean — 285 of 285 in every mode on the first try, and `palette.zig`'s tolerances survive down to its 1e-7 because Zig enables no fast-math and `decay_tau_nanos` is comptime-folded.
+**Landed.** Plan: [`2026-09-08-run-the-unit-suite-in-the-modes-that-ship.md`](../done/2026-09-08-run-the-unit-suite-in-the-modes-that-ship.md). Three steps rather than two, because the secondary question above was answered yes: `test` still follows `-Doptimize`, `test-safe` is pinned to ReleaseSafe and `test-release` to ReleaseFast, all three from one `addTestStep`, with a `test-modes` job running the two pinned ones. Both "measure rather than assume" items came back clean — 285 of 285 in every mode on the first try, and `palette.zig`'s tolerances survive down to its 1e-7 because Zig enables no fast-math and `decay_tau_nanos` is comptime-folded.
 
 **Five findings, four of them corrections to this section as written.**
 

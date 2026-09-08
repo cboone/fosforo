@@ -1,7 +1,7 @@
 # Run the unit suite in the modes that ship
 
 Issue: [#94](https://github.com/cboone/fosforo/issues/94), item 6 of
-[the verification-gaps program](2026-09-04-close-the-verification-gaps-in-the-test-suite.md).
+[the verification-gaps program](../todo/2026-09-04-close-the-verification-gaps-in-the-test-suite.md).
 Type: `ci:`. Lane: free — needs no host, no GPU, no window server.
 
 ## Context
