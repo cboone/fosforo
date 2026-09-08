@@ -113,6 +113,7 @@ env:
   RUST_VERSION: "1.97.1"
 
 jobs:
+  # Throwaway probe for #87. Delete this line with the branch that carries it.
   # Must run on macOS: the plugin links Cocoa, Metal, QuartzCore and CoreVideo,
   # so it cannot build or test on the default ubuntu-latest runner.
   # Cross-compilation is off for the same reason (see ADR 0001).
