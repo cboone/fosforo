@@ -16,7 +16,7 @@ Five findings, and three of them change the work rather than confirm it.
 
 **`refAllDecls` is not recursive, and `refAllDeclsRecursive` was removed in Zig 0.16.** `std.testing.refAllDecls` (`std/testing.zig:1213`) walks `std.meta.declarations(T)`, which returns a container's **public** declarations, one level deep. So `refAllDecls(@This())` in `src/dsp/ring.zig` references the type `Ring` and does **not** analyse `Ring.read` or `Ring.capacity`, which is precisely the pair the `AGENTS.md` bullet is about. The three sites that already do this correctly each add a second call for their principal type (`renderer.zig:3169-3170`, `displaylink.zig:223-224`, `view.zig:359-360`); three more are incomplete under the same rule. **So this is a rule to apply uniformly, not a line to paste thirteen times**, and applying it only to the files that have nothing today would leave the class open in the files that already look covered.
 
-**Thirteen files lack it, not ten.** The issue's list of ten predates [#90](https://github.com/cboone/fosforo/issues/90), which created `src/canary.zig` and gave `src/platform/io.zig` its first test section. `src/ring_race.zig` is the third it does not name. `src/smoke.zig` is the twentieth file and is deliberately excluded: `zig build test` never compiles a line of it, so a `refAllDecls` there would be inert. [#92](https://github.com/cboone/fosforo/issues/92) owns that file.
+**Thirteen files lack it, not ten.** The issue's list of ten predates [#90](https://github.com/cboone/fosforo/issues/90), which created `src/canary.zig` and gave `src/platform/io.zig` its first test section. `src/ring_race.zig` is the third it does not name. `src/smoke.zig` is deliberately excluded: `zig build test` never compiles a line of it, so a `refAllDecls` there would be inert. [#92](https://github.com/cboone/fosforo/issues/92) owns that file.
 
 **The acceptance criterion "the test count moves by zero" is wrong, and the reason it is wrong is the mechanism.** `refAllDecls` collects no tests of its own, which is what the criterion means and which stays true. But the repository's idiom wraps it in an unnamed `test { }` block, and an unnamed test block **is** a test: `src/main.zig` reports two tests today and one of them is that block. The count rises by exactly the number of new blocks and by nothing else, which is a stronger statement than the one filed and is measured rather than assumed.
 
@@ -34,26 +34,27 @@ This is the existing idiom at `renderer.zig:3160`, `view.zig:355` and `objc.zig:
 
 ### The sites
 
-Thirteen files gain a test block; three gain the calls their block is missing. Every path is under `src/`.
+Thirteen files gain a test block and three gain the calls their block is missing; a fourteenth block arrived with `gpu/verdict.zig`, which merged from #92 while this branch was open. Every path is under `src/`.
 
-| File                   | Block   | Types referenced beside `@This()`                           |
-| ---------------------- | ------- | ----------------------------------------------------------- |
-| `build_info.zig`       | new     | none                                                        |
-| `canary.zig`           | new     | none                                                        |
-| `clap/c.zig`           | new     | `feature`                                                   |
-| `clap/gui.zig`         | new     | `Pending`, `HostGui`, `Editor`                              |
-| `clap/log.zig`         | new     | `Log`                                                       |
-| `clap/plugin.zig`      | new     | none                                                        |
-| `clap/state.zig`       | new     | `TestStream`                                                |
-| `dsp/ring.zig`         | new     | `Ring`                                                      |
-| `gpu/iface.zig`        | new     | `Size`, `Outcome`, `Diagnostics`, `Readback`, `ShaderStats` |
-| `gpu/measure.zig`      | new     | `Image`, `Extremes`, `Centres`, `Span`, `Point`             |
-| `gpu/palette.zig`      | new     | `Palette`                                                   |
-| `platform/io.zig`      | new     | none                                                        |
-| `ring_race.zig`        | new     | none                                                        |
-| `gpu/metal/shader.zig` | present | `Stamp`, `Buffer` added                                     |
-| `platform/objc.zig`    | present | `CGPoint`, `CGSize`, `CGRect`, `autoresizing` added         |
-| `platform/view.zig`    | present | `Delegate` added beside the existing `View`                 |
+| File                   | Block   | Types referenced beside `@This()`                              |
+| ---------------------- | ------- | -------------------------------------------------------------- |
+| `build_info.zig`       | new     | none                                                           |
+| `canary.zig`           | new     | none                                                           |
+| `clap/c.zig`           | new     | `feature`                                                      |
+| `clap/gui.zig`         | new     | `Pending`, `HostGui`, `Editor`                                 |
+| `clap/log.zig`         | new     | `Log`                                                          |
+| `clap/plugin.zig`      | new     | none                                                           |
+| `clap/state.zig`       | new     | `TestStream`                                                   |
+| `dsp/ring.zig`         | new     | `Ring`                                                         |
+| `gpu/iface.zig`        | new     | `Size`, `Outcome`, `Diagnostics`, `Readback`, `ShaderStats`    |
+| `gpu/measure.zig`      | new     | `Image`, `Extremes`, `Centres`, `Span`, `Point`                |
+| `gpu/palette.zig`      | new     | `Palette`                                                      |
+| `platform/io.zig`      | new     | none                                                           |
+| `ring_race.zig`        | new     | none                                                           |
+| `gpu/metal/shader.zig` | present | `Stamp`, `Buffer` added                                        |
+| `platform/objc.zig`    | present | `CGPoint`, `CGSize`, `CGRect`, `autoresizing` added            |
+| `platform/view.zig`    | present | `Delegate` added beside the existing `View`                    |
+| `gpu/verdict.zig`      | new     | eight; arrived from #92 mid-branch, see the verification below |
 
 `main.zig`, `gpu/metal/renderer.zig` and `platform/displaylink.zig` are already complete under the rule and are not touched by the sweep.
 
@@ -65,7 +66,7 @@ Two files have no `// Tests` banner and they resolve differently, which is a cor
 
 ### Keeping the class closed
 
-The sweep closes the class as of today and nothing stops the twentieth module from arriving without the line. One test in `src/main.zig`, beside the collection list it depends on, closes that:
+The sweep closes the class as of today and nothing stops the next module from arriving without the line. One test in `src/main.zig`, beside the collection list it depends on, closes that:
 
 ```zig
 test "every module a test build compiles references all its declarations" {
@@ -100,7 +101,7 @@ Then the tie, in the same test:
     try std.testing.expectEqual(sources.len, listed + 4);
 ```
 
-Nineteen entries: every `.zig` file under `src/` except `smoke.zig`. `canary.mentions` is what makes this assertable rather than decorative, because it does not count comment lines: `smoke.zig:5` names `testing.refAllDecls` in a doc comment, and a file that documented the convention instead of following it would satisfy a naive `indexOf`.
+One entry per `.zig` file under `src/` except `smoke.zig`, twenty of them once #92 merged. `canary.mentions` is what makes this assertable rather than decorative, because it does not count comment lines: `smoke.zig:5` names `testing.refAllDecls` in a doc comment, and a file that documented the convention instead of following it would satisfy a naive `indexOf`.
 
 The second needle is split for the same reason as the first. Both splits are ugly and both are the honest form; the alternative is an assertion that counts its own string literals.
 
@@ -156,6 +157,16 @@ Each was made, run, and reverted, with the sweep committed first so `git restore
 | The same, made **private**                                 | `zig build test` | **244/244 pass.** The residue                                 |
 | `refAllDecls(@This());` deleted from `platform/io.zig`     | `zig build test` | **Fails**: `src/platform/io.zig carries no declaration sweep` |
 | `_ = @import("gpu/palette.zig");` added to the import list | `zig build test` | **Fails**: `expected 19, found 20`                            |
+
+### The check fired on a real module before the branch merged
+
+**[#92](https://github.com/cboone/fosforo/issues/92) landed on `main` while this branch was open**, adding `src/gpu/verdict.zig` and naming it in `main.zig`'s collection list. Merging `main` in produced no textual conflict and a **failing test**: `expected 19, found 20`, the count tie reporting that a module had joined the collection list without joining `sources`.
+
+That is the ninth plant in the table above, except that nobody planted it. The gap it names is the one this issue exists to close and the one a sweep alone cannot: `verdict.zig` is 1,716 lines with eight public container types, written by an issue whose author had no reason to know this convention was arriving, and under a sweep-only change every one of its public declarations would have gone back to being analysed only if something happened to call them. It carries a block now, and its eight types are named.
+
+**The `+ 4` arithmetic did not move**, which is the tie behaving as designed rather than a coincidence: `verdict.zig` joined both lists, so `listed` went to 16 and `sources.len` to 20. The constant encodes the four modules a test build compiles that `main.zig` does not name, and that set is unchanged.
+
+### The controls
 
 **Three rows are controls where passing is the result**, and each is what keeps a sentence honest rather than a description of one.
 

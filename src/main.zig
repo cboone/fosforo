@@ -127,6 +127,7 @@ test "every module a test build compiles carries a declaration sweep" {
         .{ "gpu/iface.zig", @embedFile("gpu/iface.zig") },
         .{ "gpu/measure.zig", @embedFile("gpu/measure.zig") },
         .{ "gpu/palette.zig", @embedFile("gpu/palette.zig") },
+        .{ "gpu/verdict.zig", @embedFile("gpu/verdict.zig") },
         .{ "gpu/metal/renderer.zig", @embedFile("gpu/metal/renderer.zig") },
         .{ "gpu/metal/shader.zig", @embedFile("gpu/metal/shader.zig") },
         .{ "platform/displaylink.zig", @embedFile("platform/displaylink.zig") },
