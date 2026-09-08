@@ -132,8 +132,16 @@ pub const Picture = struct {
         return self.bytes[at .. at + 4];
     }
 
+    /// Whether this picture's declared geometry fits the buffer it was handed.
+    ///
+    /// Overflow-safe for the reason `measure.Image.complete` gives at length: the
+    /// product is `usize` arithmetic, and a wrapped one in `--release=fast` would
+    /// report an undersized buffer as complete, which is the opposite of what
+    /// this is for.
     pub fn complete(self: Picture) bool {
-        return self.bytes.len >= self.width * self.height * 4;
+        const pixels = std.math.mul(usize, self.width, self.height) catch return false;
+        const bytes = std.math.mul(usize, pixels, 4) catch return false;
+        return self.bytes.len >= bytes;
     }
 };
 
@@ -1683,4 +1691,26 @@ test "a relative tolerance reads the same whichever way its arguments are passed
     try expectClose(0.0, 0.0, 1e-3, Fault.DecayWrong);
     try testing.expectError(Fault.DecayWrong, expectClose(1e-9, 0.0, 1e-3, Fault.DecayWrong));
     try testing.expectError(Fault.DecayWrong, expectClose(0.0, 1e-9, 1e-3, Fault.DecayWrong));
+}
+
+test "a picture geometry too large to size is incomplete rather than overflowing" {
+    // The same hazard `measure.Image.complete` documents, on the byte side.
+    // Without the overflow-safe form this test panics with `integer overflow` in
+    // Debug, and `--release=fast` wraps and calls an empty buffer complete.
+    const huge: Picture = .{ .width = 1 << 32, .height = 1 << 32, .bytes = &.{} };
+    try testing.expect(!huge.complete());
+
+    const wide: Picture = .{ .width = 1 << 61, .height = 1, .bytes = &.{} };
+    try testing.expect(!wide.complete());
+
+    // And a judge refuses it rather than indexing, which is what makes the guard
+    // reachable from the judgement side rather than only from this assertion.
+    const canvas = try Canvas.init(16, 8);
+    defer canvas.deinit();
+    try testing.expectError(Fault.ReadbackTruncated, resolve(canvas.dark(), huge));
+
+    // The negative control: an ordinary picture is complete.
+    var bytes: [16 * 8 * 4]u8 = @splat(0);
+    const ordinary: Picture = .{ .width = 16, .height = 8, .bytes = &bytes };
+    try testing.expect(ordinary.complete());
 }

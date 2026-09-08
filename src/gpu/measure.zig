@@ -64,8 +64,21 @@ pub const Image = struct {
     /// than refusing, on `upload`'s precedent, so a caller that sized its buffer
     /// wrongly gets a partly-filled image rather than an error. Without this the
     /// symptom is an index out of bounds deep inside a loop.
+    ///
+    /// **A geometry too large to size is refused rather than multiplied.**
+    /// `width * height * 4` is `usize` arithmetic, so a product past 2^64 is
+    /// illegal behaviour: a panic in Debug and a wrapped value in
+    /// `--release=fast`, where the wrap would report an undersized buffer as
+    /// complete and hand the caller an out-of-bounds read. No drawable comes
+    /// near it, and the margin is not the point: real geometries here are 960 by
+    /// 540 and overflow needs a product of 2^62, nine trillion times larger. What
+    /// makes it worth closing is that this is `pub`, so a caller supplies both
+    /// numbers, and [#94](https://github.com/cboone/fosforo/issues/94) intends to
+    /// run this suite under the optimize mode that ships.
     pub fn complete(self: Image) bool {
-        return self.pixels.len >= self.width * self.height * 4;
+        const pixels = std.math.mul(usize, self.width, self.height) catch return false;
+        const floats = std.math.mul(usize, pixels, 4) catch return false;
+        return self.pixels.len >= floats;
     }
 };
 
@@ -518,16 +531,22 @@ pub fn sine(out: []f32, cycles: f32, amplitude: f32) void {
 /// property the centroid depends on — symmetry about the centreline — without
 /// reproducing the oriented quad, which this file has no business knowing about.
 pub fn rasterize(pixels: []f32, width: usize, height: usize, window: []const f32) Image {
+    const image: Image = .{ .width = width, .height = height, .pixels = pixels };
+
     // The buffer has to hold the geometry it was asked for, on
     // `palette.buildPalette`'s precedent: an assertion rather than a refusal,
     // because this takes no error union and its only callers are this
     // repository's own tests, where a short buffer is a mistake in the test
     // rather than input from anywhere. That is the same reason `Image.complete()`
-    // exists for the *harness* side and is checked rather than asserted there.
-    std.debug.assert(pixels.len >= width * height * 4);
+    // is *checked* on the harness side, where the input is a readback.
+    //
+    // Asking `complete` rather than restating its product is what keeps the two
+    // from drifting, and it is why the overflow that method refuses does not
+    // need refusing twice. Note that `--release=fast` removes this line entirely,
+    // which is the whole difference between an assertion and a guard.
+    std.debug.assert(image.complete());
 
     @memset(pixels, 0);
-    const image: Image = .{ .width = width, .height = height, .pixels = pixels };
 
     // **A window of one draws nothing, and saying so is what `pub` costs.** The
     // horizontal mapping divides by `window.len - 1`, so a single sample makes
@@ -989,4 +1008,24 @@ test "a drawable with no area rasterizes to nothing rather than wrapping" {
     const neither = rasterize(&none, 0, 0, &window);
     try testing.expectEqual(@as(usize, 0), litColumns(neither, 0.5));
     try testing.expect(neither.complete());
+}
+
+test "a geometry too large to size is incomplete rather than overflowing" {
+    // `width * height * 4` is `usize` arithmetic, so this product is past 2^64.
+    // Without the overflow-safe form it is illegal behaviour: this very test
+    // panics with `integer overflow` in Debug, and `--release=fast` wraps to a
+    // small number and calls an empty buffer complete.
+    const huge: Image = .{ .width = 1 << 32, .height = 1 << 32, .pixels = &.{} };
+    try testing.expect(!huge.complete());
+
+    // The `* 4` overflows on its own too, one step later, which the two-step
+    // form is what catches.
+    const wide: Image = .{ .width = 1 << 61, .height = 1, .pixels = &.{} };
+    try testing.expect(!wide.complete());
+
+    // The negative control: an ordinary geometry still reads as complete, so
+    // this refuses the unrepresentable rather than everything.
+    var pixels: [16 * 8 * 4]f32 = @splat(0);
+    const ordinary: Image = .{ .width = 16, .height = 8, .pixels = &pixels };
+    try testing.expect(ordinary.complete());
 }
