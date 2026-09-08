@@ -1183,10 +1183,14 @@ test "every judge that indexes a readback refuses a short one" {
     // `Picture.complete()` demands 256 bytes and `resolve` indexes to 284. Both
     // halves pass and the read still runs off the end, which is why the
     // geometries have to agree rather than each merely be honest about itself.
+    // Sized to exactly what it declares, 256 bytes, so that this is the case the
+    // paragraph above describes rather than a wider buffer that would merely
+    // read the wrong pixels. Planted, the two behave differently and only this
+    // one runs off the end.
     const narrow: Picture = .{
         .width = whole.width / 2,
         .height = whole.height,
-        .bytes = painted.bytes,
+        .bytes = painted.bytes[0 .. (whole.width / 2) * whole.height * 4],
     };
     try testing.expect(narrow.complete());
     try testing.expectError(Fault.ReadbackGeometryMismatch, resolve(whole, narrow));
