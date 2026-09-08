@@ -41,20 +41,13 @@ pub fn build(b: *std.Build) void {
     addRingRaceStep(b);
     if (target.result.os.tag != .macos) return;
 
-    const core: Core = .{
-        .b = b,
-        .target = target,
-        .optimize = optimize,
-        .clap_c = translateClap(b, target, optimize),
-        .objc = b.dependency("objc", .{ .target = target, .optimize = optimize }).module("objc"),
+    // Deliberately below the early return above, so the one step that builds off
+    // macOS never spawns a process it has no use for. Resolved once and handed to
+    // every graph below, so the four artifacts cannot disagree about which commit
+    // they came from.
+    const provenance = gitProvenance(b);
 
-        // Deliberately below the early return above, so the one step that builds
-        // off macOS never spawns a process it has no use for.
-        .provenance = gitProvenance(b),
-
-        // Resolved once here rather than per module, on `provenance`'s reasoning.
-        .shader_path = debugShaderPath(b, optimize),
-    };
+    const core = coreAt(b, target, provenance, optimize);
 
     // Zig's own step, re-described. Its default text is "Copy build artifacts to
     // prefix path", which is accurate and is read next to two project steps whose
@@ -95,9 +88,67 @@ pub fn build(b: *std.Build) void {
 
     const audio_unit = addAudioUnitStep(b);
     installClapBundle(b, plugin, audio_unit);
-    addTestStep(core);
+
+    // Three test artifacts, one per optimize mode worth running the suite in. See
+    // `addTestStep` for what each mode can and cannot see, and why the first of
+    // them stays mode-following while the other two are pinned (#94).
+    addTestStep(core, .{
+        .step = "test",
+        .description = "Run unit tests",
+    });
+    addTestStep(coreAt(b, target, provenance, .ReleaseSafe), .{
+        .step = "test-safe",
+        .description = "Run unit tests at ReleaseSafe: optimized, with asserts and safety checks live",
+        .pinned_optimize = "ReleaseSafe",
+    });
+    addTestStep(coreAt(b, target, provenance, .ReleaseFast), .{
+        .step = "test-release",
+        .description = "Run unit tests in the optimize mode that ships (ReleaseFast)",
+        .pinned_optimize = "ReleaseFast",
+    });
+
     addShaderValidationStep(b);
     addSmokeSteps(core);
+}
+
+/// Everything every artifact compiled at one optimize mode shares, gathered here
+/// so a graph at a *different* mode is one call rather than a second literal that
+/// can drift from this one.
+///
+/// **Every field but `provenance` is re-derived rather than copied**, and two of
+/// them are why this is a function at all. `clap_c` and `objc` carry their own
+/// optimize mode, so a pinned test artifact whose dependencies stayed at the
+/// shared mode would not be compiled the way the shipping binary is, which is the
+/// whole claim `test-release` makes. And `shader_path` is *derived* from the mode:
+/// `debugShaderPath` returns "" for anything but Debug, so copying a Debug value
+/// into a release-mode graph would bake an absolute path into somebody else's
+/// worktree — the exact negative that function's docstring and the `clap-wrapper`
+/// job's provenance assertion both exist to hold.
+///
+/// **The eager cost is `b.dependency` and it is not measurable**, which was worth
+/// checking rather than assuming, because it is paid at configure time by every
+/// `zig build` invocation, including the plain one that only wants the bundle.
+/// `b.dependency` runs zig-objc's build function, which executes `xcrun`, and going
+/// from one mode to three left `zig build --help` at 0.11 s across three runs, the
+/// same figure it read before. That is `xcrun` costing ~10 ms warm against a graph
+/// description that was already doing this once. Zig caches a dependency instance
+/// by its argument hash, so `-Doptimize=ReleaseFast` yields two instances rather
+/// than four, and nothing here is *built* unless a step that wants it was asked for.
+fn coreAt(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    provenance: Provenance,
+    optimize: std.builtin.OptimizeMode,
+) Core {
+    return .{
+        .b = b,
+        .target = target,
+        .optimize = optimize,
+        .clap_c = translateClap(b, target, optimize),
+        .objc = b.dependency("objc", .{ .target = target, .optimize = optimize }).module("objc"),
+        .provenance = provenance,
+        .shader_path = debugShaderPath(b, optimize),
+    };
 }
 
 /// Which worktree and which commit a binary came from, stamped in so the question
@@ -295,6 +346,12 @@ const Core = struct {
         /// put the rest of src/ out of reach and break the shader import below.
         root: []const u8 = "src/main.zig",
         export_entry: bool = false,
+
+        /// The optimize mode this module is *required* to be built at, as the
+        /// tag name, or "" for a module that follows `-Doptimize`. Only the two
+        /// pinned test artifacts set it; see the comptime block in
+        /// `src/main.zig` that reads it back.
+        pinned_optimize: []const u8 = "",
     };
 
     fn module(self: Core, options: Options) *std.Build.Module {
@@ -323,6 +380,14 @@ const Core = struct {
         // moves, so it costs one full rebuild after a `git worktree move`. What it
         // does add is that two worktrees on the same commit stop sharing an entry.
         build_options.addOption([]const u8, "shader_path", self.shader_path);
+
+        // Not sentinel-terminated either, and compared rather than printed. A
+        // string rather than the enum, because the only consumer is a comptime
+        // `std.mem.eql` against `@tagName(builtin.mode)` and a string needs no
+        // agreement about how `addOption` renders an enum from `std.builtin`.
+        // "" everywhere but the two pinned test artifacts, which is why this
+        // costs no shipping build anything.
+        build_options.addOption([]const u8, "pinned_optimize", options.pinned_optimize);
 
         const mod = b.createModule(.{
             .root_source_file = b.path(options.root),
@@ -486,9 +551,48 @@ fn signClapBundle(
 /// build. Each call to `Core.module` is a separate `createModule`, so these imports
 /// exist in exactly one of the two and that is structural rather than something to
 /// measure afterwards.
-fn addTestStep(core: Core) void {
+///
+/// **Called three times, once per optimize mode the suite is worth running in, and
+/// the three are additive rather than alternatives** (#94). Until then every test
+/// this project had ever run was a Debug build, because `standardOptimizeOption`
+/// declares no default and CI passes no `-Doptimize`, while the shipped CLAP is
+/// `--release=fast`. So the convention that every trust boundary here *refuses*
+/// rather than asserts — `dsp/ring.zig`'s `EmptyCapacity`, `plugin.process`'s frame
+/// count, `gui.zig`'s `max_size` — was checked only in the build where the asserts
+/// were still there to catch a lapse.
+///
+/// | Step           | Mode          | `std.debug.assert` | Safety checks |
+/// | -------------- | ------------- | ------------------ | ------------- |
+/// | `test`         | `-Doptimize`  | live by default    | on by default |
+/// | `test-safe`    | `ReleaseSafe` | live               | on            |
+/// | `test-release` | `ReleaseFast` | **stripped**       | **off**       |
+///
+/// `test` stays mode-following rather than pinned to Debug, so `-Doptimize` still
+/// reaches it and `ReleaseSmall` needs no fourth step. The other two are pinned,
+/// because a step named for a mode that silently followed a flag would be the
+/// failure this whole issue is about, one level up.
+///
+/// **The Debug run cannot be dropped in favour of the release ones**, and that is a
+/// measured fact rather than caution. `gpu/metal/shader.zig`'s "nothing is read from
+/// disk in a test build" asserts `!shader.live`, and `live` is
+/// `builtin.mode == .Debug and !builtin.is_test`: outside Debug the first clause
+/// already decides it, so the `!builtin.is_test` plant that test exists for passes
+/// vacuously in both release steps. Planted, `zig build test` fails and
+/// `zig build test-release` does not. `gpu/iface.zig` records that nothing else
+/// covers it.
+///
+/// **What only `test-release` can see** is work that lives inside a
+/// `std.debug.assert` argument, which Debug and ReleaseSafe both execute and
+/// ReleaseFast compiles away with the assertion. **What only `test-safe` can see**
+/// is behaviour the optimizer exposes that a safety check would still catch, which
+/// is the one thing neither of its neighbours does.
+fn addTestStep(core: Core, options: struct {
+    step: []const u8,
+    description: []const u8,
+    pinned_optimize: []const u8 = "",
+}) void {
     const b = core.b;
-    const mod = core.module(.{});
+    const mod = core.module(.{ .pinned_optimize = options.pinned_optimize });
     mod.addAnonymousImport("measure-trace", .{
         .root_source_file = b.path("scripts/measure-trace"),
     });
@@ -498,7 +602,7 @@ fn addTestStep(core: Core) void {
 
     const tests = b.addTest(.{ .root_module = mod });
     const run = b.addRunArtifact(tests);
-    b.step("test", "Run unit tests").dependOn(&run.step);
+    b.step(options.step, options.description).dependOn(&run.step);
 }
 
 /// Shaders are compiled at runtime from embedded source (ADR 0009), so the

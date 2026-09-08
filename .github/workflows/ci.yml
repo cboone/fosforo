@@ -70,6 +70,48 @@ jobs:
       run-cross-compile: false
       timeout-minutes: 8
 
+  # The same suite the `ci` job runs, in the two optimize modes that job cannot
+  # reach. `run-zig-ci.yml` runs a bare `zig build test`, and `standardOptimizeOption`
+  # declares no default, so every test this project ran before #94 was a Debug
+  # build while the shipped CLAP is `--release=fast`. `test-release` is the mode
+  # that ships, where `std.debug.assert` is gone and the safety checks are off, so
+  # it is the only run in which "every trust boundary refuses rather than asserts"
+  # is a checked property rather than a convention. `test-safe` is the one mode
+  # that optimizes and keeps the checks.
+  #
+  # A job here rather than a step in `ci` above, because that job is a reusable
+  # workflow with no hook for one. Additive rather than a replacement: the Debug
+  # run is what carries `shader.zig`'s "nothing is read from disk in a test build",
+  # which passes vacuously outside Debug. See `addTestStep` in build.zig.
+  #
+  # Two steps in one job rather than two jobs, on the `smoke` job's reasoning: the
+  # checkout and the Zig install are paid once for both, and naming the steps keeps
+  # a failure attributable to a mode.
+  #
+  # macos-latest is not a preference. The module links five Apple frameworks, and
+  # `b.dependency("objc", ...)` panics at configure time on any other OS, so this
+  # cannot move to a cheaper runner (ADR 0001).
+  #
+  # **Unmeasured**, like `python`'s and unlike every other ceiling here, because the
+  # job has never run. 8 is what the four other macOS jobs use. Locally the two
+  # compiles are 9.6 s and 10.7 s cold; re-measure from the Actions API once there
+  # are runs to read and set this at roughly 4x with the figure written in.
+  test-modes:
+    runs-on: macos-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version-file: build.zig.zon
+
+      - name: Run unit tests at ReleaseSafe
+        run: zig build test-safe
+
+      - name: Run unit tests in the mode that ships
+        run: zig build test-release
+
   # Shaders compile at runtime from embedded source, so the build deliberately
   # does not depend on the Metal toolchain (ADR 0009). This job installs it
   # solely to type-check them, which is why it is separate from `ci` above.

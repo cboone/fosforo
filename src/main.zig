@@ -9,6 +9,7 @@
 //! packaged as the `.clap` bundle.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const build_options = @import("build_options");
 const clap = @import("clap/c.zig");
 const plugin = @import("clap/plugin.zig");
@@ -50,6 +51,29 @@ pub const entry: c.clap_plugin_entry_t = .{
 comptime {
     if (build_options.export_entry) {
         @export(&entry, .{ .name = "clap_entry", .linkage = .strong });
+    }
+}
+
+// `zig build test-safe` and `zig build test-release` claim to compile this source
+// at a mode the ordinary test run does not reach (#94). Nothing else would notice
+// if that stopped being true: a step whose optimize mode silently reverted would
+// still build, still run 285 tests, still be green, and would be testing Debug
+// twice. `build.zig` names the mode it pinned, and this is where the artifact
+// checks it was given what was asked for.
+//
+// **Comptime rather than `std.debug.assert`**, on the reason `src/platform/io.zig`
+// already states for its own: an assertion on a runtime path is compiled out of
+// `--release=fast`, which here would be exactly the artifact with the most to
+// prove. A failing comptime assertion is a compile error in every optimize mode.
+//
+// Inert in every other build, because `pinned_optimize` is "" for all of them —
+// `Core.Options` defaults it and only `addTestStep`'s two pinned call sites pass
+// anything else.
+comptime {
+    const pinned = build_options.pinned_optimize;
+    if (pinned.len != 0 and !std.mem.eql(u8, pinned, @tagName(builtin.mode))) {
+        @compileError("this artifact is pinned to " ++ pinned ++ " and was built at " ++
+            @tagName(builtin.mode) ++ "; see addTestStep in build.zig");
     }
 }
 
