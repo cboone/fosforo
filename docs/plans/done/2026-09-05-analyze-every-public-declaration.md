@@ -61,6 +61,8 @@ Two files have no `// Tests` banner and they resolve differently, which is a cor
 
 `src/ring_race.zig` was the one entry that could have surfaced something: its `pub fn main` had never been analysed in a macOS test binary, only compiled for the Linux target the harness runs on. It compiles.
 
+**The rule stops at declared types and must not be extended to aliased ones**, which a review pass measured rather than assumed. Two public file-scope declarations are containers reached by alias rather than declared in place. `iface.Renderer` is re-exported from the backend, which sweeps it itself. `c.c` is the translated CLAP module, and sweeping it **does not compile**: `translate-c` leaves `@compileError` stubs for declarations it could not translate, eight of them, and referencing one detonates it. The failure is `unable to translate C expr: unexpected token '_Nonnull'` on `__nonnull` from `<builtin>`, which is a compiler attribute rather than anything of CLAP's, so a reader would take it for a defect here. `refAllDecls(@This())` reaches `c` as a value and does not descend, which is why the sweep is safe as written and unsafe one line further.
+
 ### Keeping the class closed
 
 The sweep closes the class as of today and nothing stops the twentieth module from arriving without the line. One test in `src/main.zig`, beside the collection list it depends on, closes that:

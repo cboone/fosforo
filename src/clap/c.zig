@@ -61,6 +61,14 @@ test {
     // comptime layout block below sits *after* these tests, so a banner would tell
     // `canary.implementation` to cut above real implementation code. Spelled fully
     // qualified for the same reason the tests below are: this file has no alias.
+    //
+    // **`c` is deliberately not swept, and that is measured rather than tidiness.**
+    // The line below references the translated module as a *value*, which does not
+    // descend into it, and descending does not merely bloat the analysis: it fails
+    // to compile. `translate-c` leaves `@compileError` stubs for declarations it
+    // could not translate, eight of them here, and referencing one detonates it.
+    // The first is `__nonnull` from `<builtin>`, a compiler attribute with nothing
+    // to do with CLAP, so the failure would read as this project's bug (ADR 0004).
     std.testing.refAllDecls(@This());
     std.testing.refAllDecls(feature);
 }
