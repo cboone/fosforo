@@ -45,6 +45,12 @@ The work below does not replace planting. It moves the plants that can be expres
 
 **[#89](https://github.com/cboone/fosforo/issues/89) has landed**, so `main` is no longer red on a required check and the remaining ten are all `test:`, `refactor:` or `ci:` work with nothing currently costing anything. Section 1 below records what it found, including a correction to its own reasoning.
 
+**Eight of the eleven have landed: #89, #91, #92, #94, #95, #96, #97 and #99.** Their sections carry the measured results and, in three cases, a correction to what the section predicted. The pattern across all three is worth stating once here rather than three times below: **an acceptance criterion written against the tree as it was can be falsified by a neighbouring issue landing first.** #96's headroom plant, #97's clock ceiling and #92's `expectClose` defect were each true when filed and each wrong by the time they were run, so every remaining item's acceptance should be re-derived against the tree rather than executed as written.
+
+**#96 and #99 landed close enough together to demonstrate it twice over.** Both corrected the build plan's stale unit-test count and conflicted over that one line, and both arrived at **265** for `main` independently — #99 by counting it, #96 by measuring a baseline before adding to it. That agreement is the durable part; the number itself has moved three times since, through #94, #91 and #96 in turn, which is the anchored-versus-present-tense distinction `.github/docs.instructions.md` describes playing out in one row of one table. **Re-measure it rather than adding to whatever it currently reads.**
+
+The two remaining are [#93](https://github.com/cboone/fosforo/issues/93) and [#98](https://github.com/cboone/fosforo/issues/98).
+
 ## 1. Give the trace half's frame wait a deadline rather than a spin count
 
 **Issue:** [#89](https://github.com/cboone/fosforo/issues/89). **Type:** `fix:`. **Landed**, with its own plan at [`2026-09-04-bound-the-trace-frame-wait-by-time.md`](../done/2026-09-04-bound-the-trace-frame-wait-by-time.md). It went first because it was the only item here currently costing something.
@@ -295,6 +301,8 @@ The watcher, which is stubbed out in ReleaseFast too. That is item 5. And nothin
 
 **Issue:** [#95](https://github.com/cboone/fosforo/issues/95). **Type:** `test:`. Cheap, and it closes a class rather than an instance.
 
+**Landed.** Plan: [`2026-09-05-analyze-every-public-declaration.md`](../done/2026-09-05-analyze-every-public-declaration.md). Every module a test build compiles carries a sweep now, `palette.zig` among them, so the sentence below saying it does not is the state before rather than the state. The rest of the shape held: private declarations and containers nested more than one level deep stay lazy in both builds, which the plan records with the plants that measured it.
+
 ### The gap
 
 `AGENTS.md` records that Zig analyzes lazily per declaration, so a `pub fn` nothing reaches is never type-checked however the file was imported, and that `Ring.read` and `Ring.capacity` were in that state. The class is still open, and there is now exactly one live instance.
@@ -310,6 +318,8 @@ Two parts, and the first is what closes the class:
 - Add `testing.refAllDecls(@This())` to the test section of every module that lacks one. Six modules have it; ten do not, including `palette.zig`, `iface.zig`, `measure.zig`, `ring.zig`, `plugin.zig` and `gui.zig`. It forces analysis of every public declaration in a test build at the cost of one line each.
 - Give `dominantToTonemapped` the test that makes it mean something: assert it inverts `paletteAt`'s dominant channel across the byte range. That is the executable link between the Zig model and the Python tool that currently exists only as a restated constant, and it belongs with item 8.
 
+  **It landed with item 8, as written, and through the closed form rather than `paletteAt`.** The table is 0.05 bytes off the closed form by its own test, which is enough to cross a rounding boundary, and its agreement with the closed form is already asserted — so routing the round trip through it would have added noise rather than reach.
+
 ### Acceptance
 
 - Plant a type error in `dominantToTonemapped` and confirm `zig build test` now fails, where today it builds clean everywhere.
@@ -318,6 +328,10 @@ Two parts, and the first is what closes the class:
 ## 8. Assert the transfer function's defining properties
 
 **Issue:** [#96](https://github.com/cboone/fosforo/issues/96). **Type:** `test:`. Small, and it reaches the claims ADR 0019 rests on.
+
+**Landed.** Plan: [`2026-09-08-assert-the-transfer-functions-defining-properties.md`](../done/2026-09-08-assert-the-transfer-functions-defining-properties.md). Five tests, the suite from 265 named to 270, and `zig build smoke-trace`'s transcript byte-identical across the branch.
+
+**The acceptance below is wrong about which plant closes something, and the correction is the useful part of this item.** A white point wrong by a factor of ten fires **six** tests, three of them pre-existing, because [#56](https://github.com/cboone/fosforo/issues/56) added a steady-state assertion that requires byte 255 at `1 / (1 - decay)` and #92 added its counterpart in `verdict.zig`. The quote it rests on was written before either existed. What was genuinely uncovered is the *other* constant in the same expression: the `1e-6` the `@max` clamps at, restated in Zig, MSL and Python and pinned in none. Moving it by a factor of ten in all three at once left the suite at 285 of 285 passing. It is now `palette.min_dwell`, pinned in both constants tests, and the resulting `8e5` is pinned as a literal — after which that plant fails exactly one test.
 
 ### The gap
 
@@ -339,6 +353,8 @@ Plant a white point wrong by a factor of ten, which `docs/plans/done/2026-08-30-
 ## 9. The remaining cheap assertions
 
 **Issue:** [#97](https://github.com/cboone/fosforo/issues/97). **Type:** `test:`. One issue with a checklist, because splitting eleven small pure tests across eleven PRs is worse than the alternative.
+
+**Landed.** Plan: [`2026-09-05-close-the-eleven-cheap-assertions.md`](../done/2026-09-05-close-the-eleven-cheap-assertions.md). Fourteen tests across eight files, every row planted. Two things it got wrong are recorded there and are worth carrying: a one-second ceiling on `monotonicNanos` did not catch a scale error and was replaced by a ratio against a second clock, and two plants did not compile, which a grep for failures read as a pass. **A plant that does not compile is not a passing plant**, and the build's exit code rather than the shape of its output is what separates them.
 
 | Target                                       | Where                              | Why it is not covered now                                                                    |
 | -------------------------------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------- |
@@ -382,7 +398,7 @@ The recommendation is the second, and the third is a defensible outcome that sho
 
 ## 11. Lint the workflows
 
-**Issue:** [#99](https://github.com/cboone/fosforo/issues/99). **Type:** `ci:`.
+**Issue:** [#99](https://github.com/cboone/fosforo/issues/99). **Type:** `ci:`. **Landed**, with its own plan at [`2026-09-08-lint-the-workflows-in-ci.md`](../done/2026-09-08-lint-the-workflows-in-ci.md), which carries its results. Noted here by #96 rather than by #99 itself, because the two were open at the same time and this is the row that was left unmarked.
 
 `.github/workflows/ci.yml` is 46 KB and nothing checks it. `actionlint` appears in the phase 1 exit criteria in the build plan and in no workflow, so it has been a local step at best. On the `shell`, `python` and `typos` jobs' precedent: Ubuntu, a pinned binary, a committed SHA256, and its own job rather than a step inside an existing one.
 

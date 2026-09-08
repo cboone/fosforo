@@ -3511,6 +3511,7 @@ test "the screenshot tool still holds this project's numbers" {
         "BACKGROUND_BYTES = ",
         "CORE_EXPONENT = ",
         "WHITE_HEADROOM = ",
+        "MIN_DWELL = ",
         "TAU_NS = ",
     }) |needle| {
         try testing.expectEqual(@as(usize, 1), std.mem.count(u8, script, needle));
@@ -3532,6 +3533,14 @@ test "the screenshot tool still holds this project's numbers" {
 
     const headroom = scalarAfter(script, "WHITE_HEADROOM = ") orelse return error.NotFound;
     try testing.expectEqual(palette.white_headroom, @as(f32, @floatCast(headroom)));
+
+    // The white point's other ingredient, and the one that had no pin anywhere
+    // until #96. `WHITE_HEADROOM` alone does not determine where the clamp lands:
+    // `whitePoint(1)` is `white_headroom / min_dwell`, so the published 8e5 moves
+    // by a factor of ten if either constant does, and this script computes its own
+    // `white_point` from both.
+    const dwell = scalarAfter(script, "MIN_DWELL = ") orelse return error.NotFound;
+    try testing.expectEqual(palette.min_dwell, @as(f32, @floatCast(dwell)));
 
     // **The one integer here, and comparing it as one is the point.** #56
     // replaced the script's per-frame `DECAY = 0.9` with the time constant behind
@@ -3575,17 +3584,37 @@ test "the screenshot tool still holds this project's numbers" {
 }
 
 test "the shader's look constants and the model's are the same numbers" {
-    // The two literals #60 left in MSL, so they stay editable while a host is
+    // The literals #60 left in MSL, so they stay editable while a host is
     // running (#61) rather than needing a rebuild. Everything else about the look
     // is a table `src/gpu/palette.zig` builds and this file uploads, which is one
     // definition rather than two; these are the residue, and the residue is what
     // needs a test.
     //
-    // A reloaded shader gets neither of these checked, which is #77's row and is
+    // A reloaded shader gets none of these checked, which is #77's row and is
     // the price of editing a look live. The rule that makes it survivable: rerun
     // `zig build test` after the last save, before quoting any number.
+    //
+    // **The occurrence counts are what make the anchors mean anything**, on the
+    // script test's own reasoning: `scalarAfter` takes the first match, so a
+    // second declaration whose name ended with one of these would silently
+    // repoint the assertion. `min_dwell` is the live case rather than a
+    // hypothetical, since `tonemap` also declares a local named `dwell`; the
+    // needle carries the underscore so it matches the declaration alone, and this
+    // is what asserts that rather than leaving it read once and trusted.
+    inline for (.{ "white_headroom = ", "min_dwell = ", "palette_row = " }) |needle| {
+        try testing.expectEqual(@as(usize, 1), std.mem.count(u8, shader_source, needle));
+    }
+
     const headroom = scalarAfter(shader_source, "white_headroom = ") orelse return error.NotFound;
     try testing.expectEqual(palette.white_headroom, @as(f32, @floatCast(headroom)));
+
+    // The white point's other half, unpinned on both sides until #96. The shader
+    // computes `white_headroom / max(1 - decay, min_dwell)` and the model computes
+    // the same thing; a factor of ten in either constant moves the clamp to a
+    // white point the picture can never arrive at, and the deposit brightness
+    // every other assertion reads would still look plausible.
+    const dwell = scalarAfter(shader_source, "min_dwell = ") orelse return error.NotFound;
+    try testing.expectEqual(palette.min_dwell, @as(f32, @floatCast(dwell)));
 
     const row = scalarAfter(shader_source, "palette_row = ") orelse return error.NotFound;
     try testing.expectEqual(

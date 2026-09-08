@@ -418,6 +418,26 @@ pub const white_headroom: f32 = 0.8;
 /// shader's `palette_row` by the constants test.
 pub const shipped_palette: Palette = .green;
 
+/// The smallest dwell fraction `whitePoint` will divide by.
+///
+/// `1 - decay` is the fraction of a dwelling beam's steady state one frame
+/// contributes, and at a decay of exactly one it is zero. **This bound is not
+/// what the arithmetic needs, it is what a hot-reloaded shader needs**: a
+/// fragment buffer no reloaded source declares reads zeros, so `decay` arrives as
+/// 0 at one end, and an uninitialised or stale one can arrive as 1 at the other.
+/// The first is loud and correct — the white point falls to `white_headroom` and
+/// everything from one deposit up blows out white. The second would be a division
+/// by zero and a NaN the format turns into garbage, so it is clamped instead, and
+/// the shoulder term then vanishes and this degrades to plain Reinhard.
+///
+/// **Named rather than inline because it is restated in three languages**, here,
+/// in `shaders/scope.metal` and in `scripts/measure-trace`, and a pin needs a name
+/// to anchor on: `scalarAfter` in `src/gpu/metal/renderer.zig` matches a
+/// declaration, so a literal inside a `max(...)` call is reachable by nothing. It
+/// is also what makes the resulting 8e5 a figure two docstrings and `AGENTS.md`
+/// can quote, and a test can hold, rather than an arithmetic accident.
+pub const min_dwell: f32 = 1e-6;
+
 /// Where the tonemap saturates, in deposits.
 ///
 /// **The brightness axis's rail**, and the same kind of object as
@@ -429,7 +449,8 @@ pub fn whitePoint(decay: f32) f32 {
     // without a conditional. A decay of exactly 1 is a phosphor that never fades,
     // whose steady state is unbounded; the clamp sends the white point to 8e5,
     // which makes the shoulder term vanish and leaves plain Reinhard rather than
-    // a division by zero.
+    // a division by zero. `min_dwell` above carries the rest of that argument and
+    // is what the 8e5 is made of, along with `white_headroom`.
     //
     // **Reachable through this file and not through the render loop**, which is
     // worth separating because the two answers differ. `decayOver(0)` is exactly
@@ -446,7 +467,7 @@ pub fn whitePoint(decay: f32) f32 {
     // of that argument, including the opposite end: at a decay of zero the white
     // point falls to `white_headroom` and everything above one deposit blows out
     // white, which is loud and is the right failure.
-    return white_headroom / @max(1.0 - decay, 1e-6);
+    return white_headroom / @max(1.0 - decay, min_dwell);
 }
 
 /// Unbounded linear energy compressed into [0, 1].
@@ -591,7 +612,6 @@ test "the background's linear value is the byte it has to show" {
     try testing.expectEqual(@as(u8, 48), srgbByte(0.03));
 }
 
-/// A palette table for a test, freed by the caller.
 /// A palette table for a test, freed by the caller.
 fn paletteScratch() ![]f32 {
     const table = try testing.allocator.alloc(f32, palette_floats);
@@ -830,6 +850,194 @@ test "an interval longer than a refresh is not believed" {
     try testing.expect(tonemap(1.0, resumed) - tonemap(1.0, steady) < 0.05);
 }
 
+/// The three decays the tonemap tests below are stated at.
+///
+/// The zero-decay end, the shipped rate, and the clamp: the two ends of the range
+/// and the one value that actually ships, which put the white point at 0.8,
+/// 7.999998 and 8e5. Written as a helper rather than repeated, because the
+/// defining property has to hold at all three or it is a property of one number
+/// rather than of the curve.
+///
+/// **Decays rather than white points, and that is not a formality.** `resolved`
+/// takes a decay and derives the white point itself, so a test holding only `w`
+/// cannot ask it anything about `w`: passing a fixed decay beside a varying `w`
+/// silently asks whether a large energy resolves white at a *small* white point,
+/// which is true of any monotone curve and of plain Reinhard too. This helper
+/// returned white points until #96's review pass caught exactly that.
+fn decaysUnderTest() [3]f32 {
+    return .{ 0.0, decayOver(frameNanos(60)), 1.0 };
+}
+
+test "the tonemap reaches one exactly at the white point rather than approaching it" {
+    // **The claim extended Reinhard was chosen for**, asserted by nothing until
+    // #96 although ADR 0019 rests on it: "Reinhard reaches its white point exactly
+    // at `e = w` while the steady state is only approached, so a white point set
+    // at the asymptote would never arrive and the core would be pale green
+    // forever." Plain Reinhard passes every other test in this file.
+    const table = try paletteScratch();
+    defer testing.allocator.free(table);
+
+    for (decaysUnderTest()) |decay| {
+        const w = whitePoint(decay);
+
+        // No energy is no light, exactly, at every white point. This is also what
+        // makes the background test below a statement about the whole resolve
+        // rather than about `paletteAt` alone.
+        try testing.expectEqual(@as(f32, 0.0), tonemap(0.0, w));
+
+        // **Not `expectEqual`, and the reason is the same one `srgbEncode(1.0)`
+        // carries above.** The identity is `w(1 + w/w²)/(1 + w)`, which is exactly
+        // one in real arithmetic and lands bit-exact in f32 at 0.8 and at 8.0 and
+        // reads 0.9999999 at the shipped 7.999998 and 0.99999994 at the 8e5 clamp.
+        // Asserting the float exactly would be asserting a property of binary32;
+        // the byte below is the claim that means something to a viewer.
+        try testing.expectApproxEqAbs(@as(f32, 1.0), tonemap(w, w), 1e-6);
+
+        // The direction that keeps the line above non-vacuous. An unconditional
+        // `return 1.0` satisfies the approximate equality and fails here.
+        //
+        // **A tenth below the rail rather than a hundredth, and the margin is
+        // arithmetic rather than taste.** `f(kw)` is `(kw + k²) / (1 + kw)`, which
+        // is below one by `(1 - k²) / (1 + kw)`; at the 8e5 clamp that has to clear
+        // one f32 step below one, 6e-8, or the quotient rounds to exactly 1.0 and
+        // this arm fails on binary32 rather than on the curve. At `k = 0.99` the
+        // shortfall is 0.0199 against a required 0.0475 — it is on the wrong side
+        // and passed only by the luck of the rounding. At `k = 0.9` it is 0.19
+        // against 0.0432, four times clear. Found by planting `min_dwell` at 1e-5,
+        // which moves the clamp to 8e4 and lands the old margin on the other side.
+        try testing.expect(tonemap(w * 0.9, w) < 1.0);
+
+        // And the property as the display shows it, which is what "the core would
+        // be pale green forever" actually means: at the white point every channel
+        // of the shipped gradient resolves to 255, so the core is white rather
+        // than the tint's own brightest value.
+        //
+        // **The decay and the energy have to be the matching pair**, which is why
+        // the loop iterates decays: `resolved` derives its own white point, so
+        // passing a fixed decay beside a varying `w` would ask whether energy `w`
+        // resolves white at 0.8, which plain Reinhard also satisfies. This asks
+        // whether `whitePoint(decay)` deposits resolve white at that same decay,
+        // and planted against plain Reinhard it fails on its own.
+        for (resolved(table, shipped_palette, decay, w)) |channel| {
+            try testing.expectEqual(@as(u8, 255), channel);
+        }
+    }
+}
+
+test "the tonemap is monotone in energy and rails at the white point rather than above it" {
+    // The `@min` arm, which nothing reached before #96, and the monotonicity the
+    // docstring claims. Both are properties of the curve rather than of a
+    // constant, so they are swept rather than sampled.
+    //
+    // **The sweep catches a missing clamp too, and it does so incidentally**,
+    // which is worth knowing before anyone reads it as the rail's assertion.
+    // Measured by removing the `@min` and both rail arms below: the sweep still
+    // fails, at `value >= previous`, because above the rail the unclamped curve is
+    // not monotone *in f32*. At the 8e5 white point the shoulder factor is
+    // `1 + e / w²`, about `1 + 1.25e-6` at the top of the attainable range, and it
+    // advances in steps of one ulp of 1.0 while the quotient it multiplies moves
+    // by less than that per sample — so the result jitters down by an ulp here and
+    // there. The clamp flattens all of it to exactly 1.0 and the jitter never
+    // reaches a pixel. So this arm is a real property of the shipping function and
+    // is *not* the thing that states where the rail is; the two arms at the bottom
+    // of the loop are.
+    for (decaysUnderTest()) |decay| {
+        const w = whitePoint(decay);
+
+        var previous: f32 = -1.0;
+        var i: usize = 0;
+        while (i <= 4096) : (i += 1) {
+            const energy = w * 4.0 * @as(f32, @floatFromInt(i)) / 4096.0;
+            const value = tonemap(energy, w);
+            try testing.expect(value >= previous);
+            try testing.expect(value <= 1.0);
+            previous = value;
+        }
+
+        // **The rail is at `w` and not a fraction above it.** `f(e) - 1` reduces
+        // to `(e²/w² - 1) / (1 + e)`, so the unclamped curve crosses one exactly
+        // at the white point and the clamp is what holds it there afterwards.
+        // Stated with the strict inequality below it, because either alone is
+        // satisfied by a curve that rails in the wrong place.
+        //
+        // **`e = w` is deliberately not in this list, and finding that out is
+        // worth the comment.** It is the boundary rather than a case the `@min`
+        // reaches: at the 8e5 clamp the identity evaluates to 0.99999994, one ulp
+        // under one, so an exact assertion there fails on binary32 rather than on
+        // the curve. The test above pins that end approximately and by the byte;
+        // this one starts strictly above it.
+        for ([_]f32{ 1.5, 2.0, 100.0, 1e6 }) |over| {
+            try testing.expectEqual(@as(f32, 1.0), tonemap(w * over, w));
+        }
+        // A tenth below, for the reason the test above states in full: nearer than
+        // about a twentieth of the rail, the curve at the 8e5 clamp is closer to
+        // one than f32 can represent, so a tighter margin asserts a rounding mode.
+        try testing.expect(tonemap(w * 0.9, w) < 1.0);
+    }
+}
+
+test "the white point is the dwell asymptote, and the clamp is the phosphor that never fades" {
+    // **The two ends of `whitePoint`'s range, neither of which anything called
+    // before #96.** It was reached only through `resolved`, at ordinary decays, so
+    // the clamp the `@max` exists for and the zero-decay end its docstring argues
+    // about were both evaluated by nothing.
+
+    // The zero-decay end. A phosphor with no persistence has a dwell asymptote of
+    // one deposit, so the white point falls to the headroom itself and everything
+    // from `white_headroom` up blows out white — which the shader's comment calls
+    // "loud and obviously wrong, which is the right failure" for the hot-reload
+    // case that produces it.
+    // `expectEqual` on the identity and a hundredth for the margin, both of which
+    // the tonemap tests above avoid on purpose. Neither is a contradiction: at
+    // this white point the identity is bit-exact, and the shortfall a hundredth
+    // below the rail is 0.0111 against the 1.1e-7 f32 needs here, five orders of
+    // magnitude clear. It is the 8e5 clamp that makes those two claims delicate,
+    // and this is the other end of the range.
+    try testing.expectEqual(white_headroom, whitePoint(0.0));
+    try testing.expectEqual(@as(f32, 1.0), tonemap(white_headroom, whitePoint(0.0)));
+    try testing.expectEqual(@as(f32, 1.0), tonemap(1.0, whitePoint(0.0)));
+    try testing.expect(tonemap(white_headroom * 0.99, whitePoint(0.0)) < 1.0);
+
+    // The derivation, at ADR 0019's four rates. Asserted twice over: against the
+    // dwell asymptote it is defined as, which is the claim, and against the
+    // figures that ADR's table publishes, which is what makes a moved constant
+    // move a number a reader can find rather than only a relationship they cannot.
+    const rates = [_]u64{ 48, 60, 120, 240 };
+    const published = [_]f32{ 6.483159, 7.999998, 15.589474, 30.773650 };
+    for (rates, published) |hz, want| {
+        const decay = decayOver(frameNanos(hz));
+        const steady = 1.0 / (1.0 - decay);
+        try testing.expectApproxEqRel(white_headroom * steady, whitePoint(decay), 1e-6);
+        try testing.expectApproxEqAbs(want, whitePoint(decay), 1e-4);
+    }
+
+    // **The clamp, and the figure it produces.** Pinned as the literal 8e5 rather
+    // than as `white_headroom / min_dwell`, deliberately: deriving it from the two
+    // constants would be a restatement that moves with them, and both are exactly
+    // what this is guarding. 8e5 is the number this file's own docstrings and
+    // `AGENTS.md` quote, so a factor of ten in either constant has to move a
+    // figure a reader can already find.
+    //
+    // Measured before this existed: moving `min_dwell` from 1e-6 to 1e-5 in all
+    // three languages at once left the whole suite at 285 of 285 passing.
+    try testing.expectApproxEqRel(@as(f32, 8e5), whitePoint(1.0), 1e-6);
+
+    // Both spellings of a decay of one, because they arrive by different routes.
+    // `decayOver(0)` is exactly 1.0, so any caller holding a zero interval lands
+    // here — which is why `Renderer.frame` stands in one reference frame rather
+    // than zero. The literal is the value a hot-reloaded shader's unbound uniform
+    // can hand the other copy of this arithmetic.
+    try testing.expectEqual(@as(f32, 1.0), decayOver(0));
+    try testing.expectEqual(whitePoint(1.0), whitePoint(decayOver(0)));
+
+    // And past it, which is the end nothing has ever evaluated: a decay above one
+    // makes `1 - decay` negative, and the clamp has to be a floor rather than a
+    // magnitude or the white point comes back negative and the tonemap's shoulder
+    // silently flips sign.
+    try testing.expectEqual(whitePoint(1.0), whitePoint(2.0));
+    try testing.expect(whitePoint(2.0) > 0.0);
+}
+
 test "the white point holds a deposit's brightness steady across refresh rates" {
     // **ADR 0019's table, turned into an assertion.** The white point is
     // `white_headroom / (1 - decay)` precisely so that the dwell asymptote and the
@@ -863,5 +1071,91 @@ test "the white point holds a deposit's brightness steady across refresh rates" 
         const steady = 1.0 / (1.0 - decay);
         const got = resolved(table, shipped_palette, decay, steady);
         for (got) |channel| try testing.expectEqual(@as(u8, 255), channel);
+    }
+}
+
+test "the resolve of no energy is the background the drawable shows" {
+    // **The model half of `verdict.BackgroundNotThePaletteAtZero`**, which asserts
+    // the same equality against a running shader and could not assert this one:
+    // there it compares the picture's corner pixel against this model, so the two
+    // agree by construction whatever `background_bytes` says. This compares the
+    // model against the constant, which is the half that was missing.
+    //
+    // Different from "every gradient starts at the background and ends at white"
+    // above, and the difference is the whole point: that one calls `paletteAt` at
+    // zero directly, while this runs zero energy through `whitePoint` and
+    // `tonemap` first. An unlit pixel is only the background because
+    // `tonemap(0, w)` is exactly zero at every white point a frame can produce.
+    const table = try paletteScratch();
+    defer testing.allocator.free(table);
+
+    // The two clamp ends and the rate that ships. A decay of 1 is included
+    // because that is where `whitePoint` is largest, so the tonemap's shoulder is
+    // at its most nearly absent, and zero energy still has to land on the byte
+    // `find_drawable` looks for.
+    for ([_]f32{ 0.0, decayOver(frameNanos(60)), 1.0 }) |decay| {
+        for (std.enums.values(Palette)) |p| {
+            try testing.expectEqual(background_bytes, resolved(table, p, decay, 0.0));
+        }
+    }
+}
+
+test "the dominant channel inverts exactly, which is what measure-trace does to a capture" {
+    // The inverse of the test above it, and the one declaration in this file that
+    // no build type-checked until #95 and nothing asserted until #96.
+    // `scripts/measure-trace` mirrors it in `tonemapped_from_dominant` and reads
+    // every published intensity in this project through it.
+    const table = try paletteScratch();
+    defer testing.allocator.free(table);
+
+    for (std.enums.values(Palette)) |p| {
+        const row = @intFromEnum(p);
+        const c = p.dominant();
+
+        // **The structural gap, and it is the sharpest thing here.** This side
+        // picks the channel with a hand-written switch; the Python side picks it
+        // with `np.argmax(tint)`. Nothing tied the two, and the existing test
+        // above compares with `<=`, which a tie satisfies either way — so the
+        // neutral gradient, whose three components are all exactly 1.0, is
+        // precisely where a disagreement would hide. `argmax` returns the *first*
+        // maximum, so that is what is asserted.
+        var first_max: usize = 0;
+        for (tints_srgb[row], 0..) |component, channel| {
+            if (component > tints_srgb[row][first_max]) first_max = channel;
+        }
+        try testing.expectEqual(first_max, c);
+
+        // Every byte the drawable can show at or above the background, inverted
+        // and re-encoded. Below the background there is no preimage: the inverse
+        // goes negative and `paletteEntry` clamps, so the round trip is only
+        // defined from the background's own byte upward.
+        //
+        // **Through the closed form rather than the table**, because the table is
+        // 0.05 bytes off it by its own test, which is enough to cross a rounding
+        // boundary; and the table's agreement with the closed form is already
+        // asserted, so routing through it would add noise rather than reach.
+        //
+        // `expectEqual` rather than a tolerance, and that is measured rather than
+        // hoped for: over the 1,001 samples this loop covers, the worst error is
+        // 1.5e-5 of a byte and the closest any value comes to a `.5` rounding
+        // boundary is 0.49998. Four orders of magnitude of margin.
+        var byte: u16 = background_bytes[c];
+        while (byte <= 255) : (byte += 1) {
+            const t = dominantToTonemapped(p, @intCast(byte));
+            const back = paletteEntry(tints_srgb[row], t)[c];
+            try testing.expectEqual(@as(u8, @intCast(byte)), srgbByte(back));
+        }
+
+        // The two anchors, stated separately because the sweep above would pass
+        // for an inverse that was off by a constant the re-encode undid. Zero is
+        // approximate at 1e-6 and measures 1.2e-10: the background's byte decodes
+        // to the exact linear value `backgroundLinear` returns, and the residue is
+        // the subtraction of two nearly equal f32 values.
+        try testing.expectApproxEqAbs(
+            @as(f32, 0.0),
+            dominantToTonemapped(p, background_bytes[c]),
+            1e-6,
+        );
+        try testing.expectEqual(@as(f32, 1.0), dominantToTonemapped(p, 255));
     }
 }

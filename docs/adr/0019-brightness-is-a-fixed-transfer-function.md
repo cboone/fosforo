@@ -30,6 +30,8 @@ It is `white_headroom / (1 - decay)` rather than a constant, and that is not a t
 
 The headroom is below one for a reason that is easy to economise away. Extended Reinhard reaches its white point exactly at `e = w` while the steady state is only *approached*, so a white point set at the asymptote would never arrive and the core would be pale green forever.
 
+**That sentence is now an assertion too** ([#96](https://github.com/cboone/fosforo/issues/96)), and it was the last claim in this ADR standing on prose alone. `src/gpu/palette.zig` holds `tonemap(w, w)` at one and the resolved bytes at 255 across the three white points a frame can produce, and holds it under one below the rail so the pair is not satisfied by a curve that returns one everywhere. Plain Reinhard fails it. **Two things planting it established that reading it did not.** Plain Reinhard fails three other tests as well, two of them pre-existing, so the acceptance criterion that predicted "every existing test passes" was written against a tree that #56 and #92 had since changed. And the identity is not bit-exact in f32 at every white point — it reads one ulp under one at the shipped 7.999998 and at the 8e5 clamp — so what is asserted exactly is the byte, which is the thing a viewer sees.
+
 ### The drawable is sRGB and the arithmetic is linear light
 
 `MTLPixelFormatBGRA8Unorm_sRGB`, so the render-output stage applies the transfer function and the shader writes linear values. Both of the shader's remaining literals are therefore the *inverse* of that function, and the background is spelled as the bytes it must show — `float3(5, 5, 8) / (255 * 12.92)` — because bytes are what depends on it: `scripts/measure-trace` locates the drawable inside a whole-window capture by looking for exactly `RGB(5, 5, 8)`.
@@ -46,7 +48,7 @@ The lookup is indexed with `access::read` and interpolated by hand rather than s
 
 ## Consequences
 
-**The hot core is emergent and is now executed rather than claimed.** `zig build smoke-trace` drives one deposit and thirty, and reads `RGB(75, 189, 96)` and `RGB(255, 255, 255)` off the picture. Nothing draws a core.
+**The hot core is emergent and is now executed rather than claimed.** `zig build smoke-trace` drives one deposit and thirty, and reads `RGB(143, 224, 154)` and `RGB(255, 255, 255)` off the picture. Nothing draws a core. **The first figure read `RGB(75, 189, 96)` when this was written and was corrected at [#96](https://github.com/cboone/fosforo/issues/96)**: [#57](https://github.com/cboone/fosforo/issues/57) gave the beam area and a density scale, so one deposit became 2.6 deposits of overlap and got brighter. The claim is untouched by that; only the number moved.
 
 **The model and the picture agree exactly.** `checkResolve` predicts all three channels of every pixel from one number and reports the worst channel off by **zero** across 518,400 pixels, through the curve, the interpolation and the hardware's encode. That is stronger than the per-channel comparison it replaces, because it asserts the picture's chroma follows from the intensity, which is the palette's whole claim.
 
