@@ -592,7 +592,6 @@ test "the background's linear value is the byte it has to show" {
 }
 
 /// A palette table for a test, freed by the caller.
-/// A palette table for a test, freed by the caller.
 fn paletteScratch() ![]f32 {
     const table = try testing.allocator.alloc(f32, palette_floats);
     buildPalette(table);
