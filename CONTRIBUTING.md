@@ -26,6 +26,7 @@ Two things are worth knowing before you start. First, the project is deliberatel
 - `shfmt` and `shellcheck`, only if you are changing shell scripts. CI pins 3.13.1 and 0.11.0
 - `typos`, for the spell check CI runs over the whole tree. CI pins 1.49.0; `brew install typos-cli`
 - `ruff`, only if you are changing `scripts/measure-trace`, the one Python file here. CI pins 0.16.5; `brew install ruff`. Running the script itself needs [`uv`](https://docs.astral.sh/uv/) rather than a Python install, since its shebang resolves its own dependencies
+- `actionlint`, only if you are changing anything under `.github/`. CI pins 1.7.12; `brew install actionlint`. It wants `shellcheck` on `PATH` as well, or it skips the `run:` blocks without saying so
 
 ### Getting Started
 
@@ -145,6 +146,7 @@ machine, so weakening it is caught locally even though the sanitizer is not
 - Keep `shellcheck` clean: `git ls-files -z | xargs -0 shfmt -f | xargs shellcheck`
 - Keep `typos` clean by running it before committing. It reads `typos.toml`, which allowlists words the tool is wrong about and ignores backticked commit SHAs. Add to that file rather than rewording a correct word, and if a document has to spell out a misspelling in order to explain it, wrap that part in `<!-- spellchecker:off -->` and `<!-- spellchecker:on -->`
 - Keep `ruff` clean if you touched `scripts/measure-trace`: `ruff format --check . && ruff check .`. That file has no `.py` extension, so `ruff.toml`'s `extend-include` is the only reason ruff can see it at all, and **a vacuous pass is the failure to watch for**: ruff reports discovering nothing as success, so check that `ruff format --check` says it read 1 file rather than 0. `ruff.toml` is the authority on its style, and the `[measure-trace]` section in `.editorconfig` restates it by hand, because ruff does not read that file
+- Keep `actionlint` clean if you touched a workflow or the composite action: run `actionlint` from the repository root, with no arguments, which is what CI runs. Two silent skips to know about. It finds local actions through the **git** project root, so it must run inside a checkout rather than an exported tree, and **without `shellcheck` on `PATH` it does not lint `run:` blocks at all and still exits 0**. It also cannot check `with:` inputs on a SHA-pinned action or on a remote reusable workflow, which is most of what this repository uses, so a bad input name is caught by reading the run's warnings and by nothing else
 - Keep Metal types out of anything above `src/gpu/iface.zig`. That seam is load-bearing; see [ADR 0005](docs/adr/0005-metal-behind-a-renderer-seam.md)
 - Anything reachable from the audio thread must not allocate, lock, or make a syscall
 
