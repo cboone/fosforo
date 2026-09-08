@@ -682,6 +682,43 @@ test "every level at or above the rail lands on one row" {
     try testing.expect(expectedRow(1.0, height) > railRow(height) + 1.0);
 }
 
+// The mirror of the test above, which drives four positive levels and would
+// pass with the negative bound of the clamp set to any wrong constant. Written
+// against a local restatement rather than a `railRowBelow` sibling to `railRow`:
+// that one has a caller outside the tests (`smoke.zig`'s `checkRail`), and a
+// `pub fn` whose only reader is one test in its own file is the shape #95 is
+// open about. The restatement is bit-exact rather than approximate, because
+// `1.0 - (-x)` and `1.0 + x` are the same operation on the same bits.
+test "the rail below the centre line clamps as tightly as the one above it" {
+    const height: usize = 540;
+    const rail_below = (1.0 + iface.trace_rail) / 2.0 * @as(f32, @floatFromInt(height)) - 0.5;
+
+    for ([_]f32{ -1.111, -2.0, -8.0, -1000.0 }) |under| {
+        try testing.expectEqual(rail_below, expectedRow(under, height));
+    }
+
+    // Approached from just inside, for the reason the positive test gives.
+    const threshold = iface.trace_rail / iface.trace_full_scale;
+    try testing.expectEqual(rail_below, expectedRow(-threshold * 1.001, height));
+
+    // And the direction that keeps it from going vacuous, which is worth more
+    // here than above: a negative bound set to `trace_full_scale` rather than
+    // `trace_rail` moves this row from 534.1 to 512.5 and nothing else here
+    // would notice.
+    try testing.expect(expectedRow(-1.0, height) < rail_below - 1.0);
+
+    // The two rails straddle the centre by the same distance. Stated with a
+    // tolerance rather than as an equality because the sum is only exact in
+    // real arithmetic: in f32 it misses `height - 1` at h = 5 and h = 65, and
+    // an exact assertion here would be a test of rounding rather than of the
+    // clamp, which is the trap the positive test's own comment names.
+    try testing.expectApproxEqAbs(
+        @as(f32, @floatFromInt(height)) - 1.0,
+        railRow(height) + rail_below,
+        1e-4,
+    );
+}
+
 test "the rail sits inside the drawable at every geometry the editor permits" {
     // The smallest editor is 270 points tall, at a backing scale of 1.
     try testing.expect(railRow(270) >= 1.0);
@@ -926,6 +963,42 @@ test "a sine window holds whole cycles across the drawn span" {
     // edge on half the counts.
     try testing.expectApproxEqAbs(@as(f32, 0.0), window[0], 1e-6);
     try testing.expectApproxEqAbs(@as(f32, 0.0), window[window.len - 1], 1e-5);
+}
+
+// Both builders divide by a span of `out.len - 1`, so a window of one sample
+// divides by zero and a window of none reads past its own end. Both already
+// have an arm for it and no test reached either, which is what these two close.
+// Split by length rather than by builder, because the property is about the
+// window and not about which function filled it.
+//
+// A sentinel-filled buffer with the slice taken out of the middle of it, so
+// each test says "this slot, not the buffer" as well as "this value".
+test "a one-sample window holds the value it starts at rather than a nan" {
+    const sentinel: f32 = -7.0;
+
+    var ramped: [4]f32 = @splat(sentinel);
+    ramp(ramped[0..1], -1.0, 1.0);
+    try testing.expectEqual(@as(f32, -1.0), ramped[0]);
+    try testing.expectEqual(sentinel, ramped[1]);
+
+    var sined: [4]f32 = @splat(sentinel);
+    sine(sined[0..1], 2.0, 1.0);
+    try testing.expectEqual(@as(f32, 0.0), sined[0]);
+    try testing.expectEqual(sentinel, sined[1]);
+}
+
+test "an empty window is left alone rather than read past" {
+    const sentinel: f32 = -7.0;
+
+    // The empty slice comes from a `var`: a `*const [0]f32` literal will not
+    // coerce to `[]f32`, so `ramp(&[_]f32{}, ...)` does not compile at all.
+    var ramped: [4]f32 = @splat(sentinel);
+    ramp(ramped[0..0], -1.0, 1.0);
+    try testing.expectEqual(sentinel, ramped[0]);
+
+    var sined: [4]f32 = @splat(sentinel);
+    sine(sined[0..0], 2.0, 1.0);
+    try testing.expectEqual(sentinel, sined[0]);
 }
 
 test "a plateau is measured but says nothing about level" {

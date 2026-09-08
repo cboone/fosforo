@@ -1407,6 +1407,18 @@ test "get_extension answers for what is implemented and nothing else" {
     try testing.expect(self.plugin.get_extension.?(&self.plugin, "clap.params") == null);
 }
 
+// The test above varies the id across four real strings and never passes none.
+// The parameter is `[*c]const u8`, so null is a value a host can hand over and
+// the ABI cannot refuse it; the guard is the only thing that does. Deleting it
+// does not return a wrong extension, it panics inside `std.mem.len`'s own
+// assert, which is a worse failure in a release build than in this one.
+test "get_extension refuses a null id rather than reading through it" {
+    const self = try create(testing.allocator, &test_host);
+    defer self.plugin.destroy.?(&self.plugin);
+
+    try testing.expect(self.plugin.get_extension.?(&self.plugin, null) == null);
+}
+
 test "every gui callback is filled in" {
     // A host may call any of these without checking, so a null one is a crash
     // rather than a refusal. Checked by walking the struct so a callback added
@@ -1627,6 +1639,24 @@ test "audio_ports.get rejects an index that does not exist" {
     try testing.expect(!audio_ports.get.?(&self.plugin, 1, false, &info));
 }
 
+// The other half of the same guard, which varying the index alone leaves
+// untouched. Deliberately parallel to "the gui callbacks refuse null
+// out-parameters rather than writing through them" above: this one is the
+// audio-ports side of the same contract, and the failure it prevents is a
+// write through a null C pointer, which is a panic here and a corrupted host
+// under `--release=fast`.
+test "audio_ports.get refuses a null out-parameter rather than writing through it" {
+    const self = try create(testing.allocator, &test_host);
+    defer self.plugin.destroy.?(&self.plugin);
+
+    try testing.expect(!audio_ports.get.?(&self.plugin, 0, true, null));
+    try testing.expect(!audio_ports.get.?(&self.plugin, 0, false, null));
+
+    // Both halves at once, so a guard split into two conditions cannot pass by
+    // answering the index question and forgetting the pointer one.
+    try testing.expect(!audio_ports.get.?(&self.plugin, 1, true, null));
+}
+
 test "a port name longer than the field is truncated with room for the terminator" {
     var name: [c.CLAP_NAME_SIZE]u8 = undefined;
     setPortName(&name, "x" ** (c.CLAP_NAME_SIZE * 2));
@@ -1675,6 +1705,25 @@ test "process leaves an in-place buffer holding the input it already held" {
     var window: [test_frames]f32 = undefined;
     try testTapped(self, &window);
     try testing.expectEqualSlices(f32, &expected[0], &window);
+}
+
+// `constant_mask` is 64 bits wide and CLAP puts no ceiling on `channel_count`,
+// so this arm is the whole reason the function is not a bare shift. It is also
+// the arm no fixture here can reach: `TestBuses` is two channels by
+// construction, so the mask assertions below only ever exercise 0 and 1, and a
+// wrong answer past 63 would be invisible until a host declared that many.
+//
+// The tempting plant is `channel <= 64`, and it does not return a wrong mask:
+// it panics on `@intCast(64)` into the `u6` shift amount. `else 1` is the plant
+// that fails this as an assertion.
+test "a channel past the mask's width gets no bit rather than a wrong one" {
+    try testing.expectEqual(@as(u64, 1), bit(0));
+    try testing.expectEqual(@as(u64, 2), bit(1));
+    try testing.expectEqual(@as(u64, 1) << 63, bit(63));
+
+    try testing.expectEqual(@as(u64, 0), bit(64));
+    try testing.expectEqual(@as(u64, 0), bit(65));
+    try testing.expectEqual(@as(u64, 0), bit(std.math.maxInt(u32)));
 }
 
 test "process propagates the input's constant mask" {
