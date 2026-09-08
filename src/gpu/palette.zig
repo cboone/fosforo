@@ -901,6 +901,19 @@ test "the tonemap is monotone in energy and rails at the white point rather than
     // The `@min` arm, which nothing reached before #96, and the monotonicity the
     // docstring claims. Both are properties of the curve rather than of a
     // constant, so they are swept rather than sampled.
+    //
+    // **The sweep catches a missing clamp too, and it does so incidentally**,
+    // which is worth knowing before anyone reads it as the rail's assertion.
+    // Measured by removing the `@min` and both rail arms below: the sweep still
+    // fails, at `value >= previous`, because above the rail the unclamped curve is
+    // not monotone *in f32*. At the 8e5 white point the shoulder factor is
+    // `1 + e / w²`, about `1 + 1.25e-6` at the top of the attainable range, and it
+    // advances in steps of one ulp of 1.0 while the quotient it multiplies moves
+    // by less than that per sample — so the result jitters down by an ulp here and
+    // there. The clamp flattens all of it to exactly 1.0 and the jitter never
+    // reaches a pixel. So this arm is a real property of the shipping function and
+    // is *not* the thing that states where the rail is; the two arms at the bottom
+    // of the loop are.
     for (whitePointsUnderTest()) |w| {
         var previous: f32 = -1.0;
         var i: usize = 0;
