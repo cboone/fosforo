@@ -92,10 +92,15 @@ jobs:
   # `b.dependency("objc", ...)` panics at configure time on any other OS, so this
   # cannot move to a cheaper runner (ADR 0001).
   #
-  # **Unmeasured**, like `python`'s and unlike every other ceiling here, because the
-  # job has never run. 8 is what the four other macOS jobs use. Locally the two
-  # compiles are 9.6 s and 10.7 s cold; re-measure from the Actions API once there
-  # are runs to read and set this at roughly 4x with the figure written in.
+  # 119s on its first run, which is the only sample so far, so 8 is 4x that rounded
+  # to the minute. Re-measure once there are more, on the rule the rest of this file
+  # follows. The breakdown is worth keeping, because the two steps do not cost what
+  # their names suggest: setup-zig 11s, ReleaseSafe **77s**, ReleaseFast **18s**.
+  # The asymmetry is ordering, not the mode. The first `zig build` in the job pays
+  # the dependency fetch and the `zig cc -E` preprocess, and the second reuses both
+  # from the cache, so 18s is the marginal cost of a second optimize mode and 77s is
+  # that plus everything a cold checkout owes. Swapping the two steps would move the
+  # cost, not reduce it.
   test-modes:
     runs-on: macos-latest
     timeout-minutes: 8
