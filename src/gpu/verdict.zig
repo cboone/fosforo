@@ -270,6 +270,36 @@ fn expectClose(a: f32, b: f32, tolerance: f32, fault: Fault) Fault!void {
     if (@abs(a - b) > tolerance * @max(@abs(a), @abs(b))) return fault;
 }
 
+/// Refuse a readback shorter than the geometry it claims, before indexing it.
+///
+/// **Every judge that indexes calls this, and the uniformity is the point.**
+/// Before #105 exactly two did: `silence`, which `traceHalf` runs first and
+/// which therefore guarded the whole run by position rather than by design, and
+/// `resolve`, where the check was added during the refactor for no stated
+/// reason. Thirteen others indexed unguarded. That asymmetry read as a claim
+/// that some judges need the check and others do not, and no such claim was
+/// true.
+///
+/// **The crash it prevents is unreachable from the harness and reachable from a
+/// test, which is what changed.** `traceHalf` allocates one pair of buffers at
+/// exactly `trace_width * trace_height * 4` and `Probe` declares that same
+/// geometry, so the shipping caller cannot produce a short readback. What #92
+/// changed is that these are fifteen public functions a test can hand any
+/// `Image` to, and the tests do exactly that. A Debug build would panic on the
+/// bounds rather than corrupt anything, but `Fault.ReadbackTruncated` is in the
+/// error set to be returned, and an error two of fifteen entrypoints could
+/// return was nearly dead.
+///
+/// Longer than the geometry stays fine and the tail stays ignored, which is
+/// `measure.Image`'s own documented contract and what lets one buffer serve a
+/// run of smaller cases.
+fn requireComplete(image: measure.Image, picture: ?Picture) Fault!void {
+    if (!image.complete()) return Fault.ReadbackTruncated;
+    if (picture) |shown| {
+        if (!shown.complete()) return Fault.ReadbackTruncated;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The judgements
 // ---------------------------------------------------------------------------
@@ -278,7 +308,7 @@ pub const Silence = struct { lit: usize, centroid: f32, implied: f32 };
 
 /// A window of zeros draws one flat line through the centre.
 pub fn silence(image: measure.Image) Fault!Silence {
-    if (!image.complete()) return Fault.ReadbackTruncated;
+    try requireComplete(image, null);
 
     const lit = measure.litColumns(image, trace_threshold);
     if (lit != image.width) {
@@ -331,6 +361,7 @@ pub const Level = struct { centroid: f32, implied: f32, off: f32 };
 /// systematic error with one sign is precisely what a one-pixel tolerance must
 /// not be asked to absorb.
 pub fn level(image: measure.Image, want: f32) Fault!Level {
+    try requireComplete(image, null);
     const seen = measure.centres(image) orelse return Fault.TraceNotDrawn;
 
     const implied = measure.impliedSampleAt(seen.top, image.height);
@@ -404,6 +435,7 @@ pub fn symmetry(rows: [2]f32, height: usize) Fault!void {
 
 /// The first and last samples land on the drawable's edges.
 pub fn horizontalMapping(image: measure.Image) Fault!measure.Span {
+    try requireComplete(image, null);
     const span = measure.litSpan(image, trace_threshold) orelse return Fault.TraceNotDrawn;
     say("  three samples span columns {d} to {d} of {d}", .{ span.first, span.last, image.width - 1 });
 
@@ -461,6 +493,7 @@ pub const Lit = struct { lit: usize, span: measure.Span };
 /// geometry and exactly as strong as it should be against the thing that
 /// actually failed.
 pub fn edgeColumns(image: measure.Image) Fault!Lit {
+    try requireComplete(image, null);
     const lit = measure.litColumns(image, trace_threshold);
     const span = measure.litSpan(image, trace_threshold) orelse return Fault.TraceNotDrawn;
 
@@ -497,6 +530,8 @@ pub const Beam = struct { integral: f32, expected: f32, centre: f32 };
 /// `row` is the driver's choice of cross-section, and the driver's docstring
 /// says why it must be one a single steep segment crosses alone.
 pub fn beamProfile(image: measure.Image, row: usize) Fault!Beam {
+    try requireComplete(image, null);
+    if (row >= image.height) return Fault.ReadbackTruncated;
     var total: f32 = 0;
     var moment: f32 = 0;
     var x: usize = 0;
@@ -546,6 +581,7 @@ pub fn beamProfile(image: measure.Image, row: usize) Fault!Beam {
 /// tolerance wide enough to absorb a systematic error is a tolerance that hides
 /// one" was written about.
 pub fn period(image: measure.Image, cycles: usize) Fault!usize {
+    try requireComplete(image, null);
     const counted = measure.periods(image, trace_threshold);
     say("  {d: >2} cycles in, {d: >2} periods counted", .{ cycles, counted });
     if (counted != cycles) return Fault.PeriodMiscounted;
@@ -582,6 +618,7 @@ pub fn periodRatio(counted: []const usize) Fault!void {
 /// space and was right until the deposit stopped being a colour. The loop is the
 /// same loop; what it compares is not.
 pub fn depositIsScalar(image: measure.Image) Fault!f32 {
+    try requireComplete(image, null);
     const peak_green = measure.maxChannel(image, 1);
     if (peak_green <= trace_threshold) return Fault.TraceNotDrawn;
 
@@ -614,7 +651,7 @@ pub const Resolve = struct { lit: usize, worst: i32, background: [4]u8 };
 
 /// The resolve is the curve and the palette, and nothing else.
 pub fn resolve(image: measure.Image, picture: Picture) Fault!Resolve {
-    if (!image.complete() or !picture.complete()) return Fault.ReadbackTruncated;
+    try requireComplete(image, picture);
 
     // The same table the shader is reading, built by the same function that
     // filled the texture. That is what makes this comparison exact rather than
@@ -727,6 +764,7 @@ pub fn resolve(image: measure.Image, picture: Picture) Fault!Resolve {
 /// rather than modelled, so this is the one assertion here that a model wrong in
 /// the same way as the shader could not satisfy.
 pub fn movingCore(image: measure.Image, picture: Picture) Fault!void {
+    try requireComplete(image, picture);
     const tint = palette.tints_srgb[@intFromEnum(palette.shipped_palette)];
     const lead = palette.shipped_palette.dominant();
 
@@ -771,6 +809,7 @@ pub fn movingCore(image: measure.Image, picture: Picture) Fault!void {
 /// The dwelt end: the same window deposited every frame, which is what a stopped
 /// transport does.
 pub fn dwellCore(image: measure.Image, picture: Picture) Fault!void {
+    try requireComplete(image, picture);
     const peak = measure.maxChannel(image, 1);
     const white = palette.whitePoint(trace_decay);
     say("  hot core: thirty deposits peak at {d:.3}, white point {d:.3}", .{ peak, white });
@@ -1067,18 +1106,64 @@ test "silence refuses a line off the centre, a line that is not flat, and no lin
     try testing.expectError(Fault.TraceNotDrawn, silence(canvas.dark()));
 }
 
-test "a readback shorter than its geometry is refused rather than indexed" {
-    const canvas = try Canvas.init(64, 540);
+test "every judge that indexes a readback refuses a short one" {
+    const canvas = try Canvas.init(16, 8);
     defer canvas.deinit();
 
-    const full = canvas.flat(0.0);
+    _ = canvas.dark();
+    canvas.deposit(8, 4, 2.6133);
+    const whole = canvas.image();
+
+    // One pixel short of the geometry it declares, which is the shape a
+    // truncated readback would have and the shape nothing but a caller mistake
+    // can produce.
     const short: measure.Image = .{
-        .width = full.width,
-        .height = full.height,
-        .pixels = full.pixels[0 .. full.pixels.len - 4],
+        .width = whole.width,
+        .height = whole.height,
+        .pixels = whole.pixels[0 .. whole.pixels.len - 4],
     };
 
     try testing.expectError(Fault.ReadbackTruncated, silence(short));
+    try testing.expectError(Fault.ReadbackTruncated, level(short, 0.0));
+    try testing.expectError(Fault.ReadbackTruncated, horizontalMapping(short));
+    try testing.expectError(Fault.ReadbackTruncated, edgeColumns(short));
+    try testing.expectError(Fault.ReadbackTruncated, beamProfile(short, 4));
+    try testing.expectError(Fault.ReadbackTruncated, period(short, 1));
+    try testing.expectError(Fault.ReadbackTruncated, depositIsScalar(short));
+
+    // The three that read the picture too are refused on either half, which is
+    // what `Picture.complete()` was written for and what nothing called until
+    // now.
+    const painted = try pictureFor(whole, palette.shipped_palette, 1.0);
+    defer freePicture(painted);
+    const clipped: Picture = .{
+        .width = painted.width,
+        .height = painted.height,
+        .bytes = painted.bytes[0 .. painted.bytes.len - 4],
+    };
+
+    try testing.expectError(Fault.ReadbackTruncated, resolve(short, painted));
+    try testing.expectError(Fault.ReadbackTruncated, resolve(whole, clipped));
+    try testing.expectError(Fault.ReadbackTruncated, movingCore(short, painted));
+    try testing.expectError(Fault.ReadbackTruncated, movingCore(whole, clipped));
+    try testing.expectError(Fault.ReadbackTruncated, dwellCore(short, painted));
+    try testing.expectError(Fault.ReadbackTruncated, dwellCore(whole, clipped));
+
+    // A cross-section outside the drawable is the same class of mistake, and
+    // the only one of these a complete readback can still carry.
+    try testing.expectError(Fault.ReadbackTruncated, beamProfile(whole, whole.height));
+
+    // **The negative control, and it is not decoration.** Every arm above
+    // asserts a refusal, so a judge that refused everything would pass all of
+    // them. A buffer *longer* than its geometry is explicitly fine, which is
+    // `measure.Image`'s own contract and what lets one allocation serve a run of
+    // smaller cases; if this were refused too, the arms above would be measuring
+    // nothing.
+    const roomy = try testing.allocator.alloc(f32, whole.pixels.len * 2);
+    defer testing.allocator.free(roomy);
+    @memset(roomy, 0);
+    @memcpy(roomy[0..whole.pixels.len], whole.pixels);
+    _ = try depositIsScalar(.{ .width = whole.width, .height = whole.height, .pixels = roomy });
 }
 
 test "every level plant in the table is refused, and the level itself is not" {
