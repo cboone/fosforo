@@ -944,6 +944,62 @@ test "the tonemap is monotone in energy and rails at the white point rather than
     }
 }
 
+test "the white point is the dwell asymptote, and the clamp is the phosphor that never fades" {
+    // **The two ends of `whitePoint`'s range, neither of which anything called
+    // before #96.** It was reached only through `resolved`, at ordinary decays, so
+    // the clamp the `@max` exists for and the zero-decay end its docstring argues
+    // about were both evaluated by nothing.
+
+    // The zero-decay end. A phosphor with no persistence has a dwell asymptote of
+    // one deposit, so the white point falls to the headroom itself and everything
+    // from `white_headroom` up blows out white — which the shader's comment calls
+    // "loud and obviously wrong, which is the right failure" for the hot-reload
+    // case that produces it.
+    try testing.expectEqual(white_headroom, whitePoint(0.0));
+    try testing.expectEqual(@as(f32, 1.0), tonemap(white_headroom, whitePoint(0.0)));
+    try testing.expectEqual(@as(f32, 1.0), tonemap(1.0, whitePoint(0.0)));
+    try testing.expect(tonemap(white_headroom * 0.99, whitePoint(0.0)) < 1.0);
+
+    // The derivation, at ADR 0019's four rates. Asserted twice over: against the
+    // dwell asymptote it is defined as, which is the claim, and against the
+    // figures that ADR's table publishes, which is what makes a moved constant
+    // move a number a reader can find rather than only a relationship they cannot.
+    const rates = [_]u64{ 48, 60, 120, 240 };
+    const published = [_]f32{ 6.483159, 7.999998, 15.589474, 30.773650 };
+    for (rates, published) |hz, want| {
+        const decay = decayOver(frameNanos(hz));
+        const steady = 1.0 / (1.0 - decay);
+        try testing.expectApproxEqRel(white_headroom * steady, whitePoint(decay), 1e-6);
+        try testing.expectApproxEqAbs(want, whitePoint(decay), 1e-4);
+    }
+
+    // **The clamp, and the figure it produces.** Pinned as the literal 8e5 rather
+    // than as `white_headroom / min_dwell`, deliberately: deriving it from the two
+    // constants would be a restatement that moves with them, and both are exactly
+    // what this is guarding. 8e5 is the number this file's own docstrings and
+    // `AGENTS.md` quote, so a factor of ten in either constant has to move a
+    // figure a reader can already find.
+    //
+    // Measured before this existed: moving `min_dwell` from 1e-6 to 1e-5 in all
+    // three languages at once left the whole suite at 285 of 285 passing.
+    try testing.expectApproxEqRel(@as(f32, 8e5), whitePoint(1.0), 1e-6);
+
+    // Both spellings of a decay of one, because they arrive by different routes.
+    // `decayOver(0)` is exactly 1.0, so any caller holding a zero interval lands
+    // here — which is why `Renderer.frame` stands in one reference frame rather
+    // than zero. The literal is the value a hot-reloaded shader's unbound uniform
+    // can hand the other copy of this arithmetic.
+    try testing.expectEqual(@as(f32, 1.0), decayOver(0));
+    try testing.expectEqual(whitePoint(1.0), whitePoint(decayOver(0)));
+
+    // And past it, which is the end nothing has ever evaluated: a decay above one
+    // makes `1 - decay` negative, and the clamp has to be a floor rather than a
+    // magnitude or the white point comes back negative and the tonemap's shoulder
+    // silently flips sign.
+    try testing.expectEqual(whitePoint(1.0), whitePoint(2.0));
+    try testing.expect(whitePoint(2.0) > 0.0);
+}
+
 test "the white point holds a deposit's brightness steady across refresh rates" {
     // **ADR 0019's table, turned into an assertion.** The white point is
     // `white_headroom / (1 - decay)` precisely so that the dwell asymptote and the
