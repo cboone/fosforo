@@ -384,9 +384,9 @@ These are real gaps and each already has an issue. This plan should not duplicat
 | [#77](https://github.com/cboone/fosforo/issues/77) | A hot-reloaded shader's binding indices are checked by nothing. **Done**                  |
 | [#34](https://github.com/cboone/fosforo/issues/34) | The cross-display path has never executed                                                 |
 | [#85](https://github.com/cboone/fosforo/issues/85) | Nothing runs `markdownlint`                                                               |
-| [#87](https://github.com/cboone/fosforo/issues/87) | A pull request based on anything but `main` runs no CI at all                             |
+| [#87](https://github.com/cboone/fosforo/issues/87) | A pull request based on anything but `main` runs no CI at all. **Done**                   |
 
-**[#87](https://github.com/cboone/fosforo/issues/87) is the one that bears on how this program is worked**, rather than on what it contains. `ci.yml`'s `pull_request` trigger carries `branches: [main]`, so a PR targeting anything else runs none of the nine jobs. Every issue here is an ordinary branch off `main` for that reason as much as for the usual one, and none of them should be stacked until #87 is settled. #99 is its natural neighbour: both are workflow changes and both are about a check that is configured, believed to be running, and silently is not.
+**[#87](https://github.com/cboone/fosforo/issues/87) was the one that bore on how this program is worked**, rather than on what it contains, and it is **done**. `ci.yml`'s `pull_request` trigger no longer carries `branches: [main]`, so a pull request targeting any base runs the whole workflow, measured on run `34271723634` at all twelve job names. Stacking these is therefore verified rather than forbidden, and where one of them genuinely depends on another the build plan's working-order section says to use a native stack rather than retargeting by hand. #99 remains its natural neighbour: both are workflow changes, and #99 is now the survivor of the pair about a check that is configured, believed to be running, and silently is not.
 
 ## Sequencing and contention
 
@@ -408,7 +408,7 @@ Order within the program: **#89 first**, because `main` was red; that one has la
 
 **Nothing here is blocked.** #92 needed [#57](https://github.com/cboone/fosforo/issues/57), which has merged. What survives is a merge conflict rather than a dependency: #92, #80 and #58 all edit `src/smoke.zig`, so whichever lands second rebases, and the build plan's merge-order table records that as costing nothing but the rebase. They are in different lanes and can be in flight together.
 
-**Do not stack them**, per [#87](https://github.com/cboone/fosforo/issues/87): `ci.yml`'s `pull_request` trigger carries `branches: [main]`, so a pull request based on anything else runs none of the nine jobs. Each of these is an ordinary branch off `main`.
+**Stacking them is now safe and is still not the default**, per [#87](https://github.com/cboone/fosforo/issues/87): a pull request based on anything but `main` runs the whole workflow since that landed, so the prohibition is retired, but nothing here needs another's unfinished work and an ordinary branch off `main` keeps the diffs readable. Stack only where a real code dependency appears, and use a native stack when you do.
 
 ## Out of scope
 

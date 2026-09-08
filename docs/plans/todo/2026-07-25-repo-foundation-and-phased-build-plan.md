@@ -242,17 +242,19 @@ stays advisory because it is the one step there whose verdict depends on the
 runner's own AppKit chatter rather than on this project. The working order below
 places #69.
 
-**Two are checks that are configured, are believed to be running, and silently
-are not**, which is a shape this repository has now hit three times counting #28.
+**One is a check that is configured, is believed to be running, and silently is
+not**, and it is the survivor of two, in a shape this repository has now hit
+three times counting #28.
 [#85](https://github.com/cboone/fosforo/issues/85) is the more mechanical:
 `.markdownlint-cli2.jsonc` pins a table style that nothing enforces, which is the
 state `typos.toml` was in before #28, measured at 0 findings on `main` against
-129 on a branch in flight. [#87](https://github.com/cboone/fosforo/issues/87) is
-`ci.yml`'s `pull_request` trigger carrying `branches: [main]`, so a stacked pull
-request runs none of the nine jobs and nothing says so. **#87 constrains how
-anything here is worked** rather than what it contains: until it is settled,
-every branch is an ordinary branch off `main`. Both read with #69, since all
-three ask what CI is obliged to check rather than anything about the renderer.
+129 on a branch in flight. **[#87](https://github.com/cboone/fosforo/issues/87)
+is settled**: `ci.yml`'s `pull_request` trigger no longer carries
+`branches: [main]`, so a stacked pull request now runs the whole workflow, measured on
+run `34271723634` rather than asserted. It used to constrain how anything here is
+worked rather than what it contains, and the working order below is rewritten
+accordingly. #85 reads with #69, since both ask what CI is obliged to check
+rather than anything about the renderer.
 
 **The remaining eleven are the verification program**,
 [#89](https://github.com/cboone/fosforo/issues/89) through
@@ -408,7 +410,9 @@ The resulting order is **#55**, then **#64**, then **#63**, then **#22**, then *
 
 The subtle entry was [#63](https://github.com/cboone/fosforo/issues/63)'s: its RSS threshold depended on #55's baseline **number** rather than on its code, so it wanted #55 merged before the figure was fixed, while its `smoke-leaks` half depended on nothing. It is now **done**, and the threshold was never set, for the reason two bullets above.
 
-Stacking is available and is deliberately not the recommendation. Branching #57 off #55 before #55 merges would make partial work available to it, at the usual cost: the child's diff is unreadable until the parent lands, and every parent revision forces a rebase. #55's own commits are strictly sequential anyway, so the simpler model wins. **[#87](https://github.com/cboone/fosforo/issues/87) has since made that a rule rather than a preference:** `ci.yml`'s `pull_request` trigger carries `branches: [main]`, so a stacked pull request runs none of the nine jobs, and a stacked branch carrying code would merge into its parent with zero verification.
+Stacking is available, and since [#87](https://github.com/cboone/fosforo/issues/87) it is verified: `ci.yml`'s `pull_request` trigger no longer carries `branches: [main]`, so a stacked pull request runs the whole workflow, measured on run `34271723634` at all twelve job names. That retires the rule and leaves the preference, which was always the older half of the argument and is untouched: the child's diff is unreadable until the parent lands, and every parent revision forces a rebase. So an ordinary branch off `main` stays the default, and #55's own commits were strictly sequential anyway, which is why branching #57 off it would have bought nothing.
+
+**Where a real code dependency exists, use a native stack rather than retargeting by hand.** GitHub triggers a native stack as if every pull request in it targeted the stack's base, and `gh stack init --base BRANCH` or the web UI is what creates one; `gh pr create --base` does not, which is what #86 was and why it ran three of ten workflows. Two things about the preview are unverified here and should be measured the first time it is used rather than assumed. **What happens to the rest of the stack when the bottom pull request merges** is undocumented on GitHub's reference page: if it rebases the next one onto the stack base, that is a head update and `synchronize` fires, which would close the base-update gap #87 left open, and if it merely retargets, the gap stands. And **whether the preview needs enabling** per account or per repository is undocumented too. Until both are measured, the mitigation is the convention rather than the mechanism: rebase onto `main` and retarget before merging anything that carried code up a stack.
 
 ### The verification program, which is not phase 3 work and runs beside it
 
