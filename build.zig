@@ -125,15 +125,16 @@ pub fn build(b: *std.Build) void {
 /// worktree — the exact negative that function's docstring and the `clap-wrapper`
 /// job's provenance assertion both exist to hold.
 ///
-/// **The eager cost is `b.dependency` and it is not measurable**, which was worth
-/// checking rather than assuming, because it is paid at configure time by every
-/// `zig build` invocation, including the plain one that only wants the bundle.
-/// `b.dependency` runs zig-objc's build function, which executes `xcrun`, and going
-/// from one mode to three left `zig build --help` at 0.11 s across three runs, the
-/// same figure it read before. That is `xcrun` costing ~10 ms warm against a graph
-/// description that was already doing this once. Zig caches a dependency instance
-/// by its argument hash, so `-Doptimize=ReleaseFast` yields two instances rather
-/// than four, and nothing here is *built* unless a step that wants it was asked for.
+/// **The eager cost is `b.dependency`, and going from one mode to three did not move
+/// it at the resolution this was measured at**, which was worth checking rather than
+/// assuming, because it is paid at configure time by every `zig build` invocation,
+/// including the plain one that only wants the bundle. `b.dependency` runs zig-objc's
+/// build function, which executes `xcrun`. `zig build --help` read **0.11 s** across
+/// three runs before this change and 0.11 s across three after, so whatever the two
+/// extra instances cost is under the ~10 ms `xcrun` takes warm and lost in a graph
+/// description that was already paying it once. Zig caches a dependency instance by
+/// its argument hash, so `-Doptimize=ReleaseFast` yields two instances rather than
+/// four, and nothing here is *built* unless a step that wants it was asked for.
 fn coreAt(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -581,11 +582,21 @@ fn signClapBundle(
 /// `zig build test-release` does not. `gpu/iface.zig` records that nothing else
 /// covers it.
 ///
-/// **What only `test-release` can see** is work that lives inside a
-/// `std.debug.assert` argument, which Debug and ReleaseSafe both execute and
-/// ReleaseFast compiles away with the assertion. **What only `test-safe` can see**
-/// is behaviour the optimizer exposes that a safety check would still catch, which
-/// is the one thing neither of its neighbours does.
+/// **`test-release` is a strictly weaker detector than `test`, and saying otherwise
+/// was this docstring's first mistake.** Every difference between the modes
+/// *removes* a check, so there is no defect it catches that Debug does not. The
+/// tempting claim is that it uniquely sees work living inside a
+/// `std.debug.assert` argument — and that is false here, because Zig's `assert` is
+/// an ordinary function rather than a macro, so its argument is evaluated in every
+/// optimize mode and only the check on the result is stripped. Measured rather than
+/// reasoned about: `palette.buildPalette`'s entire loop moved into an assert
+/// argument leaves all three steps green. The C bug class does not exist in Zig.
+///
+/// So what these two steps buy is not extra detection. It is that the suite runs at
+/// all in the build that ships, where a trust boundary that had lapsed from a
+/// refusal into an assertion would be caught by nothing else, and that the tree
+/// compiles and passes through the optimizer. `test-safe` adds the one combination
+/// neither neighbour has, optimized code with the safety checks still armed.
 fn addTestStep(core: Core, options: struct {
     step: []const u8,
     description: []const u8,
