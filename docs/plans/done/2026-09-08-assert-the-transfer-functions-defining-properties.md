@@ -1,6 +1,6 @@
 # Assert the transfer function's defining properties
 
-Issue: [#96](https://github.com/cboone/fosforo/issues/96). Type: `test:`. Item 8 of [the verification-gap program](2026-09-04-close-the-verification-gaps-in-the-test-suite.md), which stays in `todo/` until the other items land.
+Issue: [#96](https://github.com/cboone/fosforo/issues/96). Type: `test:`. Item 8 of [the verification-gap program](../todo/2026-09-04-close-the-verification-gaps-in-the-test-suite.md), which stays in `todo/` until the other items land.
 
 ## Context
 
@@ -16,7 +16,7 @@ Issue: [#96](https://github.com/cboone/fosforo/issues/96). Type: `test:`. Item 8
 
 ## What planting first changed about this plan
 
-The issue predicts that a white point wrong by a factor of ten is the plant that closes something genuinely uncovered, quoting [`2026-08-30-tonemap-accumulated-energy-through-a-palette.md`](../done/2026-08-30-tonemap-accumulated-energy-through-a-palette.md): "arithmetically correct and passes a model-versus-picture comparison, because both sides use it." **That was true when it was written and is now only half true**, because [#56](https://github.com/cboone/fosforo/issues/56) added `"the white point holds a deposit's brightness steady across refresh rates"` (`palette.zig:833`), whose steady-state half requires byte 255 at `1 / (1 - decay)`. Worked through: `white_headroom = 8.0` puts the 60 Hz white point at 80 and sends a dwelt pixel to `tonemap(10, 80)`, which is 0.9106 and resolves to green 243 rather than 255. **That existing test fires.** So the headroom plant is a control here, not the closing row.
+The issue predicts that a white point wrong by a factor of ten is the plant that closes something genuinely uncovered, quoting [`2026-08-30-tonemap-accumulated-energy-through-a-palette.md`](2026-08-30-tonemap-accumulated-energy-through-a-palette.md): "arithmetically correct and passes a model-versus-picture comparison, because both sides use it." **That was true when it was written and is now only half true**, because [#56](https://github.com/cboone/fosforo/issues/56) added `"the white point holds a deposit's brightness steady across refresh rates"` (`palette.zig:833`), whose steady-state half requires byte 255 at `1 / (1 - decay)`. Worked through: `white_headroom = 8.0` puts the 60 Hz white point at 80 and sends a dwelt pixel to `tonemap(10, 80)`, which is 0.9106 and resolves to green 243 rather than 255. **That existing test fires.** So the headroom plant is a control here, not the closing row.
 
 **The genuinely uncovered constant is the clamp's `1e-6`.** Nothing calls `whitePoint` at a decay of one, so moving that epsilon by a factor of ten fails nothing at all today — and it is restated in three languages with no pin on any copy:
 
@@ -132,12 +132,12 @@ Each planted on top of a passing run, and **committed before planting** so `git 
 
 ## Documents
 
-**This plan's own program plan**, [`2026-09-04-close-the-verification-gaps-in-the-test-suite.md`](2026-09-04-close-the-verification-gaps-in-the-test-suite.md), in one commit:
+**This plan's own program plan**, [`2026-09-04-close-the-verification-gaps-in-the-test-suite.md`](../todo/2026-09-04-close-the-verification-gaps-in-the-test-suite.md), in one commit:
 
 - Section 8 marked landed, in item 4's form: acceptance bullets to `- [x]`, then a bolded `**Landed.**` paragraph with the measured deltas and the correction that the headroom plant is a control rather than the closing row.
 - **Sections 7 and 9 are stale and get corrected in the same commit.** #95 and #97 both landed on `main` after this document was last edited, and item 7 still says "Six modules have it; ten do not, including `palette.zig`", which #95 falsified. #97's own plan set the precedent when it corrected #90's row: a status table that lies about a neighbouring row while this row is being edited is the stale-claim class the program exists to close. The commit message says the neighbours were corrected as well as advanced.
 
-**The build plan**, [`2026-07-25-repo-foundation-and-phased-build-plan.md`](2026-07-25-repo-foundation-and-phased-build-plan.md):
+**The build plan**, [`2026-07-25-repo-foundation-and-phased-build-plan.md`](../todo/2026-07-25-repo-foundation-and-phased-build-plan.md):
 
 - The verification-program table's #96 row, `Open` to `Done`. #95 and #97 already read `Done` there, so only this row moves.
 - The Verification table's "238 named tests across `src/`", which is stale by more than this issue adds. Measure it before and after and record the corrected figure, saying in the commit message that it is corrected as well as advanced.
@@ -185,9 +185,10 @@ As landed, with the deviation the Results section records:
 7. `53dbf81` `test: resolve no energy to the background the drawable shows (#96)`
 8. `6d5d10c` `test: invert the dominant channel the way measure-trace does (#96)`
 9. `19200d3` `test: state the strictly-below-the-rail arms with a margin f32 can hold (#96)` — unplanned, and the third of the three things this plan got wrong.
-10. `docs: record the transfer function's asserted properties (#96)` — this plan's results, the program plan's four sections, the build plan's two rows, `AGENTS.md` and ADR 0019.
+10. `2f02eda` `test: match each decay with the white point it produces (#96)` — unplanned, from the review pass.
+11. `docs: record the transfer function's asserted properties (#96)` — this plan's results, the program plan's four sections, the build plan's two rows, `AGENTS.md` and ADR 0019.
 
-One plant per commit is the value of this issue, which is why 6 and 7 were kept apart by hand after 4 and 5 ran together. At merge an eleventh commit moves this plan to `docs/plans/done/` and turns its sibling links around.
+One plant per commit is the value of this issue, which is why 6 and 7 were kept apart by hand after 4 and 5 ran together. At merge a twelfth commit moves this plan to `docs/plans/done/` and turns its sibling links around.
 
 **The branch is named `chore/tonemap-and-whitepoint` and the work is not a chore.** The branch name is already pushed nowhere and is not worth rewriting; the PR title is `test: assert the transfer function's defining properties (#96)`, matching the issue's own type and every commit above.
 
@@ -222,6 +223,15 @@ One plant per commit is the value of this issue, which is why 6 and 7 were kept 
 | Test 1's float identity removed, plant E              | Still fails, through the byte loop                              |
 | Test 3's `8e5` pin made vacuous, plant D              | **Still failed, at test 2.** See below                          |
 | Test 5's argmax arm made vacuous, plant J             | **290 of 290 passing.** The arm is the sole catcher             |
+| Test 1's identity and margin removed, plant E         | Still fails, through the byte arm — after the review fix        |
+
+### What the review pass found, which the plants did not
+
+**Test 1's byte arm was asserting something much weaker than its comment claimed, in two of its three cases.** It read `resolved(table, shipped_palette, 0.0, w)` while looping over white points — but `resolved` takes a *decay* and derives the white point itself, so only the first iteration passed a matching pair. The other two asked whether an energy of `w` resolves white at a white point of 0.8, which is true of any monotone curve and of plain Reinhard too.
+
+Every plant still fired, which is why nothing caught it: the arm was redundant with the float identity beside it, so weakening one always left the other. **That is the ADR 0013 lesson in its exact form** — an arm that is individually sufficient for the plants you thought of can still be asserting the wrong thing. The helper now yields decays and each test derives its own `w`; with the identity made vacuous and the strictly-below arm removed, the byte arm fails on its own.
+
+**And the fix was lost once to the rule this plan states.** The plant that confirmed it was run against an uncommitted working tree, so `git checkout --` reverted the repair along with the plant. Commit before planting applies to a review fix exactly as it applies to a test.
 
 ### Three things this plan got wrong
 
