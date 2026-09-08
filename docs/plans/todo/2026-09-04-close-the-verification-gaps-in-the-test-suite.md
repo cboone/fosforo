@@ -376,6 +376,14 @@ The recommendation is the second, and the third is a defensible outcome that sho
 
 Worth folding in while the workflows are open: the deprecation warnings the last run emitted, about `version-file` being an unexpected input to `mlugg/setup-zig` and Node 20 actions being forced onto Node 24.
 
+**Done**, with its own plan at [`2026-09-08-lint-the-workflows-in-ci.md`](../done/2026-09-08-lint-the-workflows-in-ci.md). One correction to the section above: `actionlint` sits in the build plan's **phase 0** exit criteria, not phase 1.
+
+**The second acceptance criterion was answered in the negative, and before the job was written.** `actionlint` would not have caught the `version-file` warning, for a reason that is structural rather than a gap a newer release closes: it validates `with:` inputs against a database bundled in the binary and keyed by *tag*, so pinning every action to a commit — which this repository does deliberately and will keep doing — defeats the check outright. Measured both ways, with a positive control in the same run: `actions/checkout@v4` with a bogus input is reported and the identical input on the same action pinned by SHA is not. It does not resolve a remote reusable workflow's inputs at all either, which retires a claim in `docs/plans/done/2026-07-29-tighten-ci-job-timeouts.md` that it "resolves the pinned SHA to check" them.
+
+What the job does catch was measured the same way: a misspelled `runs-on`, an `if:` naming a missing step id, a `needs:` naming a missing job, a `shellcheck` finding inside a `run:` block, and both unknown and missing-required inputs on the local composite action. **Two silent skips were found and one of them shaped the job**: `actionlint` resolves local actions through the git project root, so it quietly checks less outside a checkout, and with no `shellcheck` on `PATH` it skips `run:` blocks entirely while still exiting 0. The job therefore installs the pinned `shellcheck` rather than trusting the runner image, and `SHELLCHECK_VERSION` and `SHELLCHECK_SHA256` moved to workflow-level `env` so the `shell` job and this one cannot drift apart.
+
+Both fold-ins landed. The `version-file` input was deleted from all five `mlugg/setup-zig` steps, which provably cannot change the installed compiler because the input was ignored and the empty `version` default is what reads `minimum_zig_version`. `actions/checkout` moved to v6.1.0 and Node 24; the Node 20 warning **remains**, because `mlugg/setup-zig@v2.2.1` is the latest release and is itself `node20`.
+
 ## Already filed, and not restated here
 
 These are real gaps and each already has an issue. This plan should not duplicate them.

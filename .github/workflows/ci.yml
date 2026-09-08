@@ -35,15 +35,24 @@ concurrency:
 permissions:
   contents: read
 
-# Workflow-level rather than job-level because two jobs now validate a .clap and
-# share one cache entry. Duplicating these would let the two cache keys drift, and a
-# drifted key still passes; it just quietly pays a full Rust build every run.
+# Workflow-level rather than job-level because each of these pairs is read by two
+# jobs. Duplicating one would let the two copies drift, and a drifted copy still
+# passes: the validator's would quietly pay a full Rust build every run, and
+# shellcheck's would lint this repository's shell with two different tools.
 #
-# Both pins are deliberate. clap-validator is not on crates.io, so it is built from
-# git, where a commit is the only reference upstream cannot move; `--locked` extends
-# that to its dependency tree. Pinning Rust as well keeps a future stable release
-# that cannot build this commit from turning CI red with no change on this side.
-# Bump them together and the cache key follows. Neither pin costs anything on a hit.
+# The validator pins are deliberate. clap-validator is not on crates.io, so it is
+# built from git, where a commit is the only reference upstream cannot move;
+# `--locked` extends that to its dependency tree. Pinning Rust as well keeps a
+# future stable release that cannot build this commit from turning CI red with no
+# change on this side. Bump them together and the cache key follows. Neither pin
+# costs anything on a hit.
+#
+# shellcheck moved up here when `actionlint` acquired a second use for it. The
+# `shell` job lints the tracked scripts with it; `actionlint` shells out to it for
+# every `run:` block, which is the only thing that lints the embedded shell in this
+# file, because `shell` selects files by shebang and a `run:` block is not a file.
+# The runner image ships 0.9.0, which would move under both on the next image
+# refresh. `shfmt`'s pair stays in `shell`, which is still its only reader.
 env:
   # Tag 0.4.1, resolved to its commit: tags can move, commits cannot.
   VALIDATOR_REV: 152b9823e992d782c5c1fd33bca0295478b919aa
@@ -51,6 +60,11 @@ env:
   # image's preinstalled Rust may or may not satisfy from one refresh to the next.
   # This is the toolchain the local install was built with.
   RUST_VERSION: "1.97.1"
+  # A version in a URL is not a pin: a release asset can be replaced in place under
+  # the same tag. The sum is the pin, and both jobs refuse to install anything else.
+  # Bump the two together; `shasum -a 256` on the asset produces the replacement.
+  SHELLCHECK_VERSION: "0.11.0"
+  SHELLCHECK_SHA256: "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
 
 jobs:
   # Must run on macOS: the plugin links Cocoa, Metal, QuartzCore and CoreVideo,
@@ -84,7 +98,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 8
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Check for the Metal toolchain
         id: metal
@@ -106,9 +120,16 @@ jobs:
           xcodebuild -downloadComponent MetalToolchain
           xcrun --kill-cache
 
+      # No `with:` block, and the absence is what reads build.zig.zon. This step
+      # and the four like it below used to pass `version-file: build.zig.zon`,
+      # which mlugg/setup-zig does not declare as an input at any version: it was
+      # ignored, and every run said so in a warning nothing tracked. Leaving
+      # `version` at its empty default is what makes the action read
+      # `minimum_zig_version` from build.zig.zon, which is the behaviour that
+      # file's own comment claims and ADR 0002 rests on. Deleting the input
+      # therefore changed nothing about which compiler CI installs. Do not
+      # restore it; see the AGENTS.md gotcha before adding any input here.
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        with:
-          version-file: build.zig.zon
 
       - name: Type-check shaders
         run: zig build validate-shaders
@@ -278,11 +299,9 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 8
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        with:
-          version-file: build.zig.zon
 
       - name: Smoke-test the GPU path
         run: zig build smoke-gpu
@@ -433,11 +452,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 6
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        with:
-          version-file: build.zig.zon
 
       # Each step judges two arms and one of them must be flagged, so a green
       # result here means the sanitizer was demonstrably running. See the
@@ -465,9 +482,12 @@ jobs:
   # image refresh; these are the versions the profile was verified against.
   # Release binaries rather than a setup action adds no third-party action to
   # audit, but a version in a URL is not a pin: a release asset can be replaced
-  # in place under the same tag. The SHA256 sums below are the pin, and the job
-  # refuses to install anything that does not match. Bump a version and its sum
-  # together; `shasum -a 256` on the downloaded asset produces the replacement.
+  # in place under the same tag. The SHA256 sums are the pin, and the job refuses
+  # to install anything that does not match. Bump a version and its sum together;
+  # `shasum -a 256` on the downloaded asset produces the replacement.
+  #
+  # shellcheck's pair is at workflow level because `actionlint` reads it too; see
+  # the comment there. `shfmt`'s stays here, which is its only reader.
   #
   # 8s max over 9 runs, the fastest job here by an order of magnitude. The two
   # downloads above are the only variable part and both completed inside that.
@@ -477,10 +497,8 @@ jobs:
     env:
       SHFMT_VERSION: "3.13.1"
       SHFMT_SHA256: "fb096c5d1ac6beabbdbaa2874d025badb03ee07929f0c9ff67563ce8c75398b1"
-      SHELLCHECK_VERSION: "0.11.0"
-      SHELLCHECK_SHA256: "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       # Neither project publishes a checksum manifest with its releases, so the
       # sums are committed here rather than fetched. Fetching them from the same
@@ -566,7 +584,7 @@ jobs:
       RUFF_VERSION: "0.16.5"
       RUFF_SHA256: "65b8bae7e43f12a91b71036a52176012b3aefb725d5ae263e2771474110a0983"
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       # Into RUNNER_TEMP rather than the workspace, matching `typos` and not
       # `shell`. That distinction is about how each job selects files: `shell`
@@ -602,6 +620,121 @@ jobs:
       - name: Lint Python
         run: ruff check .
 
+  # This file is 46 KB and nothing checked it. `actionlint` sits in the build
+  # plan's phase 0 exit criteria and in no workflow, so it was a local step at
+  # best -- the fourth instance of a check that is configured, is believed to be
+  # running, and silently is not (#28, #85, #87). Workflow files are the one
+  # place whose errors surface only as a failed run on someone else's branch.
+  #
+  # In ci.yml rather than its own workflow, and that is confirmed rather than
+  # assumed. `typos` is separate because this workflow's `paths-ignore` lists
+  # cover the files it exists to check; none of those patterns matches
+  # `.github/**`, and `paths-ignore` skips a run only when *every* changed file
+  # matches, so a workflow edit always triggers this. The `shell` and `python`
+  # precedent applies and the `typos` one does not. What is still true is #87:
+  # `pull_request` carries `branches: [main]`, so a stacked pull request runs
+  # this no more than it runs the other eight jobs.
+  #
+  # Placed below `python` rather than above `shell`, which keeps `ring-race`'s
+  # "the two Ubuntu jobs below" true.
+  #
+  # **What this catches is narrower than it reads, and the gap is this
+  # repository's own pinning policy.** Measured against 1.7.12 with a positive
+  # control in every run: it catches a misspelled `runs-on`, an `if:` naming a
+  # step id that does not exist, a `needs:` naming a missing job, a shellcheck
+  # finding in a `run:` block, and both unknown and missing-required inputs on
+  # the *local* composite action. It does **not** check `with:` inputs on a
+  # SHA-pinned third-party action, because its input database is keyed by tag and
+  # every action here is pinned to a commit; `actions/checkout@v4` with a bogus
+  # input is reported and the identical input on `actions/checkout@11bd7190...`
+  # is not. Nor does it resolve a remote reusable workflow's inputs at all. So
+  # the `version-file` warning this job was partly filed to catch is exactly the
+  # class it cannot see, and that was established before the job was written.
+  #
+  # Unmeasured, on the `python` job's precedent and for its reason: the job has
+  # never run. 3 is the floor `shell`, `python` and `typos` share, and this is
+  # structurally the same thing -- an Ubuntu checkout, two pinned downloads and a
+  # walk over four workflow files. It gets a measured value once there are runs
+  # behind it.
+  actionlint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      # The rule set and the runner-label list both ship inside the binary, so an
+      # unpinned upgrade can introduce findings with no change on this side, which
+      # is `typos`' and `ruff`'s reason as much as this one's. Upstream does
+      # publish a checksum manifest, unlike the other three tools here, and it is
+      # still not fetched: it is served by the host that serves the asset, so it
+      # would verify transport rather than provenance. This sum was computed with
+      # `shasum -a 256` locally and equals that manifest's entry independently.
+      ACTIONLINT_VERSION: "1.7.12"
+      ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      # Into RUNNER_TEMP rather than the workspace, matching `typos` and `python`
+      # and not `shell`: this job does not select files through `git ls-files`, so
+      # a tarball left in the checkout would be one more thing the run depends on
+      # actionlint choosing to skip. Downloaded to a file rather than piped into
+      # tar, so nothing consumes the bytes before the sum has verified them. The
+      # archive carries docs and a man page beside the binary, so the single
+      # member is named rather than extracting all of it.
+      #
+      # shellcheck is installed here too, and it is not optional. actionlint
+      # shells out to it for every `run:` block, which is the only thing that
+      # lints the embedded shell in this file. **With no shellcheck on PATH it
+      # skips that silently and still exits 0** -- measured, with a planted SC2086
+      # passing -- so relying on the runner image would be a vacuous pass of the
+      # kind `python`'s comment names, and relying on its *version* would let the
+      # image lint this file with a different tool than `shell` uses.
+      - name: Install actionlint and shellcheck
+        run: |
+          cd "${RUNNER_TEMP}"
+          curl -sSfL -o actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum --check --strict -
+          tar -xzf actionlint.tar.gz actionlint
+          sudo install actionlint /usr/local/bin/actionlint
+
+          curl -sSfL -o shellcheck.tar.xz \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          echo "${SHELLCHECK_SHA256}  shellcheck.tar.xz" | sha256sum --check --strict -
+          tar -xJf shellcheck.tar.xz
+          sudo install "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+
+      # Confirms both pins resolved, on the established reasoning, plus one that
+      # belongs to this job alone: the shellcheck line is the only evidence in the
+      # log that the integration had anything to shell out to. A run missing it is
+      # a run whose `run:` blocks went unlinted without saying so.
+      - name: Report tool versions
+        run: |
+          actionlint --version
+          shellcheck --version | sed -n 's/^version: /shellcheck /p'
+
+      # No path arguments, matching `typos` and `python`: actionlint finds the
+      # nearest .github/workflows itself and lints all four files. It resolves
+      # `./.github/actions/...` through the git project root, which is why this
+      # runs in a checkout rather than an exported tree -- outside a repository it
+      # skips the local-action checks silently and exits 0.
+      - name: Lint the workflows
+        id: actionlint
+        run: actionlint
+
+      # Only on the failing path, matching `typos` and the two validator jobs, so
+      # the passing path pays nothing for it. `-oneline` because the default
+      # output's source excerpts and carets are legible in a log and noisy in a
+      # summary table.
+      - name: Summarize the findings
+        if: failure() && steps.actionlint.outcome == 'failure'
+        run: |
+          {
+            echo "### actionlint"
+            echo
+            echo '```text'
+            actionlint -oneline -no-color || true
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
   # ADR 0003, AGENTS.md, and the plan's verification table all name
   # `clap-validator` as required verification, but nothing ran it except someone
   # remembering to. The failures it catches are quiet: a descriptor field going
@@ -624,7 +757,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 8
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - uses: ./.github/actions/clap-validator
         with:
@@ -632,8 +765,6 @@ jobs:
           rust-version: ${{ env.RUST_VERSION }}
 
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        with:
-          version-file: build.zig.zon
 
       - name: Build the plugin
         run: zig build
@@ -738,11 +869,9 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        with:
-          version-file: build.zig.zon
 
       - name: Build the wrapper artifacts
         run: ./scripts/build-audio-unit
