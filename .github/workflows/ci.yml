@@ -106,9 +106,16 @@ jobs:
           xcodebuild -downloadComponent MetalToolchain
           xcrun --kill-cache
 
+      # No `with:` block, and the absence is what reads build.zig.zon. This step
+      # and the four like it below used to pass `version-file: build.zig.zon`,
+      # which mlugg/setup-zig does not declare as an input at any version: it was
+      # ignored, and every run said so in a warning nothing tracked. Leaving
+      # `version` at its empty default is what makes the action read
+      # `minimum_zig_version` from build.zig.zon, which is the behaviour that
+      # file's own comment claims and ADR 0002 rests on. Deleting the input
+      # therefore changed nothing about which compiler CI installs. Do not
+      # restore it; see the AGENTS.md gotcha before adding any input here.
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        with:
-          version-file: build.zig.zon
 
       - name: Type-check shaders
         run: zig build validate-shaders
@@ -281,8 +288,6 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        with:
-          version-file: build.zig.zon
 
       - name: Smoke-test the GPU path
         run: zig build smoke-gpu
@@ -429,8 +434,6 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        with:
-          version-file: build.zig.zon
 
       # The step judges two arms and one of them must be flagged, so a green
       # result here means the sanitizer was demonstrably running. See the
@@ -617,8 +620,6 @@ jobs:
           rust-version: ${{ env.RUST_VERSION }}
 
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        with:
-          version-file: build.zig.zon
 
       - name: Build the plugin
         run: zig build
@@ -726,8 +727,6 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        with:
-          version-file: build.zig.zon
 
       - name: Build the wrapper artifacts
         run: ./scripts/build-audio-unit
