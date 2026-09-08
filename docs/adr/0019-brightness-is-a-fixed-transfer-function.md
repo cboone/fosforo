@@ -48,7 +48,7 @@ The lookup is indexed with `access::read` and interpolated by hand rather than s
 
 ## Consequences
 
-**The hot core is emergent and is now executed rather than claimed.** `zig build smoke-trace` drives one deposit and thirty, and reads `RGB(75, 189, 96)` and `RGB(255, 255, 255)` off the picture. Nothing draws a core.
+**The hot core is emergent and is now executed rather than claimed.** `zig build smoke-trace` drives one deposit and thirty, and reads `RGB(143, 224, 154)` and `RGB(255, 255, 255)` off the picture. Nothing draws a core. **The first figure read `RGB(75, 189, 96)` when this was written and was corrected at [#96](https://github.com/cboone/fosforo/issues/96)**: [#57](https://github.com/cboone/fosforo/issues/57) gave the beam area and a density scale, so one deposit became 2.6 deposits of overlap and got brighter. The claim is untouched by that; only the number moved.
 
 **The model and the picture agree exactly.** `checkResolve` predicts all three channels of every pixel from one number and reports the worst channel off by **zero** across 518,400 pixels, through the curve, the interpolation and the hardware's encode. That is stronger than the per-channel comparison it replaces, because it asserts the picture's chroma follows from the intensity, which is the palette's whole claim.
 

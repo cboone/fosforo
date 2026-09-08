@@ -245,6 +245,18 @@ Every plant still fired, which is why nothing caught it: the arm was redundant w
 
 **Commits 4 and 5 landed as a single commit, `2031a42`, whose message names only test 1.** Both tonemap tests are in it. The split was worth having and the mistake was staging the whole file; it is recorded here rather than rewritten, since the branch's history is not amended. What the split was for is preserved anyway, because each test was planted against independently. Commits 7 and 8 were kept apart by moving test 5 out of the file, committing test 4, and putting it back.
 
+### What Copilot's review found
+
+Two findings, both valid, and the second larger than it was filed as.
+
+**The MSL comment on `min_dwell` had the mechanism backwards.** It said the clamp exists for a `decay` of 1 arriving "because a reloaded source left a fragment buffer unbound" — but an unbound buffer reads **zeros**, which is the `decay == 0` end that needs no clamp and is the loud, correct failure. The Zig docstring beside it had both ends right; the MSL copy collapsed them. Rewritten to separate the two, which is what the constant is actually for.
+
+**The stale `RGB(75, 189, 96)` was live in five places, not one.** This plan corrected `AGENTS.md` and Copilot caught ADR 0019. A repository-wide grep then found three more: **ADR 0007**, the build plan's phase 3 step 7, and **`CHANGELOG.md`** — that last one missed by both this plan's own first sweep and by Copilot, since the changelog is not in the diff. `.github/workflows/ci.yml` had already been corrected by #57 without any of the prose following it. All five now read `RGB(143, 224, 154)` with a clause saying when and why it moved.
+
+**The two occurrences in `docs/plans/done/` are deliberately untouched**, being historical records — and one of them is #57's own prediction table, which forecast `RGB(144, 225, 155)` against the measured 143, 224, 154.
+
+The lesson generalises past this issue: **a figure corrected in one document is not corrected**, and the check is a repository-wide grep for the old value rather than an edit where you happened to notice it. Reviewing the diff cannot find this class at all, because the stale copies are in files the diff does not touch.
+
 ### One tool note
 
 **`prettier --write` was reached for to re-align the build plan's Verification table and reverted.** It fixed the alignment and also rewrote four unrelated `*emphasis*` spans to `_emphasis_` across the file. The table was re-padded by a throwaway script instead, which touched the one row that moved. `markdownlint --fix` was never a candidate, for the reason this plan's verification section gives.
