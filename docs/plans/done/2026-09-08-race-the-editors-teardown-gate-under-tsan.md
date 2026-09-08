@@ -12,7 +12,7 @@ Issue: [#91](https://github.com/cboone/fosforo/issues/91). Type: `test:`. Item 3
 
 ## The finding that reshapes the issue
 
-**A Thread Sanitizer arm discriminates only where the atomic orders access to _non-atomic_ memory.** TSan builds a happens-before graph and reports two threads reaching one address with no edge between them; two relaxed atomic accesses to the same word are not a race in that model, whatever the ordering.
+**A Thread Sanitizer arm discriminates only where the atomic orders access to *non-atomic* memory.** TSan builds a happens-before graph and reports two threads reaching one address with no edge between them; two relaxed atomic accesses to the same word are not a race in that model, whatever the ordering.
 
 That rule sorts the three primitives:
 
@@ -50,7 +50,7 @@ Move with it:
 
 ### 2. `close` reports the spin count
 
-Acceptance criterion 3 asks that `Gate`'s spin body is genuinely entered, "confirmed by a counter the harness prints, so a `close` that never waited is visible as a vacuous pass". Nothing outside `Gate` can observe that: a holder that waits for a "closing" flag before leaving makes the spin _less_ likely, not more, and no arrangement of the harness's own atomics can see inside the loop.
+Acceptance criterion 3 asks that `Gate`'s spin body is genuinely entered, "confirmed by a counter the harness prints, so a `close` that never waited is visible as a vacuous pass". Nothing outside `Gate` can observe that: a holder that waits for a "closing" flag before leaving makes the spin *less* likely, not more, and no arrangement of the harness's own atomics can see inside the loop.
 
 So `close` returns the number of spins it performed. One word, no new state, and the canaried lines are unchanged. Call sites become `_ = self.gate.close();` at `gui.zig:439` and in the moved tests.
 
@@ -73,6 +73,8 @@ closer (main):     spin until inside.load(.monotonic)
 ```
 
 **Three details are load-bearing and each looks incidental.** The `inside` flag is `.monotonic` on both sides deliberately, because an acquire/release pair there would supply the very happens-before edge under test and hide a weakened `leave`, which is the same trap `ring_race.zig`'s one-shot warm-up exists for. The payload is written **before** `join`, because `join` is itself an edge and joining first would make every arm clean. And the holder spins a fixed count after signalling rather than waiting for the closer, so contention is the common case rather than the rare one.
+
+**A fourth was found by the check going red rather than by writing this section.** Reading the payload is not a long enough hold on its own, because how long the holder takes to *leave* is the cost of the ordering being varied: Thread Sanitizer instruments a release store as a full clock publish and a relaxed one as almost nothing, so the weakened arm's holder left before the closer arrived and `contended` came back 0 against the clean arm's 195. The control had stopped closing a gate with a tick inside it. The explicit `hold_spins` is the repair, and it is deliberately not a relaxed assertion: both arms now contend in 256 rounds of 256 with spin totals 0.17% apart.
 
 Counters printed: `rounds`, `contended` (rounds where `close` spun at least once), `spins`. `contended` is the progress field the script judges, standing where `validated` stands for the ring.
 
@@ -155,7 +157,7 @@ typos && markdownlint-cli2          # never with --fix
 Then, in CI. All met on [34273378203](https://github.com/cboone/fosforo/actions/runs/34273378203):
 
 - Both weakened arms flagged, each judged before its clean arm is read. One report apiece.
-- `contended` well clear of 1 on the `gate` arm: **195 of 256 rounds, 810 spins**, so the spin body was demonstrably entered rather than assumed. Later runs read 202 and 1344.
+- `contended` at **256 of 256 rounds in both gate arms**, with total spins of 251,607 and 252,026, so the spin body was demonstrably entered rather than assumed and the control is in the same situation as the subject.
 - The `ring` arm unchanged in substance: `reads=4096 validated=4096 torn=0 published=1047552`, as before, the transcript differing only in the `race:` prefix.
 - The three harness canaries each verified by planting what they forbid and watching the named test fail, and the gate's canary by relaxing `leave` and watching it fail while both behavioural tests still passed, which is the argument for having it.
 
