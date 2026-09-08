@@ -945,7 +945,8 @@ test "a plateau is measured but says nothing about level" {
 }
 
 test "a window too short to hold a segment rasterizes to nothing" {
-    const width, const height = .{ 16, 8 };
+    const width: usize = 16;
+    const height: usize = 8;
     var pixels: [width * height * 4]f32 = undefined;
 
     // One sample is the case that goes wrong quietly: the mapping divides by
