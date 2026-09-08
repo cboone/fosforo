@@ -84,6 +84,7 @@ test {
 
     // Reached only through `plugin`, so named here to get their tests collected.
     _ = @import("build_info.zig");
+    _ = @import("clap/gate.zig");
     _ = @import("clap/gui.zig");
     _ = @import("clap/log.zig");
     _ = @import("clap/state.zig");
@@ -119,10 +120,18 @@ test {
     // needs a GPU.
     _ = @import("gpu/verdict.zig");
 
-    // Not reached from the plugin at all: it is the root of the race harness,
-    // which `zig build ring-race` builds as its own executable. Named here so its
-    // pure parts are still checked by `zig build test`, because the machine that
-    // runs that command is usually the one machine that cannot run the harness.
+    // Not reached from the plugin at all: these are the roots of the two race
+    // harnesses, which `zig build ring-race` and `zig build gate-race` build as
+    // their own executables. Named here so their pure parts are still checked by
+    // `zig build test`, because the machine that runs that command is usually the
+    // one machine that cannot run either harness.
+    //
+    // For `gate_race.zig` that is not only a convenience. Its canaries assert
+    // that the replica differs from the real `Gate` in exactly one ordering and
+    // that neither the rendezvous nor the join has quietly become an edge, and
+    // each of those is a way for both arms to come back clean. A control that
+    // stopped controlling anything is the one failure the Linux job cannot see.
+    _ = @import("gate_race.zig");
     _ = @import("ring_race.zig");
 }
 
@@ -141,8 +150,10 @@ test "every module a test build compiles carries a declaration sweep" {
         .{ "main.zig", @embedFile("main.zig") },
         .{ "build_info.zig", @embedFile("build_info.zig") },
         .{ "canary.zig", @embedFile("canary.zig") },
+        .{ "gate_race.zig", @embedFile("gate_race.zig") },
         .{ "ring_race.zig", @embedFile("ring_race.zig") },
         .{ "clap/c.zig", @embedFile("clap/c.zig") },
+        .{ "clap/gate.zig", @embedFile("clap/gate.zig") },
         .{ "clap/gui.zig", @embedFile("clap/gui.zig") },
         .{ "clap/log.zig", @embedFile("clap/log.zig") },
         .{ "clap/plugin.zig", @embedFile("clap/plugin.zig") },

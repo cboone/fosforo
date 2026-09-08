@@ -22,6 +22,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const clap = @import("c.zig");
+const gate_mod = @import("gate.zig");
 const log_mod = @import("log.zig");
 const gpu = @import("../gpu/iface.zig");
 const ring = @import("../dsp/ring.zig");
@@ -29,6 +30,12 @@ const display_link = @import("../platform/displaylink.zig");
 const view_mod = @import("../platform/view.zig");
 
 const c = clap.c;
+
+/// The teardown barrier, in its own file because it is the one primitive here a
+/// Thread Sanitizer can be pointed at: everything else this file imports reaches
+/// CLAP's translated headers, `objc` or CoreVideo, none of which builds for
+/// Linux. `zig build gate-race` races it there (#91).
+const Gate = gate_mod.Gate;
 
 /// The editor's size on first open, in logical points.
 ///
@@ -436,7 +443,9 @@ pub const Editor = struct {
         // is not documented to wait for a callback already in flight, and both
         // WebKit and Chromium guard it rather than bet on the answer. The cost
         // of not betting is at most one frame, once, when an editor closes.
-        self.gate.close();
+        // The spin count is discarded here and returned at all for `#91`'s race
+        // harness, which has no other way to know the two threads met.
+        _ = self.gate.close();
 
         // Then the link, after which CoreVideo will not call back at all.
         if (self.link) |l| l.destroy();
@@ -879,69 +888,6 @@ pub const Editor = struct {
     }
 };
 
-/// A one-way gate the render thread passes through and teardown closes.
-///
-/// This exists because `CVDisplayLinkStop` does not promise what a caller
-/// freeing resources actually needs to know. It stops future callbacks; it says
-/// nothing about one already running. Without an answer, `destroy` would be
-/// releasing a Metal device that a tick might be one instruction away from
-/// sending a message to, which is a crash inside someone else's DAW that only
-/// happens when an editor closes at exactly the wrong moment.
-///
-/// One word carries both halves, which is what makes it correct: a tick claims
-/// its place and learns whether the gate was open in the same atomic operation,
-/// so there is no window between checking and entering for `close` to slip
-/// into.
-///
-/// Deliberately not a mutex, and **not one of the primitives ADR 0015 governs**.
-/// `platform/io.zig` owns an `Io`, so `Io.Mutex` is available and is still the
-/// wrong answer twice over: a mutex would reintroduce the check-then-enter
-/// window that the single word above closes, and its contended path calls
-/// `io.futexWait`, an unbounded wait. `Editor.tick` holds this gate across its
-/// whole body, so any unbounded wait reachable from a tick becomes one the
-/// host's main thread can enter in `Gate.close` when an editor closes. This is a
-/// better structure than the mutex it replaced rather than a stand-in for one.
-const Gate = struct {
-    /// Bit 0 is the closed flag; everything above it counts ticks inside.
-    state: std.atomic.Value(u32) = .init(0),
-
-    const closed: u32 = 1;
-    const one_tick: u32 = 2;
-
-    /// [render-thread] Claim a place inside, or find the gate shut.
-    ///
-    /// The increment happens either way and is undone on refusal, because
-    /// reading the flag first and incrementing second is exactly the race this
-    /// type exists to close.
-    fn enter(self: *Gate) bool {
-        const previous = self.state.fetchAdd(one_tick, .acquire);
-        if (previous & closed != 0) {
-            _ = self.state.fetchSub(one_tick, .release);
-            return false;
-        }
-        return true;
-    }
-
-    /// [render-thread] Give the place back.
-    fn leave(self: *Gate) void {
-        _ = self.state.fetchSub(one_tick, .release);
-    }
-
-    /// [main-thread] Shut the gate and wait for anyone inside to leave.
-    ///
-    /// Spins rather than sleeping. The wait is bounded by one tick, it happens
-    /// once when an editor closes, and the alternative is a condition variable
-    /// this file would have to reach outside itself for.
-    fn close(self: *Gate) void {
-        _ = self.state.fetchOr(closed, .acquire);
-
-        while (self.state.load(.acquire) != closed) {
-            std.atomic.spinLoopHint();
-            std.Thread.yield() catch {};
-        }
-    }
-};
-
 /// Each axis independently, so 300x900 answers 480x900 rather than 480x270.
 fn clampSize(width: u32, height: u32) gpu.Size {
     return .{
@@ -1030,9 +976,9 @@ const canary = @import("../canary.zig");
 
 test {
     // Three of these are named separately because `refAllDecls` does not descend.
-    // `Gate` is not among them: it is private, so `std.meta.declarations` cannot
-    // see it, and it is analysed because `Editor` calls it. What guards `Gate` is
-    // the canary below and #91's sanitizer arm, not this.
+    // `Gate` is not among them: it is an alias for a type declared in
+    // `gate.zig`, which sweeps it in its own test block. What guards its
+    // orderings is the canary there and `zig build gate-race`, not this.
     testing.refAllDecls(@This());
     testing.refAllDecls(Pending);
     testing.refAllDecls(HostGui);
@@ -1124,83 +1070,37 @@ test "destroy is safe on an editor that was shown but never parented" {
     editor.gate.leave();
 }
 
-test "a closed gate turns ticks away and leaves the count where it found it" {
-    var gate: Gate = .{};
-
-    try testing.expect(gate.enter());
-    gate.leave();
-
-    // Uncontended, so this returns without waiting for anything.
-    gate.close();
-
-    // Every refused entry has to undo its own claim. One that did not would
-    // leave the count non-zero, and the next `close` would spin forever on a
-    // tick that no longer exists.
-    try testing.expect(!gate.enter());
-    try testing.expect(!gate.enter());
-    try testing.expectEqual(Gate.closed, gate.state.load(.acquire));
-
-    gate.close();
-}
-
-test "close waits for a tick that is already inside" {
-    var gate: Gate = .{};
-    try testing.expect(gate.enter());
-
-    // The state a tick mid-frame leaves behind: closed, and still occupied.
-    _ = gate.state.fetchOr(Gate.closed, .acquire);
-    try testing.expectEqual(Gate.closed | Gate.one_tick, gate.state.load(.acquire));
-
-    // `close` would spin here rather than returning, which is the property
-    // under test and also why it cannot be called until the tick leaves.
-    gate.leave();
-    gate.close();
-    try testing.expectEqual(Gate.closed, gate.state.load(.acquire));
-}
-
 // The canaries.
 //
-// The two tests above are honest about what they do not do, and what they do not
-// do is the whole risk here: the first closes an uncontended gate, so `close`'s
-// spin body never executes, and the second produces "the state a tick mid-frame
-// leaves behind" by calling `fetchOr` in the test body. **There is no second
-// thread anywhere in this file**, so every ordering below is invisible to all 44
-// tests beside it and a `.release` simplified to `.monotonic` passes every one.
+// **There is no second thread anywhere in this file**, so every ordering below is
+// invisible to all 42 tests beside it and a `.release` simplified to
+// `.monotonic` passes every one.
 //
-// That is the same argument ADR 0016 makes about the ring, one layer up, and it
-// has the same answer for now: read the source as text, which proves nothing
-// about behaviour and fails immediately on the machine of whoever weakened it.
-// #91 is the Thread Sanitizer arm that would prove the behaviour, and it needs a
-// Linux host; these fire on any.
-test "the gate and the size mailbox still state their orderings, read as text because no test here has a second thread" {
+// That is the same argument ADR 0016 makes about the ring, one layer up. `Gate`
+// now has both halves of the answer and has taken its canary to
+// `src/clap/gate.zig` with it: `zig build gate-race` proves its behaviour on a
+// Linux runner, and the text check fires on any machine.
+//
+// **`Pending` has only this half, and that is a finding rather than an
+// omission** (#91). A Thread Sanitizer reports two threads reaching one address
+// with no edge between them, so an arm can discriminate an ordering only where
+// that ordering guards *non-atomic* memory: the ring has its sample buffer and
+// the gate has the editor's own fields, and `Pending` has neither, because the
+// whole message is packed into the `u64` and `take` reads nothing else. A
+// weakened `post` therefore leaves two relaxed atomic accesses and no race to
+// report. ADR 0016's #91 amendment records the measurement.
+test "the size mailbox still states its orderings, read as text because no test here has a second thread" {
     const code = canary.implementation(@embedFile("gui.zig"));
 
-    // `Pending`. One release store out on the main thread, one acquiring swap in
-    // on the render thread, and the swap is what makes a size acted on exactly
-    // once however many times it was posted.
+    // One release store out on the main thread, one acquiring swap in on the
+    // render thread, and the swap is what makes a size acted on exactly once
+    // however many times it was posted.
     try testing.expectEqual(1, canary.stated(code, "self.slot.store(@bitCast(message), .release);"));
     try testing.expectEqual(1, canary.stated(code, "const raw = self.slot.swap(empty, .acquire);"));
+
+    // And that those two are all of them, so the checks above cannot be
+    // satisfied by a file that also acquired a third operation somewhere else.
     try testing.expectEqual(2, canary.mentions(code, "self.slot."));
-
-    // `Gate`. The claim, which learns whether the gate was open in the same
-    // operation that takes a place, because reading the flag first and
-    // incrementing second is exactly the race this type exists to close.
-    try testing.expectEqual(1, canary.stated(code, "const previous = self.state.fetchAdd(one_tick, .acquire);"));
-
-    // Both ways back out, stated identically in `enter`'s refusal path and in
-    // `leave`. A count rather than "exactly once" is the whole reason
-    // `canary.stated` returns one: either of these weakened alone takes this to
-    // 1, and both weakened takes it to 0.
-    try testing.expectEqual(2, canary.stated(code, "_ = self.state.fetchSub(one_tick, .release);"));
-
-    // The close and its spin, which is what stands between a host's main thread
-    // and a tick still touching the device `destroy` is about to release.
-    try testing.expectEqual(1, canary.stated(code, "_ = self.state.fetchOr(closed, .acquire);"));
-    try testing.expectEqual(1, canary.stated(code, "while (self.state.load(.acquire) != closed) {"));
-
-    // And that those five are all of them, so the checks above cannot be
-    // satisfied by a file that also acquired a sixth operation somewhere else.
-    try testing.expectEqual(5, canary.mentions(code, "self.state."));
 }
 
 test "the editor's counters still state their orderings" {

@@ -33,7 +33,7 @@ The work below does not replace planting. It moves the plants that can be expres
 | -------------------------------------------------- | ------------------------------------------------------------- | ----------- | ------------------- | --------------------------------------------------------- |
 | [#89](https://github.com/cboone/fosforo/issues/89) | Give the trace half's frame wait a deadline                   | `fix:`      | A device, no window | A red `main` on a required check                          |
 | [#90](https://github.com/cboone/fosforo/issues/90) | Canary every ordering-critical declaration                    | `test:`     | Nothing             | ADR 0015 and three unguarded atomics                      |
-| [#91](https://github.com/cboone/fosforo/issues/91) | Race `gui.zig`'s two cross-thread primitives                  | `test:`     | A Linux runner      | ADR 0016 applied to the primitives that guard teardown    |
+| [#91](https://github.com/cboone/fosforo/issues/91) | Race the editor's teardown gate                               | `test:`     | A Linux runner      | ADR 0016 applied to the primitive that guards teardown    |
 | [#92](https://github.com/cboone/fosforo/issues/92) | Make the trace half's judgements pure, and test them          | `refactor:` | A device, no window | `src/smoke.zig`'s 0 tests; makes the plant table regress  |
 | [#93](https://github.com/cboone/fosforo/issues/93) | Make the watcher's bookkeeping reachable from a test build    | `refactor:` | Nothing             | Code no test binary compiles                              |
 | [#94](https://github.com/cboone/fosforo/issues/94) | Run the unit suite in the mode that ships. **Done**           | `ci:`       | Nothing             | Debug-only test coverage of a ReleaseFast product         |
@@ -45,11 +45,11 @@ The work below does not replace planting. It moves the plants that can be expres
 
 **[#89](https://github.com/cboone/fosforo/issues/89) has landed**, so `main` is no longer red on a required check and the remaining ten are all `test:`, `refactor:` or `ci:` work with nothing currently costing anything. Section 1 below records what it found, including a correction to its own reasoning.
 
-**Seven of the eleven have landed: #89, #92, #94, #95, #96, #97 and #99.** Their sections carry the measured results and, in three cases, a correction to what the section predicted. The pattern across all three is worth stating once here rather than three times below: **an acceptance criterion written against the tree as it was can be falsified by a neighbouring issue landing first.** #96's headroom plant, #97's clock ceiling and #92's `expectClose` defect were each true when filed and each wrong by the time they were run, so every remaining item's acceptance should be re-derived against the tree rather than executed as written.
+**Eight of the eleven have landed: #89, #91, #92, #94, #95, #96, #97 and #99.** Their sections carry the measured results and, in three cases, a correction to what the section predicted. The pattern across all three is worth stating once here rather than three times below: **an acceptance criterion written against the tree as it was can be falsified by a neighbouring issue landing first.** #96's headroom plant, #97's clock ceiling and #92's `expectClose` defect were each true when filed and each wrong by the time they were run, so every remaining item's acceptance should be re-derived against the tree rather than executed as written.
 
-**#96 and #99 landed close enough together to demonstrate it twice over.** Both corrected the build plan's stale unit-test count and conflicted over that one line, and both arrived at **265** for `main` independently — #99 by counting it, #96 by measuring a baseline before adding to it. The figure carried forward is 270, which is that agreed 265 plus this issue's five.
+**#96 and #99 landed close enough together to demonstrate it twice over.** Both corrected the build plan's stale unit-test count and conflicted over that one line, and both arrived at **265** for `main` independently — #99 by counting it, #96 by measuring a baseline before adding to it. That agreement is the durable part; the number itself has moved three times since, through #94, #91 and #96 in turn, which is the anchored-versus-present-tense distinction `.github/docs.instructions.md` describes playing out in one row of one table. **Re-measure it rather than adding to whatever it currently reads.**
 
-The three remaining are [#91](https://github.com/cboone/fosforo/issues/91), [#93](https://github.com/cboone/fosforo/issues/93) and [#98](https://github.com/cboone/fosforo/issues/98).
+The two remaining are [#93](https://github.com/cboone/fosforo/issues/93) and [#98](https://github.com/cboone/fosforo/issues/98).
 
 ## 1. Give the trace half's frame wait a deadline rather than a spin count
 
@@ -165,13 +165,23 @@ The arms worth having, given what each primitive is for:
 
 ### Acceptance
 
-- Both weakened arms are flagged with `WARNING: ThreadSanitizer: data race` before either clean arm's result is read, judged by a script on `scripts/ring-race-check`'s assertion order.
+- Both weakened arms are flagged with `WARNING: ThreadSanitizer: data race` before either clean arm's result is read, judged by `scripts/race-check`, which is `scripts/ring-race-check` renamed and generalized and carries the same control-first assertion order.
 - The defect is planted in the **real** primitives as well as the replicas, on ADR 0016's own reasoning that "a control that models the defect is not the subject exhibiting it".
 - `Gate`'s spin body is genuinely entered, confirmed by a counter the harness prints, so a `close` that never waited would be visible as a vacuous pass.
 
+**Landed.** Plan: [`2026-09-08-race-the-editors-teardown-gate-under-tsan.md`](../done/2026-09-08-race-the-editors-teardown-gate-under-tsan.md). `Gate` is now `src/clap/gate.zig`, `src/gate_race.zig` races it, `scripts/ring-race-check` became `scripts/race-check` and is parameterized for both harnesses, and the `ring-race` job became `race`. The suite went from 265 named tests to 270, counted against `main` rather than against this branch's original base, which has since moved.
+
+**Three corrections to this section as it was written**, all of them measured rather than reasoned about, and all recorded in ADR 0016's #91 amendment.
+
+The arms table named `enter`'s acquire as the defect for the gate's control. **That ordering comes back clean**, along with `enter`'s refusal store and `close`'s `fetchOr`; only `leave`'s release and the acquire load in `close`'s spin flag, and they are the two halves of one edge. A control built as specified would have reported nothing and the failure would have read as a broken sanitizer.
+
+**`Pending` gets no arm, and neither candidate for "how `Pending` stops needing `gpu.Size`" was taken**, because it does not need to. A Thread Sanitizer reports unordered access to *non-atomic* memory, and `Pending` packs its whole message into the `u64`, so a weakened `post` leaves nothing to report. A 2x2 confirmed it discriminates when something rides alongside the word and does not when nothing does. So `Size` stays in `src/gpu/iface.zig` and `Pending` stays in `src/clap/gui.zig`.
+
+Two claims here are false on `main` and were checked while the files were open. The ADR 0005 comptime block is at `iface.zig:486`, not 430. And `Size` is used by `gui.zig` and the renderer but **not** by `src/platform/view.zig`, which names it nowhere and passes geometry as bare `u32`.
+
 ### What it does not close
 
-`renderer.Mailbox` carries `Pipelines`, which are Objective-C objects, so it cannot be raced on Linux at all. Item 6 covers what is testable about it. And the watcher thread itself stays outside any sanitizer, which should be stated in the ADR amendment rather than left to be rediscovered.
+`renderer.Mailbox` carries `Pipelines`, which are Objective-C objects, so it cannot be raced on Linux at all. Item 6 covers what is testable about it. And the watcher thread itself stays outside any sanitizer, which should be stated in the ADR amendment rather than left to be rediscovered. Both are stated there.
 
 ## 4. Make the trace half's judgements pure, and turn the plant table into tests
 

@@ -531,9 +531,9 @@ jobs:
   # In `ci.yml` rather than its own workflow, unlike `typos`. That question is
   # settled by the `paths-ignore` lists at the top of this file, which cover
   # `*.md`, `docs/**`, `LICENSE` and the agent config files. None of those can
-  # hide a change to `src/dsp/ring.zig`, `src/ring_race.zig` or `build.zig`, so
-  # this check cannot skip the change that governs it, which is exactly what a
-  # spell checker added here would have done.
+  # hide a change to `src/dsp/ring.zig`, `src/clap/gate.zig`, either harness
+  # root or `build.zig`, so this check cannot skip the change that governs it,
+  # which is exactly what a spell checker added here would have done.
   #
   # No pinned download and no cached tool, unlike the three Ubuntu jobs below and
   # the validator: the sanitizer ships inside the Zig toolchain, so
@@ -541,11 +541,18 @@ jobs:
   # compiler-rt sources it carries on a cold cache, which is the one variable
   # part of this job and the reason for the ceiling below.
   #
-  # 88s max over 8 runs, which is the cold case: `mlugg/setup-zig` caches the Zig
-  # cache, so the sanitizer runtime is built from its bundled compiler-rt sources
-  # once and restored afterwards, and the warm runs land between 31s and 73s.
-  # Measured on this pull request's own runs rather than borrowed, per #17.
-  ring-race:
+  # Both harnesses in one job rather than two, because the expensive part is that
+  # runtime and it is built once per job and reused by the second binary.
+  #
+  # 84s max over 12 runs with both harnesses, re-measured on this pull request's
+  # own runs per #17 rather than carried over. The ceiling does not move,
+  # because the second harness is not what this job spends its time on: the ring
+  # alone was 88s max over 8 runs, and the range here is 33s to 84s, splitting
+  # by cache state rather than by harness count. `mlugg/setup-zig` caches the
+  # Zig cache, so the sanitizer runtime is built from compiler-rt sources once per
+  # cold job and both binaries then reuse it. That is also the argument for one
+  # job rather than two: a second job would pay that build again.
+  race:
     runs-on: ubuntu-latest
     timeout-minutes: 6
     steps:
@@ -553,11 +560,19 @@ jobs:
 
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
 
-      # The step judges two arms and one of them must be flagged, so a green
+      # Each step judges two arms and one of them must be flagged, so a green
       # result here means the sanitizer was demonstrably running. See the
-      # assertion order in `scripts/ring-race-check`'s header.
+      # assertion order in `scripts/race-check`'s header.
+      #
+      # Two steps rather than one, so a failure names which subject raced without
+      # anyone having to read the log.
       - name: Race-check the history buffer
         run: zig build ring-race
+
+      # The editor's teardown barrier: what stands between a host's main thread
+      # and memory the render thread is still reading (#91).
+      - name: Race-check the teardown gate
+        run: zig build gate-race
 
   # The reusable workflow's `format` job runs `zig fmt --check` and nothing
   # else, so no shell tooling ran anywhere in this repository. That left the
