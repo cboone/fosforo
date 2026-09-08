@@ -518,6 +518,14 @@ pub fn sine(out: []f32, cycles: f32, amplitude: f32) void {
 /// property the centroid depends on — symmetry about the centreline — without
 /// reproducing the oriented quad, which this file has no business knowing about.
 pub fn rasterize(pixels: []f32, width: usize, height: usize, window: []const f32) Image {
+    // The buffer has to hold the geometry it was asked for, on
+    // `palette.buildPalette`'s precedent: an assertion rather than a refusal,
+    // because this takes no error union and its only callers are this
+    // repository's own tests, where a short buffer is a mistake in the test
+    // rather than input from anywhere. That is the same reason `Image.complete()`
+    // exists for the *harness* side and is checked rather than asserted there.
+    std.debug.assert(pixels.len >= width * height * 4);
+
     @memset(pixels, 0);
     const image: Image = .{ .width = width, .height = height, .pixels = pixels };
 
@@ -537,15 +545,21 @@ pub fn rasterize(pixels: []f32, width: usize, height: usize, window: []const f32
     // is worse than a trap, and the absence of the trap here is not a guarantee
     // to lean on either way.
     //
-    // Zero returns here too, though it needs no guard: the loop below simply
-    // never runs. Naming both is what stops the next reader wondering which case
-    // this is for.
+    // Zero samples returns here too, though on its own it would need no guard:
+    // the loop below simply never runs. Naming both is what stops the next
+    // reader wondering which case this is for.
+    //
+    // **A zero-sized drawable is the third case and it fails differently.**
+    // `width - 1` and `height - 1` are `usize`, so at zero they wrap rather than
+    // going negative: a Debug build panics with `integer overflow` and a
+    // `--release=fast` one writes at an index near the top of the address space.
+    // No caller here asks for one, and every caller could once this is public.
     //
     // A cleared image rather than a lit column, because this models the beam as
     // inter-sample *segments* and fewer than two samples describe none. That is
     // also what the shader draws from such a window, so the model and the thing
     // it models agree at the degenerate end as well.
-    if (window.len < 2) return image;
+    if (width == 0 or height == 0 or window.len < 2) return image;
 
     var previous: ?f32 = null;
     for (window, 0..) |sample, i| {
@@ -954,4 +968,24 @@ test "a window too short to hold a segment rasterizes to nothing" {
     // degenerate case rather than everything.
     const two = [_]f32{ 0.5, -0.5 };
     try testing.expect(maxChannel(rasterize(&pixels, width, height, &two), 1) > 0.5);
+}
+
+test "a drawable with no area rasterizes to nothing rather than wrapping" {
+    // `width - 1` and `height - 1` are `usize`, so a zero dimension wraps rather
+    // than going negative: planted without the guard this panics with `integer
+    // overflow` in Debug and writes near the top of the address space under
+    // `--release=fast`. An empty slice is the whole buffer such a geometry needs.
+    var none: [0]f32 = undefined;
+    const window = [_]f32{ 0.5, -0.5 };
+
+    const no_width = rasterize(&none, 0, 8, &window);
+    try testing.expectEqual(@as(usize, 0), litColumns(no_width, 0.5));
+
+    const no_height = rasterize(&none, 16, 0, &window);
+    try testing.expectEqual(@as(usize, 0), litColumns(no_height, 0.5));
+
+    // Both at once, which is the shape an uninitialised geometry would have.
+    const neither = rasterize(&none, 0, 0, &window);
+    try testing.expectEqual(@as(usize, 0), litColumns(neither, 0.5));
+    try testing.expect(neither.complete());
 }
