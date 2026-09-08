@@ -81,6 +81,7 @@ DEFAULT_SCALE = 2.0
 BACKGROUND_BYTES = (5.0, 5.0, 8.0)  # palette.background_bytes
 CORE_EXPONENT = 4  # palette.core_exponent
 WHITE_HEADROOM = 0.8  # palette.white_headroom
+MIN_DWELL = 1e-6  # palette.min_dwell
 TAU_NS = 158187026  # palette.decay_tau_nanos
 
 # The refresh rate a capture is assumed to have been taken at.
@@ -219,7 +220,7 @@ def white_point(refresh_hz):
     dependency rather than a property held in reserve.
     """
     decay = math.exp(-1e9 / (refresh_hz * TAU_NS))
-    return WHITE_HEADROOM / max(1.0 - decay, 1e-6)
+    return WHITE_HEADROOM / max(1.0 - decay, MIN_DWELL)
 
 
 def energy_from_tonemapped(t, white):

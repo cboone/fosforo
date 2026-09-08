@@ -418,6 +418,26 @@ pub const white_headroom: f32 = 0.8;
 /// shader's `palette_row` by the constants test.
 pub const shipped_palette: Palette = .green;
 
+/// The smallest dwell fraction `whitePoint` will divide by.
+///
+/// `1 - decay` is the fraction of a dwelling beam's steady state one frame
+/// contributes, and at a decay of exactly one it is zero. **This bound is not
+/// what the arithmetic needs, it is what a hot-reloaded shader needs**: a
+/// fragment buffer no reloaded source declares reads zeros, so `decay` arrives as
+/// 0 at one end, and an uninitialised or stale one can arrive as 1 at the other.
+/// The first is loud and correct — the white point falls to `white_headroom` and
+/// everything from one deposit up blows out white. The second would be a division
+/// by zero and a NaN the format turns into garbage, so it is clamped instead, and
+/// the shoulder term then vanishes and this degrades to plain Reinhard.
+///
+/// **Named rather than inline because it is restated in three languages**, here,
+/// in `shaders/scope.metal` and in `scripts/measure-trace`, and a pin needs a name
+/// to anchor on: `scalarAfter` in `src/gpu/metal/renderer.zig` matches a
+/// declaration, so a literal inside a `max(...)` call is reachable by nothing. It
+/// is also what makes the resulting 8e5 a figure two docstrings and `AGENTS.md`
+/// can quote, and a test can hold, rather than an arithmetic accident.
+pub const min_dwell: f32 = 1e-6;
+
 /// Where the tonemap saturates, in deposits.
 ///
 /// **The brightness axis's rail**, and the same kind of object as
@@ -429,7 +449,8 @@ pub fn whitePoint(decay: f32) f32 {
     // without a conditional. A decay of exactly 1 is a phosphor that never fades,
     // whose steady state is unbounded; the clamp sends the white point to 8e5,
     // which makes the shoulder term vanish and leaves plain Reinhard rather than
-    // a division by zero.
+    // a division by zero. `min_dwell` above carries the rest of that argument and
+    // is what the 8e5 is made of, along with `white_headroom`.
     //
     // **Reachable through this file and not through the render loop**, which is
     // worth separating because the two answers differ. `decayOver(0)` is exactly
@@ -446,7 +467,7 @@ pub fn whitePoint(decay: f32) f32 {
     // of that argument, including the opposite end: at a decay of zero the white
     // point falls to `white_headroom` and everything above one deposit blows out
     // white, which is loud and is the right failure.
-    return white_headroom / @max(1.0 - decay, 1e-6);
+    return white_headroom / @max(1.0 - decay, min_dwell);
 }
 
 /// Unbounded linear energy compressed into [0, 1].

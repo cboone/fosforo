@@ -71,6 +71,16 @@ using namespace metal;
 // the number worth turning while looking at a host.
 constant float white_headroom = 0.8;
 
+// The smallest dwell fraction the white point will divide by.
+//
+// `palette.min_dwell`, and the same value the model clamps at, so the two agree
+// by a pin rather than by inspection. Not editable live in any useful sense: it
+// exists for the case where `decay` arrives as 1 because a reloaded source left a
+// fragment buffer unbound, which is the situation where nothing about this file
+// can be trusted anyway. See the tonemap below and `src/gpu/palette.zig` for the
+// argument at both ends of the range.
+constant float min_dwell = 1e-6;
+
 // Which gradient to read: 0 green, 1 amber, 2 storage-tube blue, 3 neutral.
 //
 // A literal rather than a uniform because nothing can author or automate a choice
@@ -152,7 +162,7 @@ fragment float4 decay_fragment(VertexOut in [[stage_in]],
 // by zero; clamped, the shoulder term vanishes and this degrades to plain
 // Reinhard rather than to a NaN the format turns into garbage.
 float tonemap(float energy, float decay) {
-    const float dwell = max(1.0 - decay, 1e-6);
+    const float dwell = max(1.0 - decay, min_dwell);
     const float white = white_headroom / dwell;
     return min(energy * (1.0 + energy / (white * white)) / (1.0 + energy), 1.0);
 }
