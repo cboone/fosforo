@@ -276,6 +276,12 @@ One `requireComplete` now guards all ten judges that index, on either readback, 
 
 **The assertion is the one thing here no test covers, and that is stated rather than hidden.** Exercising it means observing a Debug panic, which needs a child process this project has no harness for; `buildPalette`'s equivalent assertion is untested for the same reason. Planted, it survives every test. It is a caller contract enforced in Debug, not a checked refusal, and the difference is why `Image.complete()` exists separately for the harness side where the input is a readback rather than a literal in a test.
 
+**A fourth round closed the arithmetic under both guards, and it is the one finding here whose reachability is nil.** `width * height * 4` is `usize` arithmetic in `Image.complete` and `Picture.complete`, so a product past 2^64 is illegal behaviour: a Debug panic, and in `--release=fast` a wrap that would report an undersized buffer as *complete*, which is the opposite of what the method is for. Real geometries here are 960 by 540 and overflow needs a product of 2^62, **nine trillion times larger**, so no drawable approaches it and no argument from the harness's own sizes justifies the change.
+
+What justifies it is that both methods are `pub`, so a caller supplies both numbers, and [#94](https://github.com/cboone/fosforo/issues/94) intends to run this suite under the mode that ships. And unlike most unreachable-input guards, this one is **testable in the mode we already run**: an `Image` of 2^32 by 2^32 over an empty slice needs no allocation, and planted without the fix that test panics with `integer overflow` in Debug. A guard whose absence a Debug test can demonstrate is not defensive padding.
+
+It also simplified rather than added: `rasterize` now asserts `image.complete()` instead of restating the same product, so the two cannot drift and the overflow is refused in one place.
+
 ## Verification
 
 Run in order. The first two are the negative controls and neither is optional.
