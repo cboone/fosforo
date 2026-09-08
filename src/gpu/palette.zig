@@ -1061,3 +1061,63 @@ test "the resolve of no energy is the background the drawable shows" {
         }
     }
 }
+
+test "the dominant channel inverts exactly, which is what measure-trace does to a capture" {
+    // The inverse of the test above it, and the one declaration in this file that
+    // no build type-checked until #95 and nothing asserted until #96.
+    // `scripts/measure-trace` mirrors it in `tonemapped_from_dominant` and reads
+    // every published intensity in this project through it.
+    const table = try paletteScratch();
+    defer testing.allocator.free(table);
+
+    for (std.enums.values(Palette)) |p| {
+        const row = @intFromEnum(p);
+        const c = p.dominant();
+
+        // **The structural gap, and it is the sharpest thing here.** This side
+        // picks the channel with a hand-written switch; the Python side picks it
+        // with `np.argmax(tint)`. Nothing tied the two, and the existing test
+        // above compares with `<=`, which a tie satisfies either way — so the
+        // neutral gradient, whose three components are all exactly 1.0, is
+        // precisely where a disagreement would hide. `argmax` returns the *first*
+        // maximum, so that is what is asserted.
+        var first_max: usize = 0;
+        for (tints_srgb[row], 0..) |component, channel| {
+            if (component > tints_srgb[row][first_max]) first_max = channel;
+        }
+        try testing.expectEqual(first_max, c);
+
+        // Every byte the drawable can show at or above the background, inverted
+        // and re-encoded. Below the background there is no preimage: the inverse
+        // goes negative and `paletteEntry` clamps, so the round trip is only
+        // defined from the background's own byte upward.
+        //
+        // **Through the closed form rather than the table**, because the table is
+        // 0.05 bytes off it by its own test, which is enough to cross a rounding
+        // boundary; and the table's agreement with the closed form is already
+        // asserted, so routing through it would add noise rather than reach.
+        //
+        // `expectEqual` rather than a tolerance, and that is measured rather than
+        // hoped for: over the 1,001 samples this loop covers, the worst error is
+        // 1.5e-5 of a byte and the closest any value comes to a `.5` rounding
+        // boundary is 0.49998. Four orders of magnitude of margin.
+        var byte: u16 = background_bytes[c];
+        while (byte <= 255) : (byte += 1) {
+            const t = dominantToTonemapped(p, @intCast(byte));
+            const back = paletteEntry(tints_srgb[row], t)[c];
+            try testing.expectEqual(@as(u8, @intCast(byte)), srgbByte(back));
+        }
+
+        // The two anchors, stated separately because the sweep above would pass
+        // for an inverse that was off by a constant the re-encode undid. Zero is
+        // approximate at 1e-6 and measures 1.2e-10: the background's byte decodes
+        // to the exact linear value `backgroundLinear` returns, and the residue is
+        // the subtraction of two nearly equal f32 values.
+        try testing.expectApproxEqAbs(
+            @as(f32, 0.0),
+            dominantToTonemapped(p, background_bytes[c]),
+            1e-6,
+        );
+        try testing.expectEqual(@as(f32, 1.0), dominantToTonemapped(p, 255));
+    }
+}
