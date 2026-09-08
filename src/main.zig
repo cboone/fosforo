@@ -60,6 +60,7 @@ test {
 
     // Reached only through `plugin`, so named here to get their tests collected.
     _ = @import("build_info.zig");
+    _ = @import("clap/gate.zig");
     _ = @import("clap/gui.zig");
     _ = @import("clap/log.zig");
     _ = @import("clap/state.zig");
@@ -119,6 +120,7 @@ test "every module a test build compiles carries a declaration sweep" {
         .{ "canary.zig", @embedFile("canary.zig") },
         .{ "ring_race.zig", @embedFile("ring_race.zig") },
         .{ "clap/c.zig", @embedFile("clap/c.zig") },
+        .{ "clap/gate.zig", @embedFile("clap/gate.zig") },
         .{ "clap/gui.zig", @embedFile("clap/gui.zig") },
         .{ "clap/log.zig", @embedFile("clap/log.zig") },
         .{ "clap/plugin.zig", @embedFile("clap/plugin.zig") },
