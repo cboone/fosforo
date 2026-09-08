@@ -272,6 +272,10 @@ One `requireComplete` now guards all ten judges that index, on either readback, 
 
 **One test was corrected by the plant rather than by review.** The mismatch arm first reused the full-size picture buffer, so a mismatched geometry read the *wrong pixels* instead of running off the end, and the comment above it described arithmetic the test did not perform. Sized to exactly what it declares, it panics. That is the centreline plant's failure in a third dress: an arm that looks like a test of the thing it names and is a test of something weaker.
 
+**Making `measure.rasterize` public was the other half of the review's findings, and it took three passes.** That function was private and every caller sized its window from a drawable; public, it acquired the contract `ramp` and `sine` had always held and it alone did not. A single-sample window divides by `window.len - 1`, and the expectation was a Debug panic on `@intFromFloat` of a nan. **Planted, there is none:** it lights exactly one column and reports a plausible image, which for a model whose whole job is to let a test know its own answers is worse than a trap. A zero dimension is the opposite, wrapping `width - 1` into `integer overflow`. Both are now one early return, with the buffer asserted on `palette.buildPalette`'s precedent.
+
+**The assertion is the one thing here no test covers, and that is stated rather than hidden.** Exercising it means observing a Debug panic, which needs a child process this project has no harness for; `buildPalette`'s equivalent assertion is untested for the same reason. Planted, it survives every test. It is a caller contract enforced in Debug, not a checked refusal, and the difference is why `Image.complete()` exists separately for the harness side where the input is a readback rather than a literal in a test.
+
 ## Verification
 
 Run in order. The first two are the negative controls and neither is optional.
