@@ -65,12 +65,12 @@ reason worth keeping:
 
 ## Decisions
 
-| Question               | Decision                                                                                       |
-| ---------------------- | ---------------------------------------------------------------------------------------------- |
-| Where the CI check goes | A new `test-modes` job in this repo's `ci.yml`                                                 |
-| `zig build test`       | Stays mode-following, so `-Doptimize=ReleaseSmall` and friends remain available ad hoc         |
-| `ReleaseSafe`          | **Added** as `test-safe`, not refused: it is the only mode that optimizes *and* keeps the checks |
-| Instrument check       | A comptime pin, so a dropped optimize mode is a compile error rather than a silently green job |
+| Question                | Decision                                                                                         |
+| ----------------------- | ------------------------------------------------------------------------------------------------ |
+| Where the CI check goes | A new `test-modes` job in this repo's `ci.yml`                                                   |
+| `zig build test`        | Stays mode-following, so `-Doptimize=ReleaseSmall` and friends remain available ad hoc           |
+| `ReleaseSafe`           | **Added** as `test-safe`, not refused: it is the only mode that optimizes *and* keeps the checks |
+| Instrument check        | A comptime pin, so a dropped optimize mode is a compile error rather than a silently green job   |
 
 ## Changes
 
@@ -84,11 +84,12 @@ non-Debug mode (`build.zig:190-191`), and copying the Debug value into a pinned 
 bake an absolute worktree path into a release-mode binary, which is the exact negative
 `debugShaderPath`'s docstring (`:173-178`) and `ci.yml:812-828` exist to hold.
 
-`b.dependency` is the only eager cost, and it is small: `xcrun` measures ~10 ms warm against
-a whole-graph configure of 118 ms. Zig caches a dependency instance by its argument hash, so
-when `-Doptimize=ReleaseFast` is passed the release Core reuses the shared one rather than
-adding a fourth. **Measure the configure delta after the change** (`time zig build --help`
-before and after) and put the figure in the comment, on this file's practice.
+`b.dependency` is the only eager cost, because it runs zig-objc's build function at configure
+time on every `zig build` invocation. Measured before and after rather than budgeted for:
+`zig build --help` reads **0.11 s** with one mode and 0.11 s with three, against ~10 ms for
+the `xcrun` each instance runs. Zig caches a dependency instance by its argument hash, so
+`-Doptimize=ReleaseFast` yields two instances rather than four, and nothing is *built* unless
+a step that wants it was asked for. The figure is in `coreAt`'s comment.
 
 **`Core.Options` gains `pinned_optimize: []const u8 = ""`**, published through the existing
 `b.addOptions()` block in `Core.module` (`build.zig:303-325`) as
@@ -101,12 +102,24 @@ including the two anonymous imports and the docstring at `:473-488` explaining w
 on the test module alone. Three call sites replace `build.zig:98`:
 
 ```zig
-addTestStep(core, "test", "Run unit tests", "");
-addTestStep(coreAt(b, target, provenance, .ReleaseSafe), "test-safe",
-    "Run unit tests at ReleaseSafe: optimized, with asserts and safety checks live", "ReleaseSafe");
-addTestStep(coreAt(b, target, provenance, .ReleaseFast), "test-release",
-    "Run unit tests in the optimize mode that ships (ReleaseFast)", "ReleaseFast");
+addTestStep(core, .{
+    .step = "test",
+    .description = "Run unit tests",
+});
+addTestStep(coreAt(b, target, provenance, .ReleaseSafe), .{
+    .step = "test-safe",
+    .description = "Run unit tests at ReleaseSafe: optimized, with asserts and safety checks live",
+    .pinned_optimize = "ReleaseSafe",
+});
+addTestStep(coreAt(b, target, provenance, .ReleaseFast), .{
+    .step = "test-release",
+    .description = "Run unit tests in the optimize mode that ships (ReleaseFast)",
+    .pinned_optimize = "ReleaseFast",
+});
 ```
+
+An options struct rather than three positional strings, because two of them are prose and a
+call site reading `"test-safe", "…", "ReleaseSafe"` says nothing about which is which.
 
 The docstring on `addTestStep` gains the paragraph this issue is for: what each mode sees,
 that the three are additive rather than alternatives, and the `shader.zig:278` vacuity that
@@ -202,38 +215,48 @@ repository when #72 promoted it.
 
 ## Acceptance
 
-Three plants, each run against all three steps, each reverted afterwards. Commit before
-planting so `git restore` cannot take the fix out with the plant.
+Four plants, each run against all three steps, each reverted afterwards. The mechanism was
+committed first, so `git checkout --` could take the plant out without the fix.
+
+**Instrument check — run first, because everything below is read against it.** Plant
+`.ReleaseFast` → `.Debug` at the `test-release` call site, leaving the pin's claim alone.
+**Result: the build fails**, `src/main.zig:75: this artifact is pinned to ReleaseFast and was
+built at Debug`, naming both modes. Without this a refactor that dropped the pin would leave
+a green job testing Debug twice.
 
 **Plant 1 — the literal criterion: the refusal, not the safety check, is what holds in the
 shipping build.** Delete `if (minimum_capacity == 0) return error.EmptyCapacity;`
-(`ring.zig:114`). Its own docstring at `:83-91` names this asymmetry, and the downstream
-assert is real: `std/math.zig:1219` is `assert(value != 0)` inside `ceilPowerOfTwoPromote`.
-Expected, and to be recorded as measured rather than predicted:
+(`ring.zig:114`). Unplanted, all three steps pass and all three return `error.EmptyCapacity`
+from `ring.zig:396`, which *is* the criterion: the ReleaseFast run refuses the bad capacity.
+Planted, all three fail, and the signatures are the finding:
 
-- `zig build test` fails by **trapping** inside `std`'s own assert.
-- `zig build test-release` fails by returning a **wrong error** — `error.Overflow` off a
-  `usize` underflow — with no trap anywhere.
-- Restored, all three steps pass and all three return `error.EmptyCapacity` from
-  `ring.zig:396`.
+| Step           | Failure                                                                         |
+| -------------- | ------------------------------------------------------------------------------- |
+| `test`         | `panic: reached unreachable code`, trace through `std/math.zig:1219`'s `assert` |
+| `test-safe`    | the same panic, trace optimized down to the test runner, no `std.math` line     |
+| `test-release` | `terminated with signal TRAP` — no message, no trace, nothing named             |
 
-**Plant 2 — the discriminating one, which is the only proof the new steps add coverage
-rather than repeat it.** Move required work inside a `std.debug.assert` argument on a tested
-pure path; `palette.buildPalette` (`palette.zig:243`) is the suggested site, since its table
-is compared against a closed form at `palette.zig:716`. Expected: `zig build test` stays
-**green**, `zig build test-release` goes **red** because the work was compiled out.
-`test-safe` should stay green, which is the arm that shows ReleaseSafe is not a substitute
-for ReleaseFast. This is the class of defect no Debug run can see, and it is also a second
-positive control that the release step really is at ReleaseFast.
+**The plan predicted `error.Overflow` off a `usize` underflow and was wrong.** ReleaseFast
+does not run on silently; it traps opaquely, which is a sharper argument for the refusal than
+the one predicted. Recorded at `ring.zig`'s `EmptyCapacity` docstring.
+
+**Plant 2 — designed as the discriminating one, and it is not a discriminator.** Move
+`buildPalette`'s whole loop into a `std.debug.assert` argument (`palette.zig:243`). Expected
+Debug green and `test-release` red. **Result: green in all three modes**, because Zig's
+`std.debug.assert` is an ordinary function and its argument is evaluated in every optimize
+mode — the C bug class of work inside an assert does not exist here. What ReleaseFast strips
+is the `unreachable` branch, not the call.
+
+**So there is no plant in this codebase where Debug is green and ReleaseFast is red**, and
+that is the honest statement of what these steps buy. Every difference between the modes
+*removes* a check, so ReleaseFast is a strictly weaker detector of runtime faults. What it
+adds is that the suite runs at all in the build that ships, where a refusal that had lapsed
+into an assertion would be caught by nothing else.
 
 **Plant 3 — the vacuity, recorded rather than argued.** Drop `!builtin.is_test` from
-`shader.live` (`shader.zig:45`). Expected: `zig build test` fails, `zig build test-release`
-**passes**. That result is what belongs in the amended comment at `shader.zig:278` and in the
-`AGENTS.md` bullet, and it is the executable form of "additive, never a replacement".
-
-**Instrument check.** Plant `.ReleaseFast` → `.Debug` on the `test-release` call site and
-confirm the comptime pin fails the build naming both modes. Without this, a future refactor
-that dropped the pin would leave a green job testing Debug twice.
+`shader.live` (`shader.zig:45`). **Result as predicted:** `zig build test` fails 1 of 285,
+`test-safe` and `test-release` both report 285 of 285. That is the executable form of
+"additive, never a replacement", and it is in the amended comment at `shader.zig:278`.
 
 ## Verification
 
@@ -249,15 +272,21 @@ zig fmt --check build.zig src/
 Then the two checks that this change could break in ways the suite would not notice:
 
 ```bash
-# The release-mode test binary must not carry a worktree path. Positive control first:
-# the Debug one must carry it, or the grep proves nothing.
-strings -a "$(find .zig-cache/o -name test -type f -perm +111 -newer build.zig | head -1)" \
-  | grep -c "$PWD/shaders"
+# A release-mode binary must not carry a worktree path, which is what `coreAt`
+# re-deriving `shader_path` is for. The *plugin* is the honest subject, not a test
+# binary: `shader.live` is false under `is_test`, so nothing references the option,
+# an unreferenced const is not emitted, and the check would read 0 either way.
+# Debug is the positive control.
+zig build                && strings -a zig-out/Fosforo.clap/Contents/MacOS/Fosforo | grep -c "$PWD/shaders"
+zig build --release=fast && strings -a zig-out/Fosforo.clap/Contents/MacOS/Fosforo | grep -c "$PWD/shaders"
 
-# The plain build is unchanged: nothing new on the default install step, and the
-# configure-time cost of two extra dependency instances is what the comment claims.
+# The plain build is unchanged, and the configure-time cost of two extra dependency
+# instances is what `coreAt`'s comment claims.
 time zig build --help > /dev/null
 ```
+
+Measured: `1` then `0`, and `0.11 s` across three runs, the same figure the graph read
+with one mode. `zig build` still writes only `Fosforo.clap` into `zig-out`.
 
 CI: push the branch, confirm `test-modes` goes green, read its duration from the Actions API,
 set `timeout-minutes` from that measurement, and confirm the other eight jobs are unaffected.
