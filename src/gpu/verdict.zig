@@ -985,6 +985,23 @@ pub fn realTimeDecay(measured: []const RealTimeArm) Fault!void {
 
 const testing = std.testing;
 
+test {
+    // The expectations half of `zig build smoke-trace`, whose only caller is an
+    // executable this binary never compiles, so without these its public surface
+    // would be checked by the one build step that needs a GPU (#95). `Fault` is
+    // absent because it is an error set, and `std.meta.declarations` raises a
+    // compile error on anything that is not a struct, enum, union or opaque.
+    testing.refAllDecls(@This());
+    testing.refAllDecls(Picture);
+    testing.refAllDecls(Arm);
+    testing.refAllDecls(Silence);
+    testing.refAllDecls(Level);
+    testing.refAllDecls(Lit);
+    testing.refAllDecls(Beam);
+    testing.refAllDecls(Resolve);
+    testing.refAllDecls(RealTimeArm);
+}
+
 // Ten defects were planted against this half at #51 and recorded in a table in
 // `docs/plans/done/2026-08-29-verify-the-shader-offscreen-against-the-constants.md`.
 // Each was verified once, by hand, against a GPU, and written down in prose;

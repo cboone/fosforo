@@ -506,6 +506,16 @@ pub fn dominantToTonemapped(palette: Palette, byte: u8) f32 {
 
 const testing = std.testing;
 
+test {
+    // `dominantToTonemapped` had no reference anywhere in the repository, so no
+    // build type-checked it at all: not `zig build`, not `zig build test`, not
+    // `zig build smoke-gpu`. It is the published inverse `scripts/measure-trace`
+    // mirrors in `tonemapped_from_dominant`, which makes an uncompiled copy of it
+    // worse than no copy, because a reader takes it for the checked side.
+    testing.refAllDecls(@This());
+    testing.refAllDecls(Palette);
+}
+
 test "the sRGB transfer function round-trips across the whole byte range" {
     // Both directions, over every byte a drawable can store, because the encode
     // is what the model predicts and the decode is what `scripts/measure-trace`

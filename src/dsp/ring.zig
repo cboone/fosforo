@@ -352,6 +352,17 @@ fn coherent(snapshot: u64, now: u64, capacity: usize, copied: usize) bool {
 const testing = std.testing;
 const canary = @import("../canary.zig");
 
+test {
+    // This file is the worked example `AGENTS.md` uses for lazy analysis: `read`
+    // and `capacity` are called by nothing but the tests below, so a type error in
+    // either survived a plain build. Referencing the type is not enough to fix it.
+    // `refAllDecls` walks one container's public declarations and does not descend,
+    // and `refAllDeclsRecursive` was removed in Zig 0.16, so the second call is
+    // what reaches `Ring`'s methods rather than something the first implies.
+    testing.refAllDecls(@This());
+    testing.refAllDecls(Ring);
+}
+
 /// A monotonically increasing signal, so the order samples come back in is
 /// checkable rather than merely plausible.
 fn ramp(buffer: []f32, from: f32) void {

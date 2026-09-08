@@ -999,6 +999,13 @@ pub fn testNoExtensions(
 
 const testing = std.testing;
 
+test {
+    // `editorOf` is reached only from `src/smoke.zig`, which is the root of its
+    // own executable and is never compiled into this binary, so the one deliberate
+    // exception to `Instance` staying private was analysed by no test build.
+    testing.refAllDecls(@This());
+}
+
 // Event list stubs. A host always supplies both lists, so the fixture below
 // does too rather than leaving them null.
 

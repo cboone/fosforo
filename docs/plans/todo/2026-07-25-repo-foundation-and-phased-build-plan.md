@@ -424,7 +424,7 @@ A review of the whole verification surface on `0e1ddf5` produced eleven issues, 
 | [#92](https://github.com/cboone/fosforo/issues/92) | Make the trace half's judgements pure, and test them          | `smoke-trace`, so a device and no window | Done   |
 | [#93](https://github.com/cboone/fosforo/issues/93) | Make the shader watcher's bookkeeping testable                | `zig build test`                         | Open   |
 | [#94](https://github.com/cboone/fosforo/issues/94) | Run the unit suite in the optimize mode that ships            | `zig build test`                         | Open   |
-| [#95](https://github.com/cboone/fosforo/issues/95) | Analyze every public declaration; settle the uncalled one     | `zig build test`                         | Open   |
+| [#95](https://github.com/cboone/fosforo/issues/95) | Analyze every public declaration; settle the uncalled one     | `zig build test`                         | Done   |
 | [#96](https://github.com/cboone/fosforo/issues/96) | Assert `tonemap` and `whitePoint`'s defining properties       | `zig build test`                         | Open   |
 | [#97](https://github.com/cboone/fosforo/issues/97) | Eleven small, named, missing assertions                       | `zig build test`                         | Done   |
 | [#98](https://github.com/cboone/fosforo/issues/98) | Cover `Editor.tick` and `readWindow`, or record why not       | Possibly `smoke-appkit`, so a window     | Open   |

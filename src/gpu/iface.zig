@@ -553,6 +553,19 @@ fn assertSignature(comptime name: []const u8, comptime Found: type, comptime Wan
 
 const testing = std.testing;
 
+test {
+    // The seam's own declarations, compiled here rather than at whichever caller
+    // reaches them first. `Renderer` is re-exported from the backend, which carries
+    // its own sweep; `Error` is an error set, and `std.meta.declarations` raises a
+    // compile error on anything that is not a struct, enum, union or opaque.
+    testing.refAllDecls(@This());
+    testing.refAllDecls(Size);
+    testing.refAllDecls(Outcome);
+    testing.refAllDecls(Diagnostics);
+    testing.refAllDecls(Readback);
+    testing.refAllDecls(ShaderStats);
+}
+
 // Nothing here constructs a `Renderer`. Doing so would acquire a GPU, and
 // `zig build test` runs in CI on a runner whose Metal support is not something
 // this project should depend on (ADR 0009). The backend is verified by running
