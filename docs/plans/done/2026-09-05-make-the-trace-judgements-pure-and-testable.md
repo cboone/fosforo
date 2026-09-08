@@ -256,6 +256,16 @@ Two more survived on the first sweep and do not on the last, which is the sweep 
 
 **The sweep needed its own negative control, and it was wrong the first time.** The first version matched failures with `grep -oE "test\.[^']+' failed"`, and three test names here contain an apostrophe, so the character class stopped early and four *caught* plants were reported as uncaught. It reads the exit code now. An instrument that reports absences has to be checked against a case it should find, which is the rule `scripts/ring-race-check` already applies to a sanitizer and which this sweep had to learn separately.
 
+### What review found that the sweep did not
+
+**Copilot's review of the pull request caught a real asymmetry, and it was one this change introduced.** Two of the fifteen judges refused a readback shorter than the geometry it declares and thirteen indexed unguarded. Both halves were accidental: `silence` guarded the whole run by being the first judge `traceHalf` calls rather than by design, and `resolve`'s check was added during the move for no stated reason. The asymmetry read as a claim that some judges need the check and others do not, and no such claim was true.
+
+**The crash is unreachable from the harness and reachable from a test, which is exactly what this change altered.** `traceHalf` allocates one pair of buffers at precisely `trace_width * trace_height * 4` and `Probe` declares that same geometry, so the shipping caller cannot produce a short readback. What is new is that these are fifteen public functions a test can hand any `Image` to. So `Fault.ReadbackTruncated` went from a run-wide guarantee to an error two of fifteen entrypoints could return, which is most of the way to a dead member of the set.
+
+One `requireComplete` now guards all ten judges that index, on either readback, plus `beamProfile`'s row. **Planted, the guard's absence does not fail a test, it crashes one** — an out-of-bounds panic on `zig build test`, which is the failure mode the review predicted and the reason a named fault is worth returning instead. The sweep test asserts every entrypoint refuses, with a buffer *longer* than its geometry as the negative control: every other arm asserts a refusal, so a judge that refused everything would otherwise pass all of them.
+
+**The lesson is about where the sweep could not look.** Planting weakens an assertion that exists and asks whether a test notices. It cannot find an assertion that was never written, which is what a missing guard is, and it is blind by construction to the *uniformity* of a rule across entrypoints. Reading the file as a whole is what found this, and the review did that where the sweep could not.
+
 ## Verification
 
 Run in order. The first two are the negative controls and neither is optional.
