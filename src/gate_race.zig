@@ -51,9 +51,14 @@
 //!
 //! A gate is one-way, so each round gets a fresh one. The holder does its reading
 //! *after* signalling rather than before, so the closer is spinning in `close`
-//! while the reads are still happening; `Gate.close` reports how many turns it
-//! spun, and `contended` below is what rules out a run where the two threads
-//! never actually met.
+//! while the reads are still happening, and then holds for a fixed count before
+//! leaving. That fixed count is not padding: how long the holder takes to leave
+//! otherwise depends on the ordering under test, because Thread Sanitizer
+//! instruments a release store far more heavily than a relaxed one, and without
+//! it the control stops closing a gate that has a tick inside it. See
+//! `hold_spins`, which carries the measurement. `Gate.close` reports how many
+//! turns it spun, and `contended` below is what rules out a run where the two
+//! threads never actually met.
 //!
 //! **An executable rather than a test artifact**, on `src/smoke.zig`'s and
 //! `src/ring_race.zig`'s precedent and for their reasons: a test binary has to
@@ -75,11 +80,26 @@ const rounds: u64 = 256;
 
 /// Words of payload standing in for the editor's own fields.
 ///
-/// This is the hold: the holder reads all of them inside the gate, after
-/// signalling, so the count sets how long the closer is left spinning. Large
-/// enough that contention is the ordinary case rather than a coincidence, which
-/// `contended` then confirms rather than assumes.
+/// The holder reads all of them inside the gate, and the closer overwrites them
+/// once the gate is shut. This is what a sanitizer can actually see; the gate's
+/// own word is atomic on both sides and could never be reported.
 const payload_words: usize = 1024;
+
+/// Turns the holder spins inside the gate after reading, before it leaves.
+///
+/// **Not padding, and the arms diverge without it.** Reading the payload is not
+/// a long enough hold on its own, because how long the holder takes to *leave*
+/// depends on the very ordering under test: Thread Sanitizer instruments a
+/// release store as a full publish of the thread's clock and a relaxed one as
+/// almost nothing, so the weakened arm's holder leaves markedly sooner. Measured
+/// rather than reasoned about, on a run with no explicit hold: the clean arm
+/// contended in 195 rounds of 256 and the weakened arm in 0, which failed the
+/// run on `NeverContended`. The control was no longer closing a gate with a tick
+/// inside it, which is the only situation either arm exists to model.
+///
+/// So the hold is a fixed count that costs the same in both arms, and
+/// `contended` is what reports that it worked.
+const hold_spins: u64 = 1 << 14;
 
 /// How long the closer waits for the holder to signal that it is inside.
 ///
@@ -276,7 +296,7 @@ fn Session(comptime G: type) type {
         entered: bool = false,
         checksum: u64 = 0,
 
-        /// [holder] Enter, read the payload, leave.
+        /// [holder] Enter, read the payload, hold, leave.
         ///
         /// The signal goes up before the reads rather than after, so the closer
         /// is already spinning inside `close` while the reads are in flight. It
@@ -290,6 +310,12 @@ fn Session(comptime G: type) type {
             var sum: u64 = 0;
             for (self.payload) |word| sum +%= word;
             self.checksum = sum;
+
+            // See `hold_spins`. Without this the two arms hold for measurably
+            // different lengths, because the cost of leaving is the cost of the
+            // ordering being tested.
+            var held: u64 = 0;
+            while (held < hold_spins) : (held += 1) std.atomic.spinLoopHint();
 
             self.gate.leave();
         }
