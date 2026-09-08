@@ -421,19 +421,17 @@ jobs:
   # Both harnesses in one job rather than two, because the expensive part is that
   # runtime and it is built once per job and reused by the second binary.
   #
-  # 88s max over 8 runs for the ring alone, which is the cold case:
-  # `mlugg/setup-zig` caches the Zig cache, so the sanitizer runtime is built
-  # from its bundled compiler-rt sources once and restored afterwards, and the
-  # warm runs land between 31s and 73s. Measured on that pull request's own runs
-  # rather than borrowed, per #17.
-  #
-  # TODO(#91): 8 is provisional and covers the second harness on the ring's
-  # figure rather than on one of its own, which is the thing this repository
-  # says not to do. Re-measure over this pull request's runs and replace both the
-  # number and this paragraph with the observed maximum and its sample size.
+  # 84s max over 8 runs with both harnesses, re-measured on this pull request's
+  # own runs per #17 rather than carried over. The ceiling does not move,
+  # because the second harness is not what this job spends its time on: the ring
+  # alone was 88s max over 8 runs, and the warm runs here land at 40s to 44s
+  # against cold ones at 74s to 84s. `mlugg/setup-zig` caches the Zig cache, so
+  # the sanitizer runtime is built from its bundled compiler-rt sources once per
+  # cold job and both binaries then reuse it. That is also the argument for one
+  # job rather than two: a second job would pay that build again.
   race:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 

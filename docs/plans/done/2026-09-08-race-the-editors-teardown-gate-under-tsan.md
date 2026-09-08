@@ -12,14 +12,14 @@ Issue: [#91](https://github.com/cboone/fosforo/issues/91). Type: `test:`. Item 3
 
 ## The finding that reshapes the issue
 
-**A Thread Sanitizer arm discriminates only where the atomic orders access to *non-atomic* memory.** TSan builds a happens-before graph and reports two threads reaching one address with no edge between them; two relaxed atomic accesses to the same word are not a race in that model, whatever the ordering.
+**A Thread Sanitizer arm discriminates only where the atomic orders access to _non-atomic_ memory.** TSan builds a happens-before graph and reports two threads reaching one address with no edge between them; two relaxed atomic accesses to the same word are not a race in that model, whatever the ordering.
 
 That rule sorts the three primitives:
 
-| Primitive | Non-atomic memory the ordering protects | Raceable |
-| --------- | ---------------------------------------- | -------- |
-| `Ring` | `samples: []f32`, written by one thread and read by the other | Yes, and is |
-| `Gate` | The editor's resources: `renderer`, `view`, `link`, `meter`, `applied`, and six more plain fields `destroy` writes after `close` returns | Yes |
+| Primitive | Non-atomic memory the ordering protects                                                                                                        | Raceable     |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
+| `Ring`    | `samples: []f32`, written by one thread and read by the other                                                                                  | Yes, and is  |
+| `Gate`    | The editor's resources: `renderer`, `view`, `link`, `meter`, `applied`, and six more plain fields `destroy` writes after `close` returns       | Yes          |
 | `Pending` | **None.** The whole message is packed into the `u64` (`gui.zig:167-173`); `take` reads nothing else, and `tick` uses only the value it returns | Predicted no |
 
 So `pending-weakened` as the issue specifies it is predicted to come back **clean**, which would be a vacuous control: the exact failure ADR 0016's control-first assertion order exists to catch, arriving from the other side. That prediction is measured rather than assumed, in stage 7 below, and whichever way it lands is what the ADR amendment records.
@@ -50,7 +50,7 @@ Move with it:
 
 ### 2. `close` reports the spin count
 
-Acceptance criterion 3 asks that `Gate`'s spin body is genuinely entered, "confirmed by a counter the harness prints, so a `close` that never waited is visible as a vacuous pass". Nothing outside `Gate` can observe that: a holder that waits for a "closing" flag before leaving makes the spin *less* likely, not more, and no arrangement of the harness's own atomics can see inside the loop.
+Acceptance criterion 3 asks that `Gate`'s spin body is genuinely entered, "confirmed by a counter the harness prints, so a `close` that never waited is visible as a vacuous pass". Nothing outside `Gate` can observe that: a holder that waits for a "closing" flag before leaving makes the spin _less_ likely, not more, and no arrangement of the harness's own atomics can see inside the loop.
 
 So `close` returns the number of spins it performed. One word, no new state, and the canaried lines are unchanged. Call sites become `_ = self.gate.close();` at `gui.zig:439` and in the moved tests.
 
@@ -102,28 +102,38 @@ Rename the `ring-race` job to `race` and give it a second step. One job, one run
 
 **Re-measure `timeout-minutes` rather than keeping 6.** The current value is 4x an 88s cold maximum over 8 runs, and a second instrumented binary changes the numerator. Measure on this pull request's own runs, per #17, and record the figure and sample size in the comment beside it.
 
+**Measured at 84s max over 8 runs with both harnesses**, against the ring's 88s alone, so the ceiling stays at 6. The second binary is not what this job spends its time on: warm runs land at 40s to 44s and cold ones at 74s to 84s, because the sanitizer runtime is built from compiler-rt once per cold job and both binaries reuse it. That is also the argument for one job rather than two.
+
 ### 7. Measure `Pending`
 
-Write the arms exactly as the issue specifies: a replica with `post`'s `.release` relaxed to `.monotonic`, one thread posting and one taking, no payload. Run it.
+Ran as a 2x2 rather than the single arm the issue specifies, because a bare negative could not be told from a broken instrument:
 
-- **If clean**, as predicted: drop both arms, and record in the ADR amendment that `Pending`'s message is self-contained so no sanitizer arm can discriminate it, with the general rule that produced the prediction. `Pending` keeps its canary and its eight unit tests. `gpu.Size` never moves, and the "decision this issue owns" is answered by refusal rather than by a new module.
-- **If flagged**: extract `Pending` to its own module, move `Size` out of `src/gpu/iface.zig` into a leaf module the seam re-exports, and keep the arms. The re-export keeps `gui.zig` and `renderer.zig` at zero edits and leaves the ADR 0005 comptime block at `iface.zig:486-548` exact, because Zig struct types are nominal per declaration.
+| Arm                        | Rides alongside the word | `post`       | Races | Took |
+| -------------------------- | ------------------------ | ------------ | ----- | ---- |
+| `pending`                  | no                       | `.release`   | 0     | 2268 |
+| `pending-weakened`         | no                       | `.monotonic` | **0** | 548  |
+| `pending-payload`          | yes                      | `.release`   | 0     | 55   |
+| `pending-payload-weakened` | yes                      | `.monotonic` | **2** | 2    |
+
+Row four is what makes row two mean something. **Clean, as predicted**, so both arms were dropped: `Pending` keeps its canary and its unit tests, `gpu.Size` never moved, and the decision this issue owns is answered by refusal rather than by a new module. The arms were temporary and are not in the tree.
+
+**The first attempt at row three and four was wrong**, and usefully: it wrote the payload before spawning the taker, and thread creation is itself a happens-before edge, so both payload arms came back clean and the control proved nothing. Writing it after the spawn and before the first post is what makes `post`'s store the only thing that can order it.
 
 ### 8. Plant the defects in the real `Gate`
 
 Acceptance criterion 2, on ADR 0016's reasoning that "a control that models the defect is not the subject exhibiting it". Plant each of `Gate`'s five orderings in turn against the `gate` arm and record the verdict:
 
-| Planted | `gate` arm | Predicted |
-| ------- | ---------- | --------- |
-| `enter`'s `fetchAdd(one_tick, .acquire)` to `.monotonic` | | clean |
-| `enter`'s refusal `fetchSub(one_tick, .release)` to `.monotonic` | | clean, not exercised by this scenario |
-| `leave`'s `fetchSub(one_tick, .release)` to `.monotonic` | | data race |
-| `close`'s `fetchOr(closed, .acquire)` to `.monotonic` | | clean |
-| `close`'s `load(.acquire)` to `.monotonic` | | data race |
+| Planted                                                          | Predicted | Measured  |
+| ---------------------------------------------------------------- | --------- | --------- |
+| `enter`'s `fetchAdd(one_tick, .acquire)` to `.monotonic`         | clean     | clean     |
+| `enter`'s refusal `fetchSub(one_tick, .release)` to `.monotonic` | clean     | clean     |
+| `leave`'s `fetchSub(one_tick, .release)` to `.monotonic`         | data race | data race |
+| `close`'s `fetchOr(closed, .acquire)` to `.monotonic`            | clean     | clean     |
+| `close`'s `load(.acquire)` to `.monotonic`                       | data race | data race |
 
-The predictions are stated so they can be wrong. Fill the middle column with what actually happened, and if the table refutes the reasoning above, the reasoning is what changes.
+The predictions were stated so they could be wrong; all five held. Run ids are in ADR 0016's amendment. Both races were reported against the payload write at `src/gate_race.zig:242`.
 
-Plant against a committed baseline, since `git restore` would otherwise revert the fix along with the plant.
+Planted against a committed baseline on a throwaway branch, since `git restore` would otherwise revert the fix along with the plant, and one line at a time rather than by find-and-replace, which rewrites the canary's own string literals along with the code and leaves the suite green.
 
 ## Verification
 
@@ -142,12 +152,12 @@ typos && markdownlint-cli2          # never with --fix
 
 `.editorconfig` needs no new entry: `scripts/race-check` is a rename of a file already listed, and the section names each extensionless script directly.
 
-Then, in CI on this pull request:
+Then, in CI. All met on [34273378203](https://github.com/cboone/fosforo/actions/runs/34273378203):
 
-- Both weakened arms flagged with `WARNING: ThreadSanitizer: data race`, each judged before its clean arm is read.
-- `contended >= 1` on the `gate` arm, so the spin body was demonstrably entered.
-- The `ring` arm unchanged in substance, its transcript differing only in the `race:` prefix.
-- Confirm the control still earns its place by reverting `use_llvm = true` once: both arms must go clean and the script must stop on the control, which is the false pass ADR 0016 records the first CI run of this job producing.
+- Both weakened arms flagged, each judged before its clean arm is read. One report apiece.
+- `contended` well clear of 1 on the `gate` arm: **195 of 256 rounds, 810 spins**, so the spin body was demonstrably entered rather than assumed. Later runs read 202 and 1344.
+- The `ring` arm unchanged in substance: `reads=4096 validated=4096 torn=0 published=1047552`, as before, the transcript differing only in the `race:` prefix.
+- The three harness canaries each verified by planting what they forbid and watching the named test fail, and the gate's canary by relaxing `leave` and watching it fail while both behavioural tests still passed, which is the argument for having it.
 
 ## Documents this updates
 

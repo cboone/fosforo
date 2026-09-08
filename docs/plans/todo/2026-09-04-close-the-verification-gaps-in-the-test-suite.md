@@ -33,7 +33,7 @@ The work below does not replace planting. It moves the plants that can be expres
 | -------------------------------------------------- | ------------------------------------------------------------- | ----------- | ------------------- | --------------------------------------------------------- |
 | [#89](https://github.com/cboone/fosforo/issues/89) | Give the trace half's frame wait a deadline                   | `fix:`      | A device, no window | A red `main` on a required check                          |
 | [#90](https://github.com/cboone/fosforo/issues/90) | Canary every ordering-critical declaration                    | `test:`     | Nothing             | ADR 0015 and three unguarded atomics                      |
-| [#91](https://github.com/cboone/fosforo/issues/91) | Race `gui.zig`'s two cross-thread primitives                  | `test:`     | A Linux runner      | ADR 0016 applied to the primitives that guard teardown    |
+| [#91](https://github.com/cboone/fosforo/issues/91) | Race the editor's teardown gate                               | `test:`     | A Linux runner      | ADR 0016 applied to the primitive that guards teardown    |
 | [#92](https://github.com/cboone/fosforo/issues/92) | Make the trace half's judgements pure, and test them          | `refactor:` | A device, no window | `src/smoke.zig`'s 0 tests; makes the plant table regress  |
 | [#93](https://github.com/cboone/fosforo/issues/93) | Make the watcher's bookkeeping reachable from a test build    | `refactor:` | Nothing             | Code no test binary compiles                              |
 | [#94](https://github.com/cboone/fosforo/issues/94) | Run the unit suite in the mode that ships                     | `ci:`       | Nothing             | Debug-only test coverage of a ReleaseFast product         |
@@ -163,9 +163,19 @@ The arms worth having, given what each primitive is for:
 - The defect is planted in the **real** primitives as well as the replicas, on ADR 0016's own reasoning that "a control that models the defect is not the subject exhibiting it".
 - `Gate`'s spin body is genuinely entered, confirmed by a counter the harness prints, so a `close` that never waited would be visible as a vacuous pass.
 
+**Landed.** Plan: [`2026-09-08-race-the-editors-teardown-gate-under-tsan.md`](../done/2026-09-08-race-the-editors-teardown-gate-under-tsan.md). `Gate` is now `src/clap/gate.zig`, `src/gate_race.zig` races it, `scripts/ring-race-check` became `scripts/race-check` and is parameterized for both harnesses, and the `ring-race` job became `race`. The suite went from 287 tests to 292.
+
+**Three corrections to this section as it was written**, all of them measured rather than reasoned about, and all recorded in ADR 0016's #91 amendment.
+
+The arms table named `enter`'s acquire as the defect for the gate's control. **That ordering comes back clean**, along with `enter`'s refusal store and `close`'s `fetchOr`; only `leave`'s release and the acquire load in `close`'s spin flag, and they are the two halves of one edge. A control built as specified would have reported nothing and the failure would have read as a broken sanitizer.
+
+**`Pending` gets no arm, and neither candidate for "how `Pending` stops needing `gpu.Size`" was taken**, because it does not need to. A Thread Sanitizer reports unordered access to *non-atomic* memory, and `Pending` packs its whole message into the `u64`, so a weakened `post` leaves nothing to report. A 2x2 confirmed it discriminates when something rides alongside the word and does not when nothing does. So `Size` stays in `src/gpu/iface.zig` and `Pending` stays in `src/clap/gui.zig`.
+
+Two claims here are false on `main` and were checked while the files were open. The ADR 0005 comptime block is at `iface.zig:486`, not 430. And `Size` is used by `gui.zig` and the renderer but **not** by `src/platform/view.zig`, which names it nowhere and passes geometry as bare `u32`.
+
 ### What it does not close
 
-`renderer.Mailbox` carries `Pipelines`, which are Objective-C objects, so it cannot be raced on Linux at all. Item 6 covers what is testable about it. And the watcher thread itself stays outside any sanitizer, which should be stated in the ADR amendment rather than left to be rediscovered.
+`renderer.Mailbox` carries `Pipelines`, which are Objective-C objects, so it cannot be raced on Linux at all. Item 6 covers what is testable about it. And the watcher thread itself stays outside any sanitizer, which should be stated in the ADR amendment rather than left to be rediscovered. Both are stated there.
 
 ## 4. Make the trace half's judgements pure, and turn the plant table into tests
 
