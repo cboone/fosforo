@@ -521,6 +521,24 @@ pub fn rasterize(pixels: []f32, width: usize, height: usize, window: []const f32
     @memset(pixels, 0);
     const image: Image = .{ .width = width, .height = height, .pixels = pixels };
 
+    // **A window of one draws nothing, and saying so is what `pub` costs.** The
+    // horizontal mapping divides by `window.len - 1`, so a single sample makes
+    // `x_ndc` a `0 / 0` nan and `@intFromFloat` of a nan is illegal behaviour:
+    // a Debug panic, and worse than that in a release build. It was unreachable
+    // while this was private and every caller sized its window from a drawable,
+    // and it became reachable at #92 when this went public beside `ramp` and
+    // `sine`, both of which already refuse a short window at their first line.
+    //
+    // Zero returns here too, though it needs no guard: the loop below simply
+    // never runs. Naming both is what stops the next reader wondering which case
+    // this is for.
+    //
+    // A cleared image rather than a lit column, because this models the beam as
+    // inter-sample *segments* and fewer than two samples describe none. That is
+    // also what the shader draws from such a window, so the model and the thing
+    // it models agree at the degenerate end as well.
+    if (window.len < 2) return image;
+
     var previous: ?f32 = null;
     for (window, 0..) |sample, i| {
         const x_ndc = 2.0 * @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(window.len - 1)) - 1.0;
@@ -902,4 +920,30 @@ test "a plateau is measured but says nothing about level" {
 
     try testing.expect(at_full > 0);
     try testing.expect(at_rail > 0);
+}
+
+test "a window too short to hold a segment rasterizes to nothing" {
+    const width, const height = .{ 16, 8 };
+    var pixels: [width * height * 4]f32 = undefined;
+
+    // One sample is the case that traps: the mapping divides by `window.len - 1`,
+    // so this is `0 / 0`, and `@intFromFloat` of a nan is illegal behaviour
+    // rather than a wrong answer. `ramp` and `sine` have always refused it and
+    // this became public beside them at #92.
+    const one = [_]f32{0.5};
+    const from_one = rasterize(&pixels, width, height, &one);
+    try testing.expect(litColumns(from_one, 0.5) == 0);
+    try testing.expect(maxChannel(from_one, 1) == 0.0);
+
+    // Zero needs no guard, because the loop never runs. Asserted anyway, since
+    // "it happens to work" and "it is refused" are different claims and only one
+    // of them survives an edit.
+    const none = [_]f32{};
+    const from_none = rasterize(&pixels, width, height, &none);
+    try testing.expect(maxChannel(from_none, 1) == 0.0);
+
+    // The negative control: two samples do draw, so the guard above refuses the
+    // degenerate case rather than everything.
+    const two = [_]f32{ 0.5, -0.5 };
+    try testing.expect(maxChannel(rasterize(&pixels, width, height, &two), 1) > 0.5);
 }
