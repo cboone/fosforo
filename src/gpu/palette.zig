@@ -885,7 +885,17 @@ test "the tonemap reaches one exactly at the white point rather than approaching
 
         // The direction that keeps the line above non-vacuous. An unconditional
         // `return 1.0` satisfies the approximate equality and fails here.
-        try testing.expect(tonemap(w * 0.99, w) < 1.0);
+        //
+        // **A tenth below the rail rather than a hundredth, and the margin is
+        // arithmetic rather than taste.** `f(kw)` is `(kw + k²) / (1 + kw)`, which
+        // is below one by `(1 - k²) / (1 + kw)`; at the 8e5 clamp that has to clear
+        // one f32 step below one, 6e-8, or the quotient rounds to exactly 1.0 and
+        // this arm fails on binary32 rather than on the curve. At `k = 0.99` the
+        // shortfall is 0.0199 against a required 0.0475 — it is on the wrong side
+        // and passed only by the luck of the rounding. At `k = 0.9` it is 0.19
+        // against 0.0432, four times clear. Found by planting `min_dwell` at 1e-5,
+        // which moves the clamp to 8e4 and lands the old margin on the other side.
+        try testing.expect(tonemap(w * 0.9, w) < 1.0);
 
         // And the property as the display shows it, which is what "the core would
         // be pale green forever" actually means: at the white point every channel
@@ -940,7 +950,10 @@ test "the tonemap is monotone in energy and rails at the white point rather than
         for ([_]f32{ 1.5, 2.0, 100.0, 1e6 }) |over| {
             try testing.expectEqual(@as(f32, 1.0), tonemap(w * over, w));
         }
-        try testing.expect(tonemap(w * (1.0 - 1e-3), w) < 1.0);
+        // A tenth below, for the reason the test above states in full: nearer than
+        // about a twentieth of the rail, the curve at the 8e5 clamp is closer to
+        // one than f32 can represent, so a tighter margin asserts a rounding mode.
+        try testing.expect(tonemap(w * 0.9, w) < 1.0);
     }
 }
 
