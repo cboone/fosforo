@@ -523,11 +523,19 @@ pub fn rasterize(pixels: []f32, width: usize, height: usize, window: []const f32
 
     // **A window of one draws nothing, and saying so is what `pub` costs.** The
     // horizontal mapping divides by `window.len - 1`, so a single sample makes
-    // `x_ndc` a `0 / 0` nan and `@intFromFloat` of a nan is illegal behaviour:
-    // a Debug panic, and worse than that in a release build. It was unreachable
-    // while this was private and every caller sized its window from a drawable,
-    // and it became reachable at #92 when this went public beside `ramp` and
-    // `sine`, both of which already refuse a short window at their first line.
+    // `x_ndc` a `0 / 0` nan. It was unreachable while this was private and every
+    // caller sized its window from a drawable, and it became reachable at #92
+    // when this went public beside `ramp` and `sine`, both of which already
+    // refuse a short window at their first line.
+    //
+    // **The failure is silent, which is why this is a guard and not a comment.**
+    // `@intFromFloat` of a non-finite float is illegal behaviour, so the obvious
+    // expectation is a Debug panic naming it. Planted, there is none: the
+    // one-sample case lights exactly **one column**, at a position `@min` clamps
+    // out of whatever the cast produced, and reports a plausible image. A wrong
+    // picture from a model whose whole job is to let a test know its own answers
+    // is worse than a trap, and the absence of the trap here is not a guarantee
+    // to lean on either way.
     //
     // Zero returns here too, though it needs no guard: the loop below simply
     // never runs. Naming both is what stops the next reader wondering which case
@@ -926,10 +934,10 @@ test "a window too short to hold a segment rasterizes to nothing" {
     const width, const height = .{ 16, 8 };
     var pixels: [width * height * 4]f32 = undefined;
 
-    // One sample is the case that traps: the mapping divides by `window.len - 1`,
-    // so this is `0 / 0`, and `@intFromFloat` of a nan is illegal behaviour
-    // rather than a wrong answer. `ramp` and `sine` have always refused it and
-    // this became public beside them at #92.
+    // One sample is the case that goes wrong quietly: the mapping divides by
+    // `window.len - 1`, so this is `0 / 0`, and planted without the guard it
+    // lights exactly one column rather than trapping. `ramp` and `sine` have
+    // always refused a short window and this became public beside them at #92.
     const one = [_]f32{0.5};
     const from_one = rasterize(&pixels, width, height, &one);
     try testing.expect(litColumns(from_one, 0.5) == 0);
