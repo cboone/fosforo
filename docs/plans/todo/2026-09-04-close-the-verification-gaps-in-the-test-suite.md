@@ -366,7 +366,7 @@ The recommendation is the second, and the third is a defensible outcome that sho
 
 Worth folding in while the workflows are open: the deprecation warnings the last run emitted, about `version-file` being an unexpected input to `mlugg/setup-zig` and Node 20 actions being forced onto Node 24.
 
-**Done**, with its own plan at [`2026-09-08-lint-the-workflows-in-ci.md`](2026-09-08-lint-the-workflows-in-ci.md). One correction to the section above: `actionlint` sits in the build plan's **phase 0** exit criteria, not phase 1.
+**Done**, with its own plan at [`2026-09-08-lint-the-workflows-in-ci.md`](../done/2026-09-08-lint-the-workflows-in-ci.md). One correction to the section above: `actionlint` sits in the build plan's **phase 0** exit criteria, not phase 1.
 
 **The second acceptance criterion was answered in the negative, and before the job was written.** `actionlint` would not have caught the `version-file` warning, for a reason that is structural rather than a gap a newer release closes: it validates `with:` inputs against a database bundled in the binary and keyed by *tag*, so pinning every action to a commit — which this repository does deliberately and will keep doing — defeats the check outright. Measured both ways, with a positive control in the same run: `actions/checkout@v4` with a bogus input is reported and the identical input on the same action pinned by SHA is not. It does not resolve a remote reusable workflow's inputs at all either, which retires a claim in `docs/plans/done/2026-07-29-tighten-ci-job-timeouts.md` that it "resolves the pinned SHA to check" them.
 
