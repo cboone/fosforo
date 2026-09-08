@@ -115,6 +115,12 @@ gh api repos/cboone/fosforo/actions/runs \
 
 **Cleanup:** close the probe without merging and delete both remote and local branches, so the comment-only commit never reaches the fix's own diff.
 
+### Result
+
+Run as [#110](https://github.com/cboone/fosforo/pull/110), a draft pull request with `baseRefName: ci/stacked-prs`, a one-line diff touching `.github/workflows/ci.yml`, and `has("stack") == false`, so no native stack can account for the outcome. **It passed.** Run `34271723634`: `name: CI`, `event: pull_request`, `head_branch: test/stacked-ci-probe`, `conclusion: success` in 152 s, with all twelve job names present, `ci / Build`, `ci / Format`, `ci / Test`, `clap-validator`, `clap-wrapper`, `python`, `ring-race`, `shaders`, `shell` and `smoke` succeeding and `ci / Cross compile` and `ci / Scrut` skipped as they are on every run. Before this change that run would not have existed at all; #86's rollup, which is what the same pull request would have produced under the old trigger, holds only `scan / gitleaks`, `scan / trufflehog`, `scan / Validate inputs` and typos' `check`.
+
+All four false-pass flavours were ruled out by name: the run exists under the name `CI` rather than the rollup merely reading green; its event is `pull_request` rather than `workflow_dispatch`; a run exists at all, so the diff did not land on an ignored path; and the base was confirmed as `ci/stacked-prs` before the run was read. The probe was closed without merging and both branches deleted.
+
 Ordinary checks alongside it, all unaffected by this change: `zig build test`, `typos` (which reads `ci.yml`, so the new comments must be spelled correctly and carry no bare 7-hex-digit tokens, per `AGENTS.md:380`), and `markdownlint-cli2` in check mode over the edited Markdown, never `--fix`.
 
 ## Commits
