@@ -400,7 +400,17 @@ pub fn decayOver(elapsed_nanos: u64) f32 {
 /// Below one, and that is not a safety margin. Reinhard reaches its white point
 /// exactly at `e = w` while the steady state is only approached, so a white point
 /// set at the asymptote itself would never arrive: the core would be pale green
-/// forever. At 0.8 a dwelt pixel goes white after sixteen frames.
+/// forever. **At 0.8 a cleared, dwelling pixel reaches white in 113 ms**, about
+/// seven frames at 60 Hz and fourteen at 120, the same wall time either way
+/// because the asymptote and the white point carry the same `1 / (1 - decay)` and
+/// it cancels. The closed form is `-tau * ln(1 - white_headroom / d)`, with `d`
+/// the per-frame deposit on a stationary trace.
+///
+/// **The upper bound is `d` itself, measured at 1.5674.** At or above it the white
+/// point sits at or past the asymptote and the core never arrives however long the
+/// beam holds still; 1.5 already takes 498 ms. The figure this docstring used to
+/// give, sixteen frames, was computed when `d` was exactly 1.0 under a line strip.
+/// #57 took it to 2.6133 and #58 to 1.5674, and it was stale through both.
 ///
 /// **#58 has landed and the range exists, but it is not the range that was
 /// predicted.** This was held provisional because no white point can carve a
@@ -423,12 +433,26 @@ pub fn decayOver(elapsed_nanos: u64) f32 {
 /// before, a slow tone and a fast one both read about 1.35, so the display said
 /// the same thing about them, which is what a plot does.
 ///
-/// The value is unchanged and no longer rests on the derivation alone. At 1 kHz it
-/// puts a turning point at green 191 and a crossing at 98 over a background of 5,
-/// and the frame-rate invariance test below still holds a single deposit steady
-/// and still requires the dwell steady state to reach exactly 255. Outstanding is
-/// the by-eye judgement in a host on real material, which is the one thing an
-/// offscreen measurement cannot make.
+/// **And the knob still has no visible travel, for a reason that is not the one
+/// ADR 0019 gave.** Judged in REAPER at 0.4 and at 1.2: no visible difference, and
+/// that is the arithmetic rather than the eye. A moving trace deposits `d` once
+/// and slides on, so it reaches 1.57; white sits at `0.8 / (1 - decay)`, which is
+/// 15.6 at 120 Hz, ten times further. Across 0.4 to 1.2 a 1 kHz turning point goes
+/// green 191 to 190, its crossing does not move at all, and a stationary line
+/// reads 255 at both. Only the time to whiten changes, 47 ms against 229 ms.
+///
+/// So the 2:1 range ADR 0019 blamed was real, is fixed, and was not the binding
+/// constraint. The binding one is that the dwell asymptote is 19.5 times a single
+/// deposit at 120 Hz, which follows from anchoring white to the asymptote at all.
+/// **A white core on moving material is a property of a *triggered* display**, so
+/// the re-judgement belongs to phase 4 rather than staying open here; until the
+/// sweep stops wandering, nothing periodic dwells long enough to climb. Lowering
+/// the headroom is not a workaround: at 0.2 a 100 Hz turning point still only
+/// reaches green 214, and the value that would whiten it whitens everything.
+///
+/// The value stays at 0.8 on the derivation above. The frame-rate invariance test
+/// below still holds a single deposit steady across 48 to 240 Hz and still
+/// requires the dwell steady state to reach exactly 255.
 pub const white_headroom: f32 = 0.8;
 
 /// The gradient `shaders/scope.metal` selects, restated on this side because the

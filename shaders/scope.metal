@@ -48,8 +48,18 @@ using namespace metal;
 //
 // Below one deliberately. Reinhard reaches its white point exactly at e = w while
 // the steady state is only approached, so a white point set at the asymptote
-// itself would never arrive and the core would stay pale green. At 0.8 a dwelt
-// pixel goes white after sixteen frames.
+// itself would never arrive and the core would stay pale green. **At 0.8 a
+// cleared, dwelling pixel reaches white in 113 ms**, which is about seven frames
+// at 60 Hz and fourteen at 120: the same wall time either way, because the
+// asymptote and the white point carry the same 1 / (1 - decay) and it cancels.
+// The closed form is `-tau * ln(1 - white_headroom / d)`, where d is the
+// per-frame deposit on a stationary trace.
+//
+// **The upper bound is d itself, measured at 1.5674.** At or above it the white
+// point sits at or past the asymptote and the core never arrives at all, however
+// long the beam holds still; 1.5 already takes 498 ms. The figure this comment
+// used to give, sixteen frames, was computed when d was exactly 1.0 under a line
+// strip. #57 took it to 2.6133 and #58 to 1.5674, and it was stale through both.
 //
 // **The range this was waiting for exists (#58), and it is not the one that was
 // promised.** ADR 0019 held the value provisional on the grounds that no white
@@ -72,11 +82,28 @@ using namespace metal;
 // thing about a slow tone and a fast one. That is what a plot does. Now they read
 // 1.84 and 7.50, and the difference between them is information.
 //
-// 0.8 is unchanged and no longer rests on the derivation alone: at 1 kHz it puts
-// a turning point at green 191 and a crossing at 98 over a background of 5, and
-// `checkHotCore` still takes thirty deposits to exactly 255. What is outstanding
-// is the by-eye judgement in a host on real material, which is the one thing an
-// offscreen measurement cannot make.
+// **And the knob still has no visible travel, for a reason that is not the one
+// ADR 0019 gave.** Judged in REAPER at 0.4 and at 1.2: no visible difference.
+// That is the arithmetic rather than the eye. A moving trace deposits d once and
+// slides on, so it reaches 1.57; white sits at 0.8 / (1 - decay), which is 15.6 at
+// 120 Hz, or **ten times further**. Nothing between "moving" and "stationary"
+// exists on a free-running sweep, so across 0.4 to 1.2 a 1 kHz turning point goes
+// green 191 to 190, its crossing does not move at all, and a stationary line is
+// 255 at both. The only thing that changes is how long a cleared, dwelling pixel
+// takes to whiten, 47 ms against 229 ms, which is over before you can look at it.
+//
+// So the 2:1 range ADR 0019 blamed was real and is fixed, and it was not the
+// binding constraint. The binding one is that the dwell asymptote is 19.5 times a
+// single deposit at 120 Hz, which is a property of anchoring white to the
+// asymptote at all. **A white core on moving material is a property of a
+// *triggered* display**, which is phase 4: until the sweep stops wandering,
+// nothing periodic dwells long enough to climb. That is the right answer rather
+// than a disappointing one, and lowering the headroom is not a workaround for it
+// — at 0.2 a 100 Hz turning point still only reaches green 214, and the value
+// that would whiten it is the value that whitens everything.
+//
+// 0.8 stays, still on the derivation above, and the re-judgement moves to phase 4
+// rather than staying open here.
 //
 // The 2.2-against-3.0 swing between frames is worth carrying too: the sweep is
 // free-running, so how hard the beam dwells depends on where the phase happens to
