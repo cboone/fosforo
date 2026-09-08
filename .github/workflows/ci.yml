@@ -10,8 +10,55 @@ on:
       - ".claude/**"
       - "**/CLAUDE.md"
       - "**/AGENTS.md"
+
+  # No `branches:` here, deliberately, because that key reads the pull request's
+  # *base* ref rather than its head. With `[main]` on it, a pull request targeting
+  # anything else matched nothing and none of the nine jobs below dispatched: no
+  # build, no `clap-validator`, no smoke harness, no signature assertions, while
+  # the pull request page still read green, because `typos`, `gitleaks` and
+  # `trufflehog` all carry a bare `pull_request:` and ran (#87). That filter was
+  # never a decision. `git blame` puts every line of this block in `b3108ed`, the
+  # commit that founded CI here, and all three sibling workflows written since
+  # disagree with it; this now matches them. Widening it to a glob instead was
+  # refused: an enumerated list of branch prefixes has to track a convention
+  # nothing enforces, and a stack based on a prefix it missed would be dark again
+  # with nothing saying so, which is this failure rather than a different one.
+  #
+  # `push` keeps its filter and that half is load-bearing. A push to a branch with
+  # an open pull request already dispatches `pull_request`, so widening `push` too
+  # would run all of this twice on every stacked branch and additionally build
+  # branches nobody has proposed.
+  #
+  # `paths-ignore` stays on both, and for a pull request it reads the `base...head`
+  # diff, which for a stacked pull request is the child's own changes against its
+  # parent. So a documentation-only stacked branch still skips exactly as a
+  # main-based one does. #86 is why that is worth stating rather than assuming:
+  # all four of its files were on this list, so dropping the branch filter would
+  # not have changed that pull request's outcome at all. It is evidence about the
+  # configuration, read off the configuration, and not evidence off a result.
+  #
+  # Three gaps survive this, and each is a silence rather than a failure. A push
+  # to a *base* branch dispatches nothing on the child, because `synchronize`
+  # means the head moved, so a child's green result can describe a merge against
+  # an older parent. Auto-retargeting after the parent merges is an `edited`
+  # event, which is not in the default activity set, so that fires nothing either.
+  # And this change does not reach a stack already open: the `on:` block is read
+  # from the merge commit, so a child whose merge ref predates it stays dark until
+  # the fix reaches that ref -- merge `main` into the parent, or rebase it -- and
+  # the child's head then moves. Closing and reopening the child is the cheapest
+  # unblock, since `reopened` is a default activity type and runs the real merge
+  # ref. Rebasing onto `main` and retargeting before merge is the convention that
+  # mitigates the first two; it is not a mechanism and must not be relied on as
+  # one.
+  #
+  # A native stacked pull request would have needed none of this: GitHub triggers
+  # those as if every pull request in the stack targeted the stack's base, so
+  # `branches: [main]` runs the whole stack. That is public preview and subject to
+  # change, it covers only stacks created as such, and one retargeted by hand --
+  # which is what #86 was -- is not one. Depending on it would make this workflow's
+  # correctness depend on how the pull request was created, which is invisible at
+  # the point of use and is the same class of failure as the filter above.
   pull_request:
-    branches: [main]
     paths-ignore:
       - "*.md"
       - "docs/**"
@@ -26,8 +73,21 @@ on:
   # nothing `pull_request` triggers can dispatch, and with no manual trigger there
   # was no way to run *this* workflow by hand while that lasted -- only `typos`,
   # `gitleaks` and `trufflehog`, none of which build anything.
+  #
+  # It has a second reader since #87: a stacked pull request whose parent moved,
+  # which the comment above explains gets no event of its own. Note that a
+  # dispatch runs `refs/heads/<branch>`, the head *without* the base merged into
+  # it, so it is a strictly weaker check than the pull request would have got.
   workflow_dispatch:
 
+# #87 asked whether this needed revisiting once a stacked pull request could run
+# here, and it does not, for a reason worth stating so the question is not
+# reopened: on a `pull_request` event `github.ref` is `refs/pull/N/merge`, so this
+# group is keyed by pull request *number* rather than by branch. Two pull requests
+# in one stack therefore cannot collide, which is what you want, since parent and
+# child test different merge results; and repeated pushes to a stacked branch
+# cancel their own in-flight runs, which three runs on `ci/improve-ci-coverage`
+# within 60 seconds already demonstrated by all concluding `cancelled`.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
