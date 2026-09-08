@@ -228,6 +228,8 @@ const testing = std.testing;
 
 test {
     testing.refAllDecls(@This());
+    testing.refAllDecls(Stamp);
+    testing.refAllDecls(Buffer);
 }
 
 test "the environment wins, and an empty value is not a path" {

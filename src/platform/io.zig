@@ -83,6 +83,10 @@ pub fn get() std.Io {
 const testing = std.testing;
 const canary = @import("../canary.zig");
 
+test {
+    testing.refAllDecls(@This());
+}
+
 // The canary.
 //
 // `AGENTS.md` lists the constructor rule among the non-negotiables and until now

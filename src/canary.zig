@@ -136,6 +136,10 @@ const testing = std.testing;
 // checks silently passing. Each property the module claims is asserted, and the
 // two flaws it exists to fix are asserted as absences rather than described.
 
+test {
+    testing.refAllDecls(@This());
+}
+
 test "a statement matches trimmed, so indentation is not part of the claim" {
     const code =
         \\fn f() void {

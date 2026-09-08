@@ -108,6 +108,14 @@ fn readAll(stream: *const c.clap_istream_t, buffer: []u8) LoadError!void {
 
 const testing = std.testing;
 
+test {
+    // `TestStream` is public so `plugin.zig`'s tests can drive the same fixture,
+    // which makes it a public declaration of this file like any other and a method
+    // nothing happened to call would go unanalysed the same way.
+    testing.refAllDecls(@This());
+    testing.refAllDecls(TestStream);
+}
+
 /// An in-memory stream that can be told to move fewer bytes per call than asked
 /// for, which is the behaviour the loops above exist for and the one no real
 /// host reproduces on demand.
@@ -220,9 +228,46 @@ test "save writes the header and load accepts it" {
 
     try testing.expectEqual(@as(usize, header_size), stream.len);
     try testing.expectEqualSlices(u8, magic, stream.written()[0..magic.len]);
+
+    // Re-derived through the same `endian` the writer used, so this line agrees
+    // with `save` however `endian` is set. The two tests below are what pin the
+    // bytes themselves; this one is left standing because what it does check,
+    // that a round trip survives, is not what they check.
     try testing.expectEqual(version, std.mem.readInt(u32, stream.written()[magic.len..][0..4], endian));
 
     try load(stream.reader());
+}
+
+// The format is written little-endian explicitly "so the format does not
+// silently depend on ADR 0001 holding forever", and until these two tests every
+// assertion about it went through `endian` on both sides: flipping that one
+// constant passed all ten tests in this file. Practical risk is nil while every
+// supported machine is little-endian, which is exactly why nothing would have
+// caught it.
+//
+// A `version` bump must edit the literal below, and that is the point rather
+// than a cost: the version moves only when a field changes meaning or
+// disappears, which is a flag day that should make someone look at the bytes on
+// purpose. `src/clap/c.zig:69` is the precedent for a literal that is meant to
+// be edited deliberately.
+test "save writes the eight bytes the format documents rather than whatever endian names" {
+    var stream: TestStream = .{};
+    try testing.expect(save(stream.writer()));
+
+    const on_the_wire = [_]u8{ 'F', 'S', 'F', 'R', 1, 0, 0, 0 };
+    try testing.expectEqual(@as(usize, 8), header_size);
+    try testing.expectEqualSlices(u8, &on_the_wire, stream.written());
+}
+
+// The read side, proved without going through `save` and without `makeHeader`,
+// which shares `endian` and so cannot express this header at all. Big-endian
+// one reads little-endian as 16,777,216, which this build is right to refuse as
+// a version from the future; a reader that had flipped would accept it as one.
+test "a big-endian header is a version from the future rather than version one" {
+    var stream: TestStream = .{};
+    stream.seed(&[_]u8{ 'F', 'S', 'F', 'R', 0, 0, 0, 1 });
+
+    try testing.expectError(error.UnsupportedVersion, load(stream.reader()));
 }
 
 test "a stream that moves one byte at a time still round trips" {

@@ -122,6 +122,17 @@ fn terminate(comptime s: []const u8) [:0]const u8 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+test {
+    // The banner above is new and the alias stays in the import block, because
+    // moving it would be churn: what the banner buys is a cut point
+    // `canary.implementation` can find, the same one every other file here has.
+    testing.refAllDecls(@This());
+}
+
 test "the descriptor version still starts with the declared one" {
     // The point of the suffix is to add provenance to the version, not to replace
     // it. A reader looking for `0.0.0` must still find it at the front, which is

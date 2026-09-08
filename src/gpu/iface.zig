@@ -553,10 +553,27 @@ fn assertSignature(comptime name: []const u8, comptime Found: type, comptime Wan
 
 const testing = std.testing;
 
+test {
+    // The seam's own declarations, compiled here rather than at whichever caller
+    // reaches them first. `Renderer` is re-exported from the backend, which carries
+    // its own sweep; `Error` is an error set, and `std.meta.declarations` raises a
+    // compile error on anything that is not a struct, enum, union or opaque.
+    testing.refAllDecls(@This());
+    testing.refAllDecls(Size);
+    testing.refAllDecls(Outcome);
+    testing.refAllDecls(Diagnostics);
+    testing.refAllDecls(Readback);
+    testing.refAllDecls(ShaderStats);
+}
+
 // Nothing here constructs a `Renderer`. Doing so would acquire a GPU, and
 // `zig build test` runs in CI on a runner whose Metal support is not something
 // this project should depend on (ADR 0009). The backend is verified by running
 // the plugin in a host; what is testable without one is tested here.
+//
+// `Renderer.shaderStats` is the one backend function reached below, and it does
+// not break that rule: it is a static read of five atomics and acquires
+// nothing.
 
 test "only a presented frame counts as having drawn" {
     // The distinctions between the skips are for a human reading a log; this is
@@ -606,4 +623,34 @@ test "setting a diagnostic twice replaces it rather than appending" {
     diags.set("no device");
 
     try testing.expectEqualStrings("no device", diags.message());
+}
+
+// The invariant the struct's docstring states, which until now was documented
+// and asserted nowhere. Every writer of the five atomics behind `shaderStats`
+// sits inside a `shader.live` branch, and `shader.live` folds in
+// `!builtin.is_test`, so in a test binary they are comptime-unreachable rather
+// than merely unreached. Zig runs a test binary single-threaded and in order
+// and nothing here constructs a `Renderer`, so this cannot be perturbed by
+// whatever ran before it. A future test that started a watcher would break this
+// one, and that is the right outcome rather than a fragility.
+//
+// The two halves catch different things and neither subsumes the other: the
+// equality catches a field default that stopped agreeing with the atomic behind
+// it, and the explicit zeros catch both defaults moving together.
+//
+// **It does not close the gate it looks like it closes.** Dropping
+// `!builtin.is_test` from `shader.live` does not fail this test, because
+// nothing in a test binary would then start a watcher either. That plant
+// belongs to `"nothing is read from disk in a test build"` in
+// `gpu/metal/shader.zig`, which is where the cause lives.
+test "the shader counters read zero in a build that has no watcher" {
+    const stats = Renderer.shaderStats();
+
+    try testing.expectEqual(ShaderStats{}, stats);
+
+    try testing.expect(!stats.path_resolved);
+    try testing.expectEqual(@as(u64, 0), stats.reloads);
+    try testing.expectEqual(@as(u64, 0), stats.rejected);
+    try testing.expectEqual(@as(u64, 0), stats.fallbacks);
+    try testing.expectEqual(@as(u64, 0), stats.binding_mismatches);
 }

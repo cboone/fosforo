@@ -54,11 +54,11 @@ const gpu = @import("gpu/iface.zig");
 const gui = @import("clap/gui.zig");
 const io = @import("platform/io.zig");
 const measure = @import("gpu/measure.zig");
-const palette = @import("gpu/palette.zig");
 const platform = @import("platform/objc.zig");
 const plugin = @import("clap/plugin.zig");
 const root = @import("main.zig");
 const shader = @import("gpu/metal/shader.zig");
+const verdict = @import("gpu/verdict.zig");
 
 const c = clap.c;
 
@@ -666,32 +666,6 @@ fn waitForReload(want: struct { reloads: ?u64 = null, rejected: ?u64 = null }, w
 const trace_width: u32 = 960;
 const trace_height: u32 = 540;
 
-/// Energy above which a pixel counts as lit.
-///
-/// One segment deposits 1.0 at its core, the accumulation is linear and
-/// unclipped, and this is half of that. This is not `measure-trace`'s 64-of-255:
-/// that tool reads an 8-bit picture through a display's colour space, and this
-/// reads the float the shader wrote.
-///
-/// **What it means changed with #57 and the number did not.** It used to be a
-/// floor between "a deposit landed here" and "nothing did", because a one-pixel
-/// line deposited 1.0 or nothing at all. A beam has a falloff, so this is now an
-/// iso-intensity contour of that falloff: the biweight reaches 0.5 at
-/// `u = 0.5412`, so the lit band is 54% of the half-width either side of the
-/// centreline. Every geometric measurement below is therefore stated at that
-/// contour rather than at the beam's full width, which is what makes this the
-/// constant that sets the effective beam width for the whole file.
-const trace_threshold: f32 = 0.5;
-
-/// Half the beam's width, in backing pixels, at this harness's geometry.
-///
-/// `initOffscreen` has no view whose scale it could read and uses 1.0, so points
-/// and backing pixels are the same number here. That is a real limit rather than
-/// a convenience: this half always measures a 1.5-pixel half-width and never the
-/// 3.0 a 2x host draws, and the rail clearance and the row spans are both
-/// tightest at 2x. `src/gpu/iface.zig` carries the same warning at the constant.
-const beam_half_width_px: f32 = gpu.beam_width_points / 2.0;
-
 /// The interval between frames on this half's synthetic clock.
 ///
 /// **Offscreen there is no display link, so a frame's elapsed time is supplied
@@ -714,15 +688,10 @@ const beam_half_width_px: f32 = gpu.beam_width_points / 2.0;
 /// part in 1.6e8 is two orders of magnitude below the spacing near 0.9 — but the
 /// sentence above says *exactly*, and a second spelling of "one frame at the
 /// reference rate" is a second thing to keep in step with the anchor.
-const trace_frame_nanos: u64 = palette.decay_reference_frame_nanos;
-
-/// What the phosphor keeps between two of this half's frames.
 ///
-/// 0.90, and the model is asked rather than told so that a `tau` moved without
-/// this file being reopened changes the expectations here instead of leaving
-/// them asserting the old look. The value is what it is because of the anchor
-/// `trace_frame_nanos` describes, not because it is written down twice.
-const trace_decay: f32 = palette.decayOver(trace_frame_nanos);
+/// Owned by `src/gpu/verdict.zig`, because the judgements are stated in it and
+/// this file only needs it to pace the clock it hands `Renderer.frame`.
+const trace_frame_nanos: u64 = verdict.trace_frame_nanos;
 
 /// How long a frame will be retried for when every slot is still in flight.
 ///
@@ -837,13 +806,18 @@ const Probe = struct {
         try self.renderer.readback(.{ .energy = self.energy, .picture = self.picture });
     }
 
+    /// The accumulation, as the value type the judges take.
     fn image(self: *const Probe) measure.Image {
         return .{ .width = trace_width, .height = trace_height, .pixels = self.energy };
     }
 
-    fn pixel(self: *const Probe, x: usize, y: usize) []const u8 {
-        const at = (y * trace_width + x) * 4;
-        return self.picture[at .. at + 4];
+    /// The resolved picture, likewise.
+    ///
+    /// Both of these are the whole of the seam between this file and
+    /// `src/gpu/verdict.zig`: everything above them owns a `gpu.Renderer`, and
+    /// nothing below them can name one.
+    fn resolved(self: *const Probe) verdict.Picture {
+        return .{ .width = trace_width, .height = trace_height, .bytes = self.picture };
     }
 };
 
@@ -993,30 +967,10 @@ fn traceHalf() !void {
 
 /// A railed trace lights every column, including the two on the edges.
 ///
-/// **#38's open question, asked of a single frame for the first time.** Its level
-/// sweep found `level-1.089.wav` lighting 1914 of 1920 columns where every other
-/// level lit all of them, and named the likely cause: the first and last vertices
-/// sit at `x = ±1` exactly, where half a one-pixel line's coverage diamond is
-/// off-screen and the rasterizer may light nothing.
-///
-/// Re-run against #55's accumulation the count came back clean at every level,
-/// and #57's own comment refused to read that as the defect having gone: a lit
-/// pixel survives roughly 28 frames of persistence, so a column this frame's
-/// coverage dropped is still lit from an earlier one, and a screenshot of an
-/// accumulated picture cannot tell an intermittent dropout from a fixed one.
-///
-/// This can, because it drives one deposit into a cleared accumulation. And the
-/// answer is structural rather than measured: a quad has area, so the first
-/// segment spans a whole pixel horizontally and contains that pixel's centre,
-/// where a line's endpoint was a point that had to exit a diamond to light
-/// anything. The level is the one that failed, so this is that case and not a
-/// nearby one.
-///
-/// **The round caps are not what does it, which planting established.** Cutting
-/// them off entirely — butt joints, no extension along the segment — still reads
-/// 960 of 960 here. So this check is weaker than it looks against the cap
-/// geometry and exactly as strong as it should be against the thing that
-/// actually failed.
+/// The claim and its history are `verdict.edgeColumns`. What is here is the one
+/// thing that needs a device: a single deposit into a cleared accumulation, at
+/// exactly the level #38's sweep found lighting 1914 of 1920 columns, which is
+/// what makes this that case rather than a nearby one.
 fn checkEdgeColumns(energy: []f32, picture: []u8, window: []f32) !void {
     var probe = try Probe.init(energy, picture);
     defer probe.deinit();
@@ -1024,23 +978,10 @@ fn checkEdgeColumns(energy: []f32, picture: []u8, window: []f32) !void {
     measure.constant(window, gpu.trace_rail / gpu.trace_full_scale);
     try probe.run(window, 1, 1);
 
-    const image = probe.image();
-    const lit = measure.litColumns(image, trace_threshold);
-    const span = measure.litSpan(image, trace_threshold) orelse return error.TraceNotDrawn;
-
-    say("  railed: {d} of {d} columns lit, spanning {d} to {d}", .{
-        lit,
-        trace_width,
-        span.first,
-        span.last,
-    });
-
-    if (span.first != 0 or span.last != trace_width - 1) return error.EdgeColumnDark;
-    if (lit != trace_width) return error.ColumnDropped;
+    _ = try verdict.edgeColumns(probe.image());
 }
 
-/// The beam has the width it was asked for, measured in pixels rather than in
-/// clip space.
+/// The beam has the width it was asked for.
 ///
 /// **The probe is a near-vertical segment, and that is the whole design.** A
 /// horizontal beam's cross-section is the sum of several overlapping capsules,
@@ -1048,17 +989,7 @@ fn checkEdgeColumns(energy: []f32, picture: []u8, window: []f32) !void {
 /// so its shape is a convolution rather than the profile. One steep segment has
 /// no such neighbours: the window steps from +0.9 to -0.9 at its midpoint, and at
 /// a row halfway down the drawable the only thing depositing is that one rod.
-///
-/// What is asserted is the cross-section's **integral**, not its lit extent. The
-/// biweight integrates to `16/15` of the half-width, which is 1.6 pixels here,
-/// and an integral is robust where a thresholded width is not: at these
-/// dimensions the lit band is under two pixels, so quantization is the same size
-/// as the quantity, and a check on it would be measuring rounding.
-///
-/// **It is the only check here that can see clip space mistaken for pixels.** The
-/// drawable is 960x540, so expanding by a half-width in NDC rather than in pixels
-/// makes the beam elliptical — 1.78 times wider one way than the other — which
-/// every other check in this file reads as a slightly different row and passes.
+/// That is why the row handed to the judge is the middle one and not any row.
 fn checkBeamProfile(energy: []f32, picture: []u8, window: []f32) !void {
     var probe = try Probe.init(energy, picture);
     defer probe.deinit();
@@ -1068,47 +999,7 @@ fn checkBeamProfile(energy: []f32, picture: []u8, window: []f32) !void {
     for (window, 0..) |*slot, i| slot.* = if (i < window.len / 2) 0.9 else -0.9;
     try probe.run(window, 1, 1);
 
-    const image = probe.image();
-    const row = trace_height / 2;
-
-    var total: f32 = 0;
-    var moment: f32 = 0;
-    var x: usize = 0;
-    while (x < trace_width) : (x += 1) {
-        const e = image.green(x, row);
-        total += e;
-        moment += e * @as(f32, @floatFromInt(x));
-    }
-
-    if (total <= 0) return error.TraceNotDrawn;
-
-    // `16/15` is `∫(1 - u²)² du` over the profile's support, which is what makes
-    // this a statement about the biweight rather than about any curve of roughly
-    // the right size.
-    const want = beam_half_width_px * 16.0 / 15.0;
-    const centre = moment / total;
-    say("  beam: cross-section integrates to {d:.4}, expected {d:.4}, centred on column {d:.2}", .{
-        total,
-        want,
-        centre,
-    });
-
-    if (@abs(total - want) > want * 0.05) return error.BeamWidthWrong;
-
-    // And it is symmetric about that centre, which is what a bowtie from a strip
-    // whose corners run the wrong way, or a mirrored quad, would not be. Compared as the two
-    // halves' energy rather than pixel by pixel, so it says nothing about the
-    // profile's shape that the integral above has not already said.
-    var left: f32 = 0;
-    var right: f32 = 0;
-    x = 0;
-    while (x < trace_width) : (x += 1) {
-        const e = image.green(x, row);
-        const d = @as(f32, @floatFromInt(x)) - centre;
-        if (d < 0) left += e else if (d > 0) right += e;
-    }
-
-    if (@abs(left - right) > total * 0.05) return error.BeamNotSymmetric;
+    _ = try verdict.beamProfile(probe.image(), trace_height / 2);
 }
 
 /// A window of zeros draws one flat line through the centre.
@@ -1119,47 +1010,7 @@ fn checkSilence(energy: []f32, picture: []u8, window: []f32) !void {
     measure.constant(window, 0.0);
     try probe.run(window, 1, 1);
 
-    const image = probe.image();
-    if (!image.complete()) return error.ReadbackTruncated;
-
-    const lit = measure.litColumns(image, trace_threshold);
-    if (lit != trace_width) {
-        say("  silence lit {d} of {d} columns", .{ lit, trace_width });
-        return error.TraceNotDrawn;
-    }
-
-    const seen = measure.extremes(image, trace_threshold) orelse return error.TraceNotDrawn;
-
-    // **The bound is the beam's own depth now, and it is parity-dependent.**
-    // Before #57 this was one row of slack for the centre line falling on a pixel
-    // boundary; a beam has width, so what is being checked is that the beam is
-    // flat rather than that it is thin. At an even height the centreline sits on
-    // the boundary and the profile straddles it symmetrically; at an odd one it
-    // sits on a pixel centre and lights one more row. `1440x407` is already a
-    // geometry this project tests, so the odd case is not hypothetical.
-    const parity: usize = if (trace_height % 2 == 0) 0 else 1;
-    const deepest = 2 * @as(usize, @intFromFloat(@ceil(beam_half_width_px))) + parity;
-
-    if (seen.bottom - seen.top > deepest) {
-        say("  silence spans rows {d} to {d}", .{ seen.top, seen.bottom });
-        return error.TraceNotFlat;
-    }
-
-    // **The centroid rather than the topmost lit row, and the difference is the
-    // whole of what #38 left open here.** A symmetric profile centred on the
-    // boundary between two rows weights them equally, so its energy-weighted
-    // centre is that boundary exactly, and the mapping inverts it to exactly
-    // zero. The `+0.0021` #38 measured in REAPER was never the geometry being
-    // off by a fifth of a pixel; it was an estimator reading an edge. No
-    // corrective bias was needed and none is applied.
-    const centre = measure.centres(image) orelse return error.TraceNotDrawn;
-    const implied = measure.impliedSampleAt(centre.top, trace_height);
-    say("  silence: centroid row {d:.3}, implying a sample of {d:.5}", .{ centre.top, implied });
-
-    // A twentieth of a pixel rather than a whole one. `pixelTolerance` is what an
-    // edge estimator needed; asserting the old bound here would pass on a beam
-    // sitting a pixel high and is exactly the slack this check exists to remove.
-    if (@abs(implied) > measure.pixelTolerance(trace_height) / 20.0) return error.CentreLineWrong;
+    _ = try verdict.silence(probe.image());
 }
 
 /// Each level lands where the constants say, inside one pixel.
@@ -1175,39 +1026,26 @@ fn checkLevels(energy: []f32, picture: []u8, window: []f32) !void {
         measure.constant(window, level);
         try probe.run(window, 1, 1);
 
-        const image = probe.image();
-
-        // The centroid, for the reason `checkSilence` gives: a beam's top edge is
-        // biased above its centre by the lit half-width, identically at every
-        // level, and a systematic error with one sign is precisely what a
-        // one-pixel tolerance must not be asked to absorb.
-        const seen = measure.centres(image) orelse return error.TraceNotDrawn;
-
-        const implied = measure.impliedSampleAt(seen.top, trace_height);
-        const off = @abs(implied - level);
-        say("  level {d: >6.3}: centroid row {d: >7.2}, implying {d: >8.5}, off by {d:.5}", .{
-            level,
-            seen.top,
-            implied,
-            off,
-        });
-
-        if (off > measure.pixelTolerance(trace_height)) return error.LevelMisplaced;
+        _ = try verdict.level(probe.image(), level);
     }
 }
 
 /// Every level at or above the rail lands on exactly the same row.
+///
+/// **Every arm is driven before any is judged**, which is forced rather than
+/// stylistic: each needs its own renderer, because the accumulation persists, and
+/// each readback overwrites the last. So the rows are collected here and
+/// `verdict.saturation` folds them.
 fn checkSaturation(energy: []f32, picture: []u8, window: []f32) !void {
-    var railed: ?f32 = null;
-
     // 1.111 is `1 / trace_full_scale`, where the trace would reach the drawable's
     // edge if nothing clamped. It is unreachable because `trace_rail` clamps
-    // first, and everything from there up must be pixel-identical: that
-    // saturation is the whole of what ADR 0017 means by refusing to say how far
-    // over a signal is. Asserted from just above the 1.0889 threshold rather than
-    // at it, because an equality exactly on the boundary would be a test of f32
+    // first. Asserted from just above the 1.0889 threshold rather than at it,
+    // because an equality exactly on the boundary would be a test of f32
     // rounding.
-    for ([_]f32{ 1.111, 2.0, 8.0, 1000.0 }) |over| {
+    const levels = [_]f32{ 1.111, 2.0, 8.0, 1000.0 };
+    var rows: [levels.len]f32 = undefined;
+
+    for (levels, &rows) |over, *slot| {
         var probe = try Probe.init(energy, picture);
         defer probe.deinit();
 
@@ -1215,30 +1053,17 @@ fn checkSaturation(energy: []f32, picture: []u8, window: []f32) !void {
         try probe.run(window, 1, 1);
 
         const seen = measure.centres(probe.image()) orelse return error.TraceNotDrawn;
-
-        if (railed) |first| {
-            // Bit-identical rather than within a tolerance, which the centroid
-            // makes available and the edge estimator did not: these are the same
-            // clamped geometry drawn twice, so anything but equality is a defect
-            // rather than a rounding.
-            if (seen.top != first) {
-                say("  {d} railed on centroid row {d:.3}, not {d:.3}", .{ over, seen.top, first });
-                return error.RailNotSaturated;
-            }
-        } else {
-            railed = seen.top;
-            const expected = measure.railRow(trace_height);
-            say("  rail: centroid row {d:.3}, expected {d:.1}", .{ seen.top, expected });
-            if (@abs(seen.top - expected) > 0.1) return error.RailMisplaced;
-        }
+        slot.* = seen.top;
     }
+
+    try verdict.saturation(&levels, &rows, trace_height);
 }
 
 /// Positive is up, negative is down, and by the same distance.
 fn checkSymmetry(energy: []f32, picture: []u8, window: []f32) !void {
     var rows: [2]f32 = undefined;
 
-    for ([_]f32{ 0.5, -0.5 }, 0..) |level, i| {
+    for ([_]f32{ 0.5, -0.5 }, &rows) |level, *slot| {
         var probe = try Probe.init(energy, picture);
         defer probe.deinit();
 
@@ -1246,27 +1071,10 @@ fn checkSymmetry(energy: []f32, picture: []u8, window: []f32) !void {
         try probe.run(window, 1, 1);
 
         const seen = measure.centres(probe.image()) orelse return error.TraceNotDrawn;
-        rows[i] = seen.top;
+        slot.* = seen.top;
     }
 
-    const centre = measure.centreRow(trace_height);
-    const above = centre - rows[0];
-    const below = rows[1] - centre;
-    say("  symmetry: +0.5 sits {d:.2} above centre, -0.5 sits {d:.2} below", .{ above, below });
-
-    // **This is the check the edge estimator broke worst, and the reason is worth
-    // keeping.** Both arms read `top`, so a beam of half-width `h` moved both
-    // edges up: `above` grew by `h` and `below` shrank by it, and the quantity
-    // asserted on here was `2h`. It failed at a half-width over half a pixel, for
-    // a reason that had nothing to do with symmetry, and no tolerance wide enough
-    // to pass would have been measuring anything. A centroid is unbiased in both
-    // directions, so the two arms cancel and the slack drops to a tenth of a
-    // pixel.
-    //
-    // A Y flip would put both on the same side; an asymmetric clamp would leave
-    // them at different distances.
-    if (above <= 0 or below <= 0) return error.TraceInverted;
-    if (@abs(above - below) > 0.1) return error.TraceAsymmetric;
+    try verdict.symmetry(rows, trace_height);
 }
 
 /// The first and last samples land on the drawable's edges.
@@ -1282,82 +1090,27 @@ fn checkHorizontalMapping(energy: []f32, picture: []u8) !void {
     var window = [_]f32{ -1.0, 0.0, 1.0 };
     try probe.run(&window, 1, 1);
 
-    const image = probe.image();
-    const span = measure.litSpan(image, trace_threshold) orelse return error.TraceNotDrawn;
-    say("  three samples span columns {d} to {d} of {d}", .{ span.first, span.last, trace_width - 1 });
-
-    // **Exactly the edge columns, with no slack, and #57 is what removed it.**
-    // The one column either side used to be for the diamond-exit rule, under
-    // which a line strip's final endpoint need not light the pixel it lands on. A
-    // quad has area and does light it, which `checkEdgeColumns` asserts at
-    // the level that actually failed in #38; keeping a tolerance here after that
-    // would be carrying a defect's allowance past the fix for it.
-    if (span.first != 0) return error.TraceStartsLate;
-    if (span.last != trace_width - 1) return error.TraceEndsEarly;
-
-    // And the vertical, which the same window checks for free: the ramp runs from
-    // -1 at the left to +1 at the right, so the corners are the extremes.
-    const left = measure.topRow(image, span.first, trace_threshold).?;
-    const right = measure.topRow(image, span.last, trace_threshold).?;
-    if (right >= left) {
-        say("  the ramp does not rise: column {d} is row {d}, column {d} is row {d}", .{
-            span.first,
-            left,
-            span.last,
-            right,
-        });
-        return error.TraceInverted;
-    }
+    _ = try verdict.horizontalMapping(probe.image());
 }
 
 /// A sine of k cycles shows exactly k periods.
 fn checkPeriods(energy: []f32, picture: []u8, window: []f32) !void {
-    var doubling: [3]usize = undefined;
+    var counted: [verdict.period_cycles.len]usize = undefined;
 
-    for ([_]usize{ 1, 2, 4, 5, 8, 20 }) |cycles| {
+    for (verdict.period_cycles, &counted) |cycles, *slot| {
         var probe = try Probe.init(energy, picture);
         defer probe.deinit();
 
         measure.sine(window, @floatFromInt(cycles), 0.8);
         try probe.run(window, 1, 1);
 
-        const counted = measure.periods(probe.image(), trace_threshold);
-        say("  {d: >2} cycles in, {d: >2} periods counted", .{ cycles, counted });
-
-        // Strict equality. #38's first counter was off by exactly one at every
-        // frequency and a ±1 tolerance reported all six as correct, which is what
-        // "a tolerance wide enough to absorb a systematic error is a tolerance
-        // that hides one" was written about.
-        if (counted != cycles) return error.PeriodMiscounted;
-
-        switch (cycles) {
-            2 => doubling[0] = counted,
-            4 => doubling[1] = counted,
-            8 => doubling[2] = counted,
-            else => {},
-        }
+        slot.* = try verdict.period(probe.image(), cycles);
     }
 
-    // The ratio form, which is robust to phase, to the `n - 1` quibble, and to
-    // miscounting a partial period at an edge in a way an absolute count is not.
-    if (doubling[1] != doubling[0] * 2 or doubling[2] != doubling[1] * 2) {
-        return error.PeriodRatioWrong;
-    }
+    try verdict.periodRatio(&counted);
 }
 
 /// Every deposit is a scalar, so the accumulation's four channels move together.
-///
-/// **The assertion that keeps `measure.Image.green` honest**, and the only thing
-/// anywhere that does. Since #60 the deposit carries no colour: `trace_fragment`
-/// returns `float4(1.0)` and the palette owns the look, so green is the energy
-/// only because every other channel is the same number. `resolve_fragment` reads
-/// green and so does the analyser; if a later weighting made one channel differ,
-/// every green-channel measurement in this project would change meaning at once
-/// and nothing else would fail.
-///
-/// It replaces `checkBeamIsOneColour`, which asserted a *ray* through colour
-/// space and was right until the deposit stopped being a colour. The loop is the
-/// same loop; what it compares is not.
 fn checkDepositIsScalar(energy: []f32, picture: []u8, window: []f32) !void {
     var probe = try Probe.init(energy, picture);
     defer probe.deinit();
@@ -1365,33 +1118,7 @@ fn checkDepositIsScalar(energy: []f32, picture: []u8, window: []f32) !void {
     measure.sine(window, 4.0, 0.8);
     try probe.run(window, 1, 1);
 
-    const image = probe.image();
-
-    const peak_green = measure.maxChannel(image, 1);
-    if (peak_green <= trace_threshold) return error.TraceNotDrawn;
-
-    var worst: f32 = 0;
-    var y: usize = 0;
-    while (y < trace_height) : (y += 1) {
-        var x: usize = 0;
-        while (x < trace_width) : (x += 1) {
-            const g = image.channel(x, y, 1);
-            if (g <= trace_threshold) continue;
-
-            // Alpha included. It accumulates and decays exactly like the other
-            // three, which is what `mtl.blend_factor_one`'s docstring left open
-            // and #60 answered; leaving it out would be leaving the one channel
-            // nothing else reads unchecked.
-            for (0..4) |channel| worst = @max(worst, @abs(image.channel(x, y, channel) - g));
-        }
-    }
-
-    say("  deposit: {d} channels agree to {d:.5} at every lit pixel", .{ 4, worst });
-
-    // Half-float precision rather than a rendering tolerance: `RGBA16Float` holds
-    // about three decimal digits, and these are sums of identical values through
-    // identical blend arithmetic, so anything above that is a real difference.
-    if (worst > 1e-3) return error.DepositNotScalar;
+    _ = try verdict.depositIsScalar(probe.image());
 }
 
 /// The resolve is the curve and the palette, and nothing else.
@@ -1402,107 +1129,7 @@ fn checkResolve(energy: []f32, picture: []u8, window: []f32) !void {
     measure.sine(window, 3.0, 0.8);
     try probe.run(window, 1, 1);
 
-    const image = probe.image();
-
-    // The same table the shader is reading, built by the same function that
-    // filled the texture. That is what makes this comparison exact rather than
-    // close: the model and the GPU share the table and differ only in the
-    // arithmetic around it, which is the part being checked.
-    var table: [palette.palette_floats]f32 = undefined;
-    palette.buildPalette(&table);
-
-    // The background, read off the picture rather than restated from the shader.
-    // Any pixel the beam missed carries it; the top-left corner is the safest,
-    // since a sine at this amplitude never reaches the corners.
-    const background = probe.pixel(0, 0);
-    say("  background: RGBA({d}, {d}, {d}, {d})", .{
-        background[0],
-        background[1],
-        background[2],
-        background[3],
-    });
-
-    // The structural premise `find_drawable` uses to locate a drawable inside a
-    // window capture: a dark ground with blue leading red and green, and red and
-    // green equal. The exact bytes are not asserted here, because that would be a
-    // fourth restatement of a literal already tied between the shader and
-    // `scripts/measure-trace` by a test in the renderer, with nothing tying this
-    // copy back. Printing them is what makes a change visible.
-    if (background[0] != background[1]) return error.BackgroundNotNeutral;
-    if (background[2] <= background[0]) return error.BackgroundNotBlueLeading;
-    if (background[0] >= 16) return error.BackgroundNotDark;
-    if (background[3] != 255) return error.BackgroundNotOpaque;
-
-    // **#60's own open question, answered as an assertion rather than as prose.**
-    // The issue asked whether the background stays a literal beside the palette
-    // or becomes the palette's value at zero energy. It is the latter, and this
-    // is what makes that a fact about the running shader rather than a claim
-    // about how the table was built: there is no background term in
-    // `resolve_fragment` at all, so if these disagree the gradient's first entry
-    // is not what reaches an unlit pixel.
-    const at_zero = palette.resolved(&table, palette.shipped_palette, trace_decay, 0.0);
-    for (0..3) |channel| {
-        if (background[channel] != at_zero[channel]) return error.BackgroundNotThePaletteAtZero;
-    }
-
-    var worst: i32 = 0;
-    var lit: usize = 0;
-
-    var y: usize = 0;
-    while (y < trace_height) : (y += 1) {
-        var x: usize = 0;
-        while (x < trace_width) : (x += 1) {
-            const got = probe.pixel(x, y);
-            if (image.channel(x, y, 1) > trace_threshold) lit += 1;
-
-            // **Every channel predicted from one number**, which is stronger
-            // than comparing each against its own energy: it asserts the
-            // picture's chroma follows from the intensity alone, which is the
-            // palette's whole claim and the thing a per-channel comparison could
-            // not see.
-            const want = palette.resolved(
-                &table,
-                palette.shipped_palette,
-                trace_decay,
-                image.channel(x, y, 1),
-            );
-            for (0..3) |channel| {
-                const off = @as(i32, got[channel]) - @as(i32, want[channel]);
-                if (@abs(off) > @abs(worst)) worst = off;
-            }
-        }
-    }
-
-    say("  resolve: {d} lit pixels, worst channel off by {d}", .{ lit, worst });
-    if (lit == 0) return error.TraceNotDrawn;
-
-    // **This is the assertion #55 would have failed.** That issue shipped a
-    // resolve gain of `1 - decay`, which divides a moving trace by ten and
-    // renders a sine as a black display; it passed 160 unit tests, both smoke
-    // halves, the leak check, `clap-validator` and the validation layer, and was
-    // found by eye. Comparing the two readbacks against each other is what makes
-    // it visible, and it assumes nothing about how many segments covered a pixel,
-    // which is the assumption a check against the beam's literal would need.
-    //
-    // One byte level of slack, for the rounding between a float the shader
-    // computed and the unorm the format stores. Against a gain of a tenth, whole
-    // channels move by a hundred levels.
-    //
-    // **The slack means more now than it did, and it is still one level.** Since
-    // #60 the drawable is `BGRA8Unorm_sRGB`, so this compares the model's own
-    // evaluation of the transfer function against the render-output stage's, and
-    // those need not round the same way at a boundary: the slope near black is
-    // 12.92 x 255, which puts one level at 3.0e-4 of linear energy. Widening this
-    // pre-emptively would be widening the one assertion that would have caught
-    // #55. Read the printed number first.
-    //
-    // **#57 spent most of the slack that was here and did not need more.** It was
-    // off by zero across 518,400 pixels with 2412 lit; a beam with a falloff lights
-    // 4853 and puts most of the new ones in the gradient's toe, where the sRGB
-    // curve is 3294.6 bytes per unit linear and a rounding boundary is a whole
-    // level. The worst channel is now off by one. If it ever reaches two, the
-    // question to ask is whether the toe moved, not whether the tonemap did.
-    if (@abs(worst) > 1) return error.ResolveNotTheTonemap;
+    _ = try verdict.resolve(probe.image(), probe.resolved());
 }
 
 /// Both ends of the ten-to-one range the accumulation produces are legible.
@@ -1512,27 +1139,13 @@ fn checkResolve(energy: []f32, picture: []u8, window: []f32) !void {
 /// energy; a stationary one re-deposits every frame and converges on
 /// `1 / (1 - decay)` times it.
 ///
-/// **"Once" stopped meaning "an energy of one" at #57, and the ratio is what
-/// survived.** A line strip's x was monotone in `vertex_id`, so one frame could
-/// not cover a pixel twice and a moving trace sat at exactly 1.0. Oriented quads
-/// overlap at every joint, so a moving trace now measures about 2.6; the dwell
-/// asymptote scales with it and the ten-to-one range this check is named for is
-/// unchanged. That is why both arms below are read against `whitePoint` and
-/// against each other rather than against the beam's literal. #55 measured both ways of getting that wrong: a unit gain
-/// clips a dwelt trace to white and loses the colour, and a gain of `1 - decay`
-/// renders a moving one at green 53 of 255, which reads as a black display.
-///
 /// Nothing else in this half drives enough frames for the accumulation to reach
 /// the white point — every other case runs one depositing frame — so without this
 /// the hot core is never rendered on a GPU at all and the headline feature ships
-/// unexecuted.
+/// unexecuted. Thirty frames because the energy reaches `1 - 0.9^n` of the
+/// asymptote, so at the shipped decay it is past the white point of eight by
+/// frame sixteen and comfortably clear of it by thirty.
 fn checkHotCore(energy: []f32, picture: []u8, window: []f32) !void {
-    const tint = palette.tints_srgb[@intFromEnum(palette.shipped_palette)];
-    const lead = palette.shipped_palette.dominant();
-
-    // The moving end: one deposit, read off the picture rather than modelled, so
-    // this is the one assertion here that a model wrong in the same way as the
-    // shader could not satisfy.
     {
         var probe = try Probe.init(energy, picture);
         defer probe.deinit();
@@ -1540,39 +1153,9 @@ fn checkHotCore(energy: []f32, picture: []u8, window: []f32) !void {
         measure.sine(window, 3.0, 0.8);
         try probe.run(window, 1, 1);
 
-        const at = measure.peakPixel(probe.image(), 1) orelse return error.TraceNotDrawn;
-        const got = probe.pixel(at.x, at.y);
-        say("  hot core: one deposit reads RGB({d}, {d}, {d})", .{ got[0], got[1], got[2] });
-
-        // Half of full range, as a bound rather than a tune: the shipped curve
-        // gives 189 here, and stating 128 is what lets the curve be retuned
-        // without rewriting the assertion. It names #55's measured 53, which is
-        // the number this refuses to ship again.
-        if (got[lead] < 128) return error.MovingTraceTooDim;
-
-        // And tinted rather than white, which is the other half of the claim: at
-        // one deposit the gradient has barely begun running toward white.
-        //
-        // The gap is taken in `i32` on `checkResolve`'s precedent, and here that
-        // is load-bearing rather than tidy: these are bytes, so the obvious
-        // `got[channel] + 24 > got[lead]` is `u8` arithmetic that overflows at
-        // 232 and above. That is not a corner, it is exactly the near-white
-        // pixel this assertion exists to reject, and it fails in whichever
-        // direction is worse for the build you are in. Debug panics with
-        // `integer overflow` instead of naming the defect; ReleaseFast wraps 278
-        // to 22, compares it against 255, and lets the white trace through.
-        for (0..3) |channel| {
-            if (channel == lead) continue;
-            const gap = @as(i32, got[lead]) - @as(i32, got[channel]);
-            if (gap <= 0) return error.MovingTraceNotTinted;
-            if (tint[channel] < 1.0 and gap < 24) return error.MovingTraceNotTinted;
-        }
+        try verdict.movingCore(probe.image(), probe.resolved());
     }
 
-    // The dwelt end: the same window deposited every frame, which is what a
-    // stopped transport does. Thirty frames because the energy reaches
-    // `1 - 0.9^n` of the asymptote, so at the shipped decay it is past the white
-    // point of eight by frame sixteen and comfortably clear of it by thirty.
     {
         var probe = try Probe.init(energy, picture);
         defer probe.deinit();
@@ -1580,30 +1163,15 @@ fn checkHotCore(energy: []f32, picture: []u8, window: []f32) !void {
         measure.sine(window, 3.0, 0.8);
         try probe.run(window, 30, 30);
 
-        const image = probe.image();
-        const peak = measure.maxChannel(image, 1);
-        const white = palette.whitePoint(trace_decay);
-        say("  hot core: thirty deposits peak at {d:.3}, white point {d:.3}", .{ peak, white });
-        if (peak < white) return error.DwellNeverReachesWhite;
-
-        const at = measure.peakPixel(image, 1) orelse return error.TraceNotDrawn;
-        const got = probe.pixel(at.x, at.y);
-        say("  hot core: the dwelt pixel reads RGB({d}, {d}, {d})", .{ got[0], got[1], got[2] });
-
-        // White, and exactly white rather than nearly: the gradient's last entry
-        // is 1.0 in every channel by construction, so anything short of 255 means
-        // the curve did not reach the top of it.
-        for (0..3) |channel| {
-            if (got[channel] != 255) return error.CoreNotWhite;
-        }
+        try verdict.dwellCore(probe.image(), probe.resolved());
     }
 }
 
 /// The phosphor dims by the decay factor once per frame.
 fn checkDecay(energy: []f32, picture: []u8, window: []f32) !void {
-    var first: f32 = 0;
+    var peaks: [5]f32 = undefined;
 
-    for ([_]u32{ 1, 2, 3, 4, 5 }) |frames| {
+    for (&peaks, 1..) |*slot, frames| {
         var probe = try Probe.init(energy, picture);
         defer probe.deinit();
 
@@ -1611,142 +1179,46 @@ fn checkDecay(energy: []f32, picture: []u8, window: []f32) !void {
         // rather than one driven further, so each measurement starts from the
         // cleared pair rather than from the previous case's fade.
         measure.constant(window, 0.5);
-        try probe.run(window, frames, 1);
+        try probe.run(window, @intCast(frames), 1);
 
-        const peak = measure.maxChannel(probe.image(), 1);
-        if (frames == 1) {
-            first = peak;
-            say("  decay: one deposit peaks at {d:.4}", .{peak});
-
-            // Reported rather than asserted, and deliberately. It used to read
-            // exactly 1.0000, which settled a question this project could not
-            // cite an answer to: whether a line strip's shared vertices deposit
-            // twice under Metal's diamond-exit rule. They did not.
-            //
-            // **#57 replaced the primitive that question was about, and the
-            // answer with it.** Quads overlap at every joint by construction, so
-            // this is now about 2.61 at one sample per point, and that is the
-            // design rather than a suspicion: a pixel the beam sweeps over more
-            // than once in a frame receives more than one deposit. It stays a
-            // finding rather than an assertion because the value tracks the
-            // sample density, which is a property of the session and not of the
-            // shader; `TraceUniforms.density` is what keeps it bounded.
-            continue;
-        }
-
-        const quiet = frames - 1;
-        const ratio = peak / first;
-        const want = std.math.pow(f32, trace_decay, @floatFromInt(quiet));
-        say("  decay: after {d} quiet frames, {d:.4} of the deposit, expected {d:.4}", .{
-            quiet,
-            ratio,
-            want,
-        });
-
-        // Two percent, which is half-float precision compounded over five frames
-        // rather than a rendering tolerance. A decay of 1.0 would hold the ratio
-        // at 1.0 and a decay applied twice would put it at 0.81 per frame; both
-        // are tens of times outside this.
-        if (@abs(ratio - want) > 0.02 * want) return error.DecayWrong;
+        slot.* = measure.maxChannel(probe.image(), 1);
     }
-}
 
-/// How much simulated wall time `checkDecayIsInRealTime` fades across.
-///
-/// 96 ms rather than a round 100, so that both arms below divide it into whole
-/// nanoseconds and span *exactly* the same interval: 12 steps of 8 ms and 6 of
-/// 16 ms. An interval the two could only approximate would put a residual
-/// difference into the measurement this check is reading a difference out of.
-const decay_span_nanos: u64 = 96 * std.time.ns_per_ms;
+    try verdict.decay(&peaks);
+}
 
 /// The same elapsed time fades the phosphor by the same amount however many
 /// frames it was delivered in.
 ///
-/// **The whole of #56, and the one check here that could not exist before it.**
-/// Every other case in this half measures a single frame, or a run of frames at
-/// one rate; this one is a claim about how successive frames differ, which is why
-/// #56's body expected to be verified by pinning a display to 60 Hz in System
-/// Settings, capturing after a fixed wall-clock interval, and comparing brightness
-/// by eye. `Renderer.frame` taking a clock reading rather than reading one is what
-/// turns that procedure into an assertion.
-///
-/// The two arms are 125 Hz and 62.5 Hz, which bracket the rates this machine's
-/// panel actually produces, and both fade across `decay_span_nanos`. The
-/// falsification is not subtle, which is the point of the design: with a per-frame
-/// factor the arms would land on `0.9^12 = 0.2824` and `0.9^6 = 0.5314`, a factor
-/// of 1.88 apart against a tolerance of two percent.
-///
-/// Two assertions rather than one, because they fail for different reasons. The
-/// arms agreeing with **each other** is frame-rate independence, which is what the
-/// issue asked for. Each agreeing with `palette.decayOver` is the model and the
-/// shader agreeing about `tau`, which a pair of arms that were both wrong in the
-/// same way would pass.
+/// The claim, the two rates and the falsification are `verdict.realTimeDecay`.
+/// What is here is the driving, and one detail of it is load-bearing: the two
+/// probes in each arm share this file's one pair of readback buffers, so the
+/// deposit's peak has to be read out of the first **before** the second's
+/// readback overwrites it. That was previously true by accident of statement
+/// order; extracting a scalar into `measured` is what makes it the shape of the
+/// code.
 fn checkDecayIsInRealTime(energy: []f32, picture: []u8, window: []f32) !void {
-    var measured: [2]f32 = undefined;
-    var predicted: [2]f32 = undefined;
+    var measured: [verdict.decay_arms.len]verdict.RealTimeArm = undefined;
 
-    for (
-        [_]u64{ 8 * std.time.ns_per_ms, 16 * std.time.ns_per_ms },
-        &measured,
-        &predicted,
-    ) |interval, *slot, *want_slot| {
-        const steps = decay_span_nanos / interval;
-
-        // **Composed per step rather than asked of the span directly**, and the
-        // difference is not pedantry: `palette.max_elapsed_nanos` is 41.7 ms, so
-        // `decayOver(decay_span_nanos)` would clamp and predict 0.7684 against a
-        // true 0.5451. That the clamp is invisible here is the point — it bounds
-        // one frame's interval, and a fade delivered in frames never reaches it.
-        //
-        // It also makes the two arms' expectations two independent derivations
-        // that have to coincide, which is checked below rather than assumed.
-        const want = std.math.pow(f32, palette.decayOver(interval), @floatFromInt(steps));
-        want_slot.* = want;
-
+    for (verdict.decay_arms, &measured) |arm, *slot| {
         // One depositing frame, then `steps` that decay alone, so the fade covers
         // exactly `decay_span_nanos`. `Probe.run`'s clock starts at zero and the
         // deposit frame is the one with no interval behind it.
         var deposited = try Probe.init(energy, picture);
         defer deposited.deinit();
         measure.constant(window, 0.5);
-        try deposited.runAt(window, 1, 1, interval);
+        try deposited.runAt(window, 1, 1, arm.interval_nanos);
         const first = measure.maxChannel(deposited.image(), 1);
 
         var faded = try Probe.init(energy, picture);
         defer faded.deinit();
         measure.constant(window, 0.5);
-        try faded.runAt(window, @intCast(steps + 1), 1, interval);
-        slot.* = measure.maxChannel(faded.image(), 1) / first;
+        try faded.runAt(window, @intCast(arm.steps + 1), 1, arm.interval_nanos);
 
-        say("  real time: {d} frames {d} ms apart, {d:.4} left after {d} ms, expected {d:.4}", .{
-            steps,
-            interval / std.time.ns_per_ms,
-            slot.*,
-            decay_span_nanos / std.time.ns_per_ms,
-            want,
-        });
-
-        if (@abs(slot.* - want) > 0.02 * want) return error.DecayNotInRealTime;
+        slot.* = .{ .deposited = first, .faded = measure.maxChannel(faded.image(), 1) };
     }
 
-    // The two predictions are `exp(-96 ms / tau)` reached from 8 ms twelve times
-    // and from 16 ms six times. They are equal in exact arithmetic, so anything
-    // above `f32` noise here is `decayOver` not being an exponential.
-    try expectClose(predicted[0], predicted[1], 1e-4, error.DecayNotInRealTime);
-
-    const spread = @abs(measured[0] - measured[1]) / predicted[0];
-    say("  real time: the two rates differ by {d:.2}%", .{spread * 100.0});
-
-    // Tighter than either arm's own tolerance, and it can be: both are the same
-    // fade over the same interval, so what separates them is half-float rounding
-    // compounded over twelve multiplies against six rather than any difference in
-    // what was asked for.
-    if (spread > 0.01) return error.DecayNotInRealTime;
-}
-
-/// `a` and `b` within `tolerance` relatively, or the caller's error.
-fn expectClose(a: f32, b: f32, tolerance: f32, err: anyerror) !void {
-    if (@abs(a - b) > tolerance * @abs(b)) return err;
+    try verdict.realTimeDecay(&measured);
 }
 
 // ---------------------------------------------------------------------------
