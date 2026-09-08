@@ -266,6 +266,12 @@ One `requireComplete` now guards all ten judges that index, on either readback, 
 
 **The lesson is about where the sweep could not look.** Planting weakens an assertion that exists and asks whether a test notices. It cannot find an assertion that was never written, which is what a missing guard is, and it is blind by construction to the *uniformity* of a rule across entrypoints. Reading the file as a whole is what found this, and the review did that where the sweep could not.
 
+**The second round found a hole in the first round's fix, which is the same lesson recursing.** `requireComplete` checked each buffer against the geometry *it* declares and not against the other's, and the judges that read both loop over the image's geometry while indexing the picture. Two buffers can therefore each be honest about themselves and still disagree: at an image of 16x8 against a picture of 8x8, `Picture.complete()` demands 256 bytes and `resolve` indexes to 284. Planted, that panics with `index out of bounds: index 260, len 256`. `ReadbackGeometryMismatch` is a new member of the fault set rather than a reuse of `ReadbackTruncated`, because the buffers are not truncated and a failing transcript should not say they are.
+
+**The structural fix was considered and refused, with the reason recorded at the code.** `iface.Readback` already models this correctly, one geometry and two buffers, and a `Picture` carrying no geometry of its own would make the mismatch unrepresentable rather than merely refused. That is the better shape and it costs all fifteen judge signatures plus every test that hands a judge an image alone, which is most of them. Refused on cost against a condition no caller in this repository can reach, and written down at `requireComplete` so the next person weighs it rather than rediscovering it.
+
+**One test was corrected by the plant rather than by review.** The mismatch arm first reused the full-size picture buffer, so a mismatched geometry read the *wrong pixels* instead of running off the end, and the comment above it described arithmetic the test did not perform. Sized to exactly what it declares, it panics. That is the centreline plant's failure in a third dress: an arm that looks like a test of the thing it names and is a test of something weaker.
+
 ## Verification
 
 Run in order. The first two are the negative controls and neither is optional.
