@@ -850,6 +850,87 @@ test "an interval longer than a refresh is not believed" {
     try testing.expect(tonemap(1.0, resumed) - tonemap(1.0, steady) < 0.05);
 }
 
+/// The three white points the tonemap tests below are stated at.
+///
+/// The zero-decay end, the shipped rate, and the clamp: the two ends of the
+/// attainable range and the one value that actually ships. Written as a helper
+/// rather than repeated, because the defining property has to hold at all three
+/// or it is a property of one number rather than of the curve.
+fn whitePointsUnderTest() [3]f32 {
+    return .{ whitePoint(0.0), whitePoint(decayOver(frameNanos(60))), whitePoint(1.0) };
+}
+
+test "the tonemap reaches one exactly at the white point rather than approaching it" {
+    // **The claim extended Reinhard was chosen for**, asserted by nothing until
+    // #96 although ADR 0019 rests on it: "Reinhard reaches its white point exactly
+    // at `e = w` while the steady state is only approached, so a white point set
+    // at the asymptote would never arrive and the core would be pale green
+    // forever." Plain Reinhard passes every other test in this file.
+    const table = try paletteScratch();
+    defer testing.allocator.free(table);
+
+    for (whitePointsUnderTest()) |w| {
+        // No energy is no light, exactly, at every white point. This is also what
+        // makes the background test below a statement about the whole resolve
+        // rather than about `paletteAt` alone.
+        try testing.expectEqual(@as(f32, 0.0), tonemap(0.0, w));
+
+        // **Not `expectEqual`, and the reason is the same one `srgbEncode(1.0)`
+        // carries above.** The identity is `w(1 + w/w²)/(1 + w)`, which is exactly
+        // one in real arithmetic and lands bit-exact in f32 at 0.8 and at 8.0 and
+        // reads 0.9999999 at the shipped 7.999998 and 0.99999994 at the 8e5 clamp.
+        // Asserting the float exactly would be asserting a property of binary32;
+        // the byte below is the claim that means something to a viewer.
+        try testing.expectApproxEqAbs(@as(f32, 1.0), tonemap(w, w), 1e-6);
+
+        // The direction that keeps the line above non-vacuous. An unconditional
+        // `return 1.0` satisfies the approximate equality and fails here.
+        try testing.expect(tonemap(w * 0.99, w) < 1.0);
+
+        // And the property as the display shows it, which is what "the core would
+        // be pale green forever" actually means: at the white point every channel
+        // of the shipped gradient resolves to 255, so the core is white rather
+        // than the tint's own brightest value.
+        for (resolved(table, shipped_palette, 0.0, w)) |channel| {
+            try testing.expectEqual(@as(u8, 255), channel);
+        }
+    }
+}
+
+test "the tonemap is monotone in energy and rails at the white point rather than above it" {
+    // The `@min` arm, which nothing reached before #96, and the monotonicity the
+    // docstring claims. Both are properties of the curve rather than of a
+    // constant, so they are swept rather than sampled.
+    for (whitePointsUnderTest()) |w| {
+        var previous: f32 = -1.0;
+        var i: usize = 0;
+        while (i <= 4096) : (i += 1) {
+            const energy = w * 4.0 * @as(f32, @floatFromInt(i)) / 4096.0;
+            const value = tonemap(energy, w);
+            try testing.expect(value >= previous);
+            try testing.expect(value <= 1.0);
+            previous = value;
+        }
+
+        // **The rail is at `w` and not a fraction above it.** `f(e) - 1` reduces
+        // to `(e²/w² - 1) / (1 + e)`, so the unclamped curve crosses one exactly
+        // at the white point and the clamp is what holds it there afterwards.
+        // Stated with the strict inequality below it, because either alone is
+        // satisfied by a curve that rails in the wrong place.
+        //
+        // **`e = w` is deliberately not in this list, and finding that out is
+        // worth the comment.** It is the boundary rather than a case the `@min`
+        // reaches: at the 8e5 clamp the identity evaluates to 0.99999994, one ulp
+        // under one, so an exact assertion there fails on binary32 rather than on
+        // the curve. The test above pins that end approximately and by the byte;
+        // this one starts strictly above it.
+        for ([_]f32{ 1.5, 2.0, 100.0, 1e6 }) |over| {
+            try testing.expectEqual(@as(f32, 1.0), tonemap(w * over, w));
+        }
+        try testing.expect(tonemap(w * (1.0 - 1e-3), w) < 1.0);
+    }
+}
+
 test "the white point holds a deposit's brightness steady across refresh rates" {
     // **ADR 0019's table, turned into an assertion.** The white point is
     // `white_headroom / (1 - decay)` precisely so that the dwell asymptote and the
