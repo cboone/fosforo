@@ -1035,3 +1035,29 @@ test "the white point holds a deposit's brightness steady across refresh rates" 
         for (got) |channel| try testing.expectEqual(@as(u8, 255), channel);
     }
 }
+
+test "the resolve of no energy is the background the drawable shows" {
+    // **The model half of `verdict.BackgroundNotThePaletteAtZero`**, which asserts
+    // the same equality against a running shader and could not assert this one:
+    // there it compares the picture's corner pixel against this model, so the two
+    // agree by construction whatever `background_bytes` says. This compares the
+    // model against the constant, which is the half that was missing.
+    //
+    // Different from "every gradient starts at the background and ends at white"
+    // above, and the difference is the whole point: that one calls `paletteAt` at
+    // zero directly, while this runs zero energy through `whitePoint` and
+    // `tonemap` first. An unlit pixel is only the background because
+    // `tonemap(0, w)` is exactly zero at every white point a frame can produce.
+    const table = try paletteScratch();
+    defer testing.allocator.free(table);
+
+    // The two clamp ends and the rate that ships. A decay of 1 is included
+    // because that is where `whitePoint` is largest, so the tonemap's shoulder is
+    // at its most nearly absent, and zero energy still has to land on the byte
+    // `find_drawable` looks for.
+    for ([_]f32{ 0.0, decayOver(frameNanos(60)), 1.0 }) |decay| {
+        for (std.enums.values(Palette)) |p| {
+            try testing.expectEqual(background_bytes, resolved(table, p, decay, 0.0));
+        }
+    }
+}
