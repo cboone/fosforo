@@ -850,14 +850,22 @@ test "an interval longer than a refresh is not believed" {
     try testing.expect(tonemap(1.0, resumed) - tonemap(1.0, steady) < 0.05);
 }
 
-/// The three white points the tonemap tests below are stated at.
+/// The three decays the tonemap tests below are stated at.
 ///
-/// The zero-decay end, the shipped rate, and the clamp: the two ends of the
-/// attainable range and the one value that actually ships. Written as a helper
-/// rather than repeated, because the defining property has to hold at all three
-/// or it is a property of one number rather than of the curve.
-fn whitePointsUnderTest() [3]f32 {
-    return .{ whitePoint(0.0), whitePoint(decayOver(frameNanos(60))), whitePoint(1.0) };
+/// The zero-decay end, the shipped rate, and the clamp: the two ends of the range
+/// and the one value that actually ships, which put the white point at 0.8,
+/// 7.999998 and 8e5. Written as a helper rather than repeated, because the
+/// defining property has to hold at all three or it is a property of one number
+/// rather than of the curve.
+///
+/// **Decays rather than white points, and that is not a formality.** `resolved`
+/// takes a decay and derives the white point itself, so a test holding only `w`
+/// cannot ask it anything about `w`: passing a fixed decay beside a varying `w`
+/// silently asks whether a large energy resolves white at a *small* white point,
+/// which is true of any monotone curve and of plain Reinhard too. This helper
+/// returned white points until #96's review pass caught exactly that.
+fn decaysUnderTest() [3]f32 {
+    return .{ 0.0, decayOver(frameNanos(60)), 1.0 };
 }
 
 test "the tonemap reaches one exactly at the white point rather than approaching it" {
@@ -869,7 +877,9 @@ test "the tonemap reaches one exactly at the white point rather than approaching
     const table = try paletteScratch();
     defer testing.allocator.free(table);
 
-    for (whitePointsUnderTest()) |w| {
+    for (decaysUnderTest()) |decay| {
+        const w = whitePoint(decay);
+
         // No energy is no light, exactly, at every white point. This is also what
         // makes the background test below a statement about the whole resolve
         // rather than about `paletteAt` alone.
@@ -901,7 +911,14 @@ test "the tonemap reaches one exactly at the white point rather than approaching
         // be pale green forever" actually means: at the white point every channel
         // of the shipped gradient resolves to 255, so the core is white rather
         // than the tint's own brightest value.
-        for (resolved(table, shipped_palette, 0.0, w)) |channel| {
+        //
+        // **The decay and the energy have to be the matching pair**, which is why
+        // the loop iterates decays: `resolved` derives its own white point, so
+        // passing a fixed decay beside a varying `w` would ask whether energy `w`
+        // resolves white at 0.8, which plain Reinhard also satisfies. This asks
+        // whether `whitePoint(decay)` deposits resolve white at that same decay,
+        // and planted against plain Reinhard it fails on its own.
+        for (resolved(table, shipped_palette, decay, w)) |channel| {
             try testing.expectEqual(@as(u8, 255), channel);
         }
     }
@@ -924,7 +941,9 @@ test "the tonemap is monotone in energy and rails at the white point rather than
     // reaches a pixel. So this arm is a real property of the shipping function and
     // is *not* the thing that states where the rail is; the two arms at the bottom
     // of the loop are.
-    for (whitePointsUnderTest()) |w| {
+    for (decaysUnderTest()) |decay| {
+        const w = whitePoint(decay);
+
         var previous: f32 = -1.0;
         var i: usize = 0;
         while (i <= 4096) : (i += 1) {
@@ -968,6 +987,12 @@ test "the white point is the dwell asymptote, and the clamp is the phosphor that
     // from `white_headroom` up blows out white — which the shader's comment calls
     // "loud and obviously wrong, which is the right failure" for the hot-reload
     // case that produces it.
+    // `expectEqual` on the identity and a hundredth for the margin, both of which
+    // the tonemap tests above avoid on purpose. Neither is a contradiction: at
+    // this white point the identity is bit-exact, and the shortfall a hundredth
+    // below the rail is 0.0111 against the 1.1e-7 f32 needs here, five orders of
+    // magnitude clear. It is the 8e5 clamp that makes those two claims delicate,
+    // and this is the other end of the range.
     try testing.expectEqual(white_headroom, whitePoint(0.0));
     try testing.expectEqual(@as(f32, 1.0), tonemap(white_headroom, whitePoint(0.0)));
     try testing.expectEqual(@as(f32, 1.0), tonemap(1.0, whitePoint(0.0)));
