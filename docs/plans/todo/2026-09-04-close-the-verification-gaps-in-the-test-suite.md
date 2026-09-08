@@ -36,7 +36,7 @@ The work below does not replace planting. It moves the plants that can be expres
 | [#91](https://github.com/cboone/fosforo/issues/91) | Race the editor's teardown gate                               | `test:`     | A Linux runner      | ADR 0016 applied to the primitive that guards teardown    |
 | [#92](https://github.com/cboone/fosforo/issues/92) | Make the trace half's judgements pure, and test them          | `refactor:` | A device, no window | `src/smoke.zig`'s 0 tests; makes the plant table regress  |
 | [#93](https://github.com/cboone/fosforo/issues/93) | Make the watcher's bookkeeping reachable from a test build    | `refactor:` | Nothing             | Code no test binary compiles                              |
-| [#94](https://github.com/cboone/fosforo/issues/94) | Run the unit suite in the mode that ships                     | `ci:`       | Nothing             | Debug-only test coverage of a ReleaseFast product         |
+| [#94](https://github.com/cboone/fosforo/issues/94) | Run the unit suite in the mode that ships. **Done**           | `ci:`       | Nothing             | Debug-only test coverage of a ReleaseFast product         |
 | [#95](https://github.com/cboone/fosforo/issues/95) | Analyze every public declaration, and settle the uncalled one | `test:`     | Nothing             | The lazy-analysis hole, live in one declaration           |
 | [#96](https://github.com/cboone/fosforo/issues/96) | Assert the transfer function's defining properties            | `test:`     | Nothing             | `tonemap` and `whitePoint`'s stated claims                |
 | [#97](https://github.com/cboone/fosforo/issues/97) | The remaining cheap assertions                                | `test:`     | Nothing             | Eleven small, named holes                                 |
@@ -272,12 +272,24 @@ If any test does need to differ by mode, that is a finding worth recording rathe
 
 ### Acceptance
 
-- Both steps green locally and in CI.
-- Plant a value that a trust boundary is supposed to refuse and confirm the ReleaseFast run refuses it rather than trapping, which is the property the split exists to make observable.
+- [x] Both steps green locally and in CI.
+- [x] Plant a value that a trust boundary is supposed to refuse and confirm the ReleaseFast run refuses it rather than trapping, which is the property the split exists to make observable.
+
+**Landed.** Plan: [`2026-09-08-run-the-unit-suite-in-the-modes-that-ship.md`](../done/2026-09-08-run-the-unit-suite-in-the-modes-that-ship.md). Three steps rather than two, because the secondary question above was answered yes: `test` still follows `-Doptimize`, `test-safe` is pinned to ReleaseSafe and `test-release` to ReleaseFast, all three from one `addTestStep`, with a `test-modes` job running the two pinned ones. Both "measure rather than assume" items came back clean — 285 of 285 in every mode on the first try, and `palette.zig`'s tolerances survive down to its 1e-7 because Zig enables no fast-math and `decay_tau_nanos` is comptime-folded.
+
+**Five findings, four of them corrections to this section as written.**
+
+- **The `ci` job cannot host the step.** It is `uses: cboone/gh-actions/.github/workflows/run-zig-ci.yml@91f9abd`, a reusable workflow with no hook for one, so "a step in the `ci` job beside the existing one" was not available and `test-modes` is its own job. Its ceiling is unmeasured on `python`'s precedent and is to be set from real runs.
+- **`assert(fba.end_index == 0)` is vacuous in every mode**, not Debug-only. `scratchBytes` returns 0 unconditionally and both `passThrough` and `tap` take the allocator and discard it deliberately, so `end_index` is structurally always zero. It is a tripwire for a future step that wants scratch. The convention it stands for is real; that line is not evidence of it, and the issue should not have led with it.
+- **Zig's `std.debug.assert` evaluates its argument in every optimize mode**, because it is an ordinary function rather than a macro. So the C bug class of work inside an assert does not exist here, and the plant designed to be the discriminating one — `buildPalette`'s whole loop moved into an assert argument — stayed **green in all three modes**. What ReleaseFast strips is the `unreachable` branch, not the call. **There is consequently no plant in this codebase where Debug is green and ReleaseFast is red**, and that is the honest statement of what these steps buy: not extra detection, since every difference between the modes *removes* a check, but the suite running at all in the build that ships, so a refusal that lapsed would be caught where nothing else is looking.
+- **An assertion is worth least in the mode where it is the only thing left**, which the `Ring.init` plant quantified rather than asserted. Deleting `if (minimum_capacity == 0) return error.EmptyCapacity;`: Debug prints `panic: reached unreachable code` with a trace through `std/math.zig:1219`'s own `assert(value != 0)`; ReleaseSafe prints the same panic with the trace optimized down to the test runner, naming no `std.math` line; ReleaseFast prints `terminated with signal TRAP` and nothing else. The prediction in the plan was that ReleaseFast would return a wrong `error.Overflow` off a `usize` underflow. It does not — it traps opaquely, which is worse and is the sharper argument for the refusal.
+- **The Debug run cannot be retired**, measured rather than reasoned about. `shader.zig`'s "nothing is read from disk in a test build" asserts `!shader.live`, and `live` is `builtin.mode == .Debug and !builtin.is_test`, so outside Debug the first clause has already decided it. Planted, `zig build test` fails 1 of 285 and both release steps report 285 of 285. That is why the steps are additive and why a fourth was not substituted for the first.
+
+**And the instrument has a control.** A `pinned_optimize` build option carries the mode `build.zig` asked for, and a comptime block in `src/main.zig` fails compilation if the artifact was built at another. Planted — `.ReleaseFast` swapped for `.Debug` at the call site — it fails naming both modes. Without it, a refactor that dropped the pin would leave a green job testing Debug twice, which is this issue's own failure one level up.
 
 ### What it does not close
 
-The watcher, which is stubbed out in ReleaseFast too. That is item 5.
+The watcher, which is stubbed out in ReleaseFast too. That is item 5. And nothing about the five `if (builtin.mode != .Debug) return;` sites — `Editor.report`, the two render-thread assertions and the two `objc` thread assertions — where the release steps take a *different* path rather than a harder one, so they are not evidence about those either.
 
 ## 7. Analyze every public declaration, and settle the one with no caller
 
@@ -394,9 +406,9 @@ These are real gaps and each already has an issue. This plan should not duplicat
 | [#77](https://github.com/cboone/fosforo/issues/77) | A hot-reloaded shader's binding indices are checked by nothing. **Done**                  |
 | [#34](https://github.com/cboone/fosforo/issues/34) | The cross-display path has never executed                                                 |
 | [#85](https://github.com/cboone/fosforo/issues/85) | Nothing runs `markdownlint`                                                               |
-| [#87](https://github.com/cboone/fosforo/issues/87) | A pull request based on anything but `main` runs no CI at all                             |
+| [#87](https://github.com/cboone/fosforo/issues/87) | A pull request based on anything but `main` runs no CI at all. **Done**                   |
 
-**[#87](https://github.com/cboone/fosforo/issues/87) is the one that bears on how this program is worked**, rather than on what it contains. `ci.yml`'s `pull_request` trigger carries `branches: [main]`, so a PR targeting anything else runs none of the nine jobs. Every issue here is an ordinary branch off `main` for that reason as much as for the usual one, and none of them should be stacked until #87 is settled. #99 is its natural neighbour: both are workflow changes and both are about a check that is configured, believed to be running, and silently is not.
+**[#87](https://github.com/cboone/fosforo/issues/87) was the one that bore on how this program is worked**, rather than on what it contains, and it is **done**. `ci.yml`'s `pull_request` trigger no longer carries `branches: [main]`, so a pull request targeting any base runs the whole workflow, measured on run `34271723634` at all twelve job names. Stacking these is therefore verified rather than forbidden, and where one of them genuinely depends on another the build plan's working-order section says to use a native stack rather than retargeting by hand. #99 remains its natural neighbour: both are workflow changes, and #99 is now the survivor of the pair about a check that is configured, believed to be running, and silently is not.
 
 ## Sequencing and contention
 
@@ -418,7 +430,7 @@ Order within the program: **#89 first**, because `main` was red; that one has la
 
 **Nothing here is blocked.** #92 needed [#57](https://github.com/cboone/fosforo/issues/57), which has merged. What survives is a merge conflict rather than a dependency: #92, #80 and #58 all edit `src/smoke.zig`, so whichever lands second rebases, and the build plan's merge-order table records that as costing nothing but the rebase. They are in different lanes and can be in flight together.
 
-**Do not stack them**, per [#87](https://github.com/cboone/fosforo/issues/87): `ci.yml`'s `pull_request` trigger carries `branches: [main]`, so a pull request based on anything else runs none of the nine jobs. Each of these is an ordinary branch off `main`.
+**Stacking them is now safe and is still not the default**, per [#87](https://github.com/cboone/fosforo/issues/87): a pull request based on anything but `main` runs the whole workflow since that landed, so the prohibition is retired, but nothing here needs another's unfinished work and an ordinary branch off `main` keeps the diffs readable. Stack only where a real code dependency appears, and use a native stack when you do.
 
 ## Out of scope
 

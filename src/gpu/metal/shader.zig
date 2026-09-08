@@ -276,9 +276,17 @@ test "the embedded shader fits the read buffer with room to spare" {
 }
 
 test "nothing is read from disk in a test build" {
-    // **Not vacuous.** A test binary is a Debug build, so this fails the moment
-    // `!builtin.is_test` is dropped from `live`, which is the exact regression
-    // that would put filesystem I/O inside the hermetic path ADR 0009 protects.
+    // **Not vacuous under `zig build test`, and vacuous under both of its release
+    // siblings.** The Debug artifact is where this earns its place: a test binary
+    // is a Debug build, so dropping `!builtin.is_test` from `live` fails this,
+    // which is the exact regression that would put filesystem I/O inside the
+    // hermetic path ADR 0009 protects. Outside Debug, `builtin.mode == .Debug`
+    // has already decided `live` and the second term is unreachable, so the same
+    // plant passes. Measured rather than reasoned about (#94): planted, the Debug
+    // step fails 1 of 285 while `test-safe` and `test-release` both report 285 of
+    // 285. That is the concrete reason those two steps are additive and `zig build
+    // test` cannot be retired in favour of the mode that ships. `gpu/iface.zig`
+    // records that nothing else covers this term either.
     var buf: PathBuffer = undefined;
     try testing.expect(!live);
     try testing.expectEqual(@as(?[]const u8, null), resolvePath(&buf));
