@@ -73,8 +73,10 @@ pub const Image = struct {
     /// near it, and the margin is not the point: real geometries here are 960 by
     /// 540 and overflow needs a product of 2^62, nine trillion times larger. What
     /// makes it worth closing is that this is `pub`, so a caller supplies both
-    /// numbers, and [#94](https://github.com/cboone/fosforo/issues/94) intends to
-    /// run this suite under the optimize mode that ships.
+    /// numbers, and [#94](https://github.com/cboone/fosforo/issues/94) now runs
+    /// this suite under the optimize mode that ships, so `zig build test-release`
+    /// is where the test below is a claim about the shipping build rather than
+    /// about a Debug one.
     pub fn complete(self: Image) bool {
         const pixels = std.math.mul(usize, self.width, self.height) catch return false;
         const floats = std.math.mul(usize, pixels, 4) catch return false;

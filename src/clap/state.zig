@@ -162,6 +162,12 @@ pub const TestStream = struct {
     /// have held there. That is the argument for `@panic` rather than against
     /// it: the check has to survive the run where it is the only thing left,
     /// not the run that would have caught the overflow twice over.
+    ///
+    /// **That run now exists**, and this line is a precondition of it rather than
+    /// insurance against a hypothetical. `zig build test-release` compiles this
+    /// fixture at ReleaseFast (#94), which is exactly the build the paragraph above
+    /// describes, and the malformed-stream tests plant their bad values through
+    /// `seed`.
     pub fn seed(self: *TestStream, bytes: []const u8) void {
         if (bytes.len > self.buffer.len) @panic("TestStream.seed: input larger than the fixture buffer");
 

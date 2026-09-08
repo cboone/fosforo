@@ -88,6 +88,18 @@ pub const Ring = struct {
         /// it is a Debug build and the assertion is live; the `--release=fast`
         /// build that ships is the one where it is gone and a host's bad value
         /// would run on unchecked.
+        ///
+        /// **Since #94 this guard is exercised in that build**, by `zig build
+        /// test-release`, and deleting the line above is the plant that measured
+        /// what the borrowed assertion is actually worth there. Debug names it —
+        /// `panic: reached unreachable code` with a trace through
+        /// `std/math.zig:1219`'s `assert(value != 0)`. ReleaseSafe still panics
+        /// but the trace has been optimized down to the test runner, naming no
+        /// line in `std.math` at all. ReleaseFast reports `terminated with signal
+        /// TRAP` and nothing else: no message, no trace, no assertion named. So
+        /// the mode where a bad capacity does damage is also the mode where an
+        /// assertion says least about it, which is the whole of why this is an
+        /// error rather than an `assert`.
         EmptyCapacity,
         /// The capacity, once rounded up, does not fit in a `usize`.
         Overflow,

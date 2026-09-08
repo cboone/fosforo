@@ -257,6 +257,12 @@ Two findings, both valid, and the second larger than it was filed as.
 
 The lesson generalises past this issue: **a figure corrected in one document is not corrected**, and the check is a repository-wide grep for the old value rather than an edit where you happened to notice it. Reviewing the diff cannot find this class at all, because the stale copies are in files the diff does not touch.
 
+### The tests survive #94's optimize modes unchanged
+
+[#94](https://github.com/cboone/fosforo/issues/94) landed while this branch was open and made the unit suite run in three optimize modes rather than one. Its own section flagged **this file's float tolerances** as the thing to watch, which is a live question here: these tests assert `tonemap(0, w) == 0` and `tonemap(w * over, w) == 1.0` as exact float equalities, and the `dominantToTonemapped` round trip as `expectEqual` on a byte.
+
+Measured after merging it rather than assumed: **290 of 290 in all three**, `test` at Debug, `test-safe` at ReleaseSafe and `test-release` at the `--release=fast` the bundle ships. Nothing here needed relaxing. Zig does not enable fast math in ReleaseFast, which is what #94's section predicted and is now executed for the assertions most exposed to it.
+
 ### One tool note
 
 **`prettier --write` was reached for to re-align the build plan's Verification table and reverted.** It fixed the alignment and also rewrote four unrelated `*emphasis*` spans to `_emphasis_` across the file. The table was re-padded by a throwaway script instead, which touched the one row that moved. `markdownlint --fix` was never a candidate, for the reason this plan's verification section gives.
