@@ -13,7 +13,7 @@ on:
 
   # No `branches:` here, deliberately, because that key reads the pull request's
   # *base* ref rather than its head. With `[main]` on it, a pull request targeting
-  # anything else matched nothing and none of the nine jobs below dispatched: no
+  # anything else matched nothing and none of the eight jobs below dispatched: no
   # build, no `clap-validator`, no smoke harness, no signature assertions, while
   # the pull request page still read green, because `typos`, `gitleaks` and
   # `trufflehog` all carry a bare `pull_request:` and ran (#87). That filter was

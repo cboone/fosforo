@@ -4,7 +4,7 @@ Closes [#87](https://github.com/cboone/fosforo/issues/87).
 
 ## Context
 
-`.github/workflows/ci.yml:14` carries `branches: [main]` on its `pull_request` trigger. That filter reads the pull request's **base** ref, so a pull request targeting anything but `main` matches nothing and the workflow's nine jobs never dispatch: `ci` (the reusable workflow's Test, Format and Build), `shaders`, `smoke`, `ring-race`, `shell`, `python`, `clap-validator` and `clap-wrapper`. Nothing anywhere says so, and the pull request page reads green.
+`.github/workflows/ci.yml:14` carries `branches: [main]` on its `pull_request` trigger. That filter reads the pull request's **base** ref, so a pull request targeting anything but `main` matches nothing and the workflow's eight jobs never dispatch: `ci` (the reusable workflow, which expands into `Test`, `Format`, `Build` and two entries that always skip), `shaders`, `smoke`, `ring-race`, `shell`, `python`, `clap-validator` and `clap-wrapper`. **Eight declared jobs are twelve names in a rollup and ten executions**, which is worth pinning down here because this project's prose said "nine" for months and that matched no reading of the file. Nothing anywhere says so, and the pull request page reads green.
 
 This is the third instance of one shape, a check that is configured, is believed to be running, and silently is not, after [#28](https://github.com/cboone/fosforo/issues/28) and [#85](https://github.com/cboone/fosforo/issues/85). The build plan names the group at `docs/plans/todo/2026-07-25-repo-foundation-and-phased-build-plan.md:245`.
 
@@ -85,7 +85,7 @@ Nothing here would catch the filter being re-added, and #99's `actionlint` would
 
 ## Verification
 
-The acceptance test is a throwaway stacked pull request run **before** the fix merges. It works because the `on:` block is read from the merge ref: a pull request whose head branches off `ci/stacked-prs` and whose base **is** `ci/stacked-prs` gets a merge ref already carrying the widened trigger, so the nine jobs run on a non-`main` base while the fix is still unmerged.
+The acceptance test is a throwaway stacked pull request run **before** the fix merges. It works because the `on:` block is read from the merge ref: a pull request whose head branches off `ci/stacked-prs` and whose base **is** `ci/stacked-prs` gets a merge ref already carrying the widened trigger, so the whole workflow runs on a non-`main` base while the fix is still unmerged.
 
 ```bash
 git push -u origin ci/stacked-prs                        # the base must exist on the remote first

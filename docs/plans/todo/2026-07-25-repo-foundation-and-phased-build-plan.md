@@ -250,7 +250,7 @@ three times counting #28.
 state `typos.toml` was in before #28, measured at 0 findings on `main` against
 129 on a branch in flight. **[#87](https://github.com/cboone/fosforo/issues/87)
 is settled**: `ci.yml`'s `pull_request` trigger no longer carries
-`branches: [main]`, so a stacked pull request now runs all nine jobs, measured on
+`branches: [main]`, so a stacked pull request now runs the whole workflow, measured on
 run `34271723634` rather than asserted. It used to constrain how anything here is
 worked rather than what it contains, and the working order below is rewritten
 accordingly. #85 reads with #69, since both ask what CI is obliged to check
@@ -410,7 +410,7 @@ The resulting order is **#55**, then **#64**, then **#63**, then **#22**, then *
 
 The subtle entry was [#63](https://github.com/cboone/fosforo/issues/63)'s: its RSS threshold depended on #55's baseline **number** rather than on its code, so it wanted #55 merged before the figure was fixed, while its `smoke-leaks` half depended on nothing. It is now **done**, and the threshold was never set, for the reason two bullets above.
 
-Stacking is available, and since [#87](https://github.com/cboone/fosforo/issues/87) it is verified: `ci.yml`'s `pull_request` trigger no longer carries `branches: [main]`, so a stacked pull request runs all nine jobs, measured on run `34271723634`. That retires the rule and leaves the preference, which was always the older half of the argument and is untouched: the child's diff is unreadable until the parent lands, and every parent revision forces a rebase. So an ordinary branch off `main` stays the default, and #55's own commits were strictly sequential anyway, which is why branching #57 off it would have bought nothing.
+Stacking is available, and since [#87](https://github.com/cboone/fosforo/issues/87) it is verified: `ci.yml`'s `pull_request` trigger no longer carries `branches: [main]`, so a stacked pull request runs the whole workflow, measured on run `34271723634` at all twelve job names. That retires the rule and leaves the preference, which was always the older half of the argument and is untouched: the child's diff is unreadable until the parent lands, and every parent revision forces a rebase. So an ordinary branch off `main` stays the default, and #55's own commits were strictly sequential anyway, which is why branching #57 off it would have bought nothing.
 
 **Where a real code dependency exists, use a native stack rather than retargeting by hand.** GitHub triggers a native stack as if every pull request in it targeted the stack's base, and `gh stack init --base BRANCH` or the web UI is what creates one; `gh pr create --base` does not, which is what #86 was and why it ran three of ten workflows. Two things about the preview are unverified here and should be measured the first time it is used rather than assumed. **What happens to the rest of the stack when the bottom pull request merges** is undocumented on GitHub's reference page: if it rebases the next one onto the stack base, that is a head update and `synchronize` fires, which would close the base-update gap #87 left open, and if it merely retargets, the gap stands. And **whether the preview needs enabling** per account or per repository is undocumented too. Until both are measured, the mitigation is the convention rather than the mechanism: rebase onto `main` and retarget before merging anything that carried code up a stack.
 
