@@ -80,6 +80,7 @@ fn say(comptime fmt: []const u8, args: anytype) void {
 /// picture is being judged.
 pub const Fault = error{
     ReadbackTruncated,
+    ReadbackGeometryMismatch,
     TraceNotDrawn,
     TraceNotFlat,
     CentreLineWrong,
@@ -293,10 +294,29 @@ fn expectClose(a: f32, b: f32, tolerance: f32, fault: Fault) Fault!void {
 /// Longer than the geometry stays fine and the tail stays ignored, which is
 /// `measure.Image`'s own documented contract and what lets one buffer serve a
 /// run of smaller cases.
+///
+/// **Length alone is not enough, which the first version of this got wrong.**
+/// Two buffers can each be long enough for the geometry *they* declare and still
+/// disagree with each other, and the judges that read both loop over the image's
+/// geometry while indexing the picture. At an image of 16x8 against a picture of
+/// 8x8, `Picture.complete()` demands 256 bytes and `resolve` indexes to 284, so
+/// both halves pass and the read still runs off the end. The geometries have to
+/// agree, not merely each be honest about itself.
+///
+/// **The structural alternative was considered and not taken.** `iface.Readback`
+/// models this correctly already: one geometry, two buffers. A `Picture` that
+/// carried no geometry of its own, indexed through the image's, would make the
+/// mismatch unrepresentable rather than merely refused. It is the better shape
+/// and it costs all fifteen judge signatures plus every test that hands a judge
+/// an image alone, which is most of them. Recorded here so the next person to
+/// touch this can weigh it with the reason rather than rediscovering it.
 fn requireComplete(image: measure.Image, picture: ?Picture) Fault!void {
     if (!image.complete()) return Fault.ReadbackTruncated;
     if (picture) |shown| {
         if (!shown.complete()) return Fault.ReadbackTruncated;
+        if (shown.width != image.width or shown.height != image.height) {
+            return Fault.ReadbackGeometryMismatch;
+        }
     }
 }
 
@@ -531,7 +551,11 @@ pub const Beam = struct { integral: f32, expected: f32, centre: f32 };
 /// says why it must be one a single steep segment crosses alone.
 pub fn beamProfile(image: measure.Image, row: usize) Fault!Beam {
     try requireComplete(image, null);
-    if (row >= image.height) return Fault.ReadbackTruncated;
+    // A cross-section outside the drawable is the same class of caller mistake
+    // as two readbacks disagreeing: the parameters and the declared geometry do
+    // not describe one picture. It is not a *truncated* readback, and saying so
+    // would put a misleading name in a failing transcript.
+    if (row >= image.height) return Fault.ReadbackGeometryMismatch;
     var total: f32 = 0;
     var moment: f32 = 0;
     var x: usize = 0;
@@ -1151,7 +1175,23 @@ test "every judge that indexes a readback refuses a short one" {
 
     // A cross-section outside the drawable is the same class of mistake, and
     // the only one of these a complete readback can still carry.
-    try testing.expectError(Fault.ReadbackTruncated, beamProfile(whole, whole.height));
+    try testing.expectError(Fault.ReadbackGeometryMismatch, beamProfile(whole, whole.height));
+
+    // **Two readbacks that are each complete and disagree with each other.**
+    // Length alone does not close this: the judges that read both loop over the
+    // image's geometry while indexing the picture, so at 16x8 against 8x8
+    // `Picture.complete()` demands 256 bytes and `resolve` indexes to 284. Both
+    // halves pass and the read still runs off the end, which is why the
+    // geometries have to agree rather than each merely be honest about itself.
+    const narrow: Picture = .{
+        .width = whole.width / 2,
+        .height = whole.height,
+        .bytes = painted.bytes,
+    };
+    try testing.expect(narrow.complete());
+    try testing.expectError(Fault.ReadbackGeometryMismatch, resolve(whole, narrow));
+    try testing.expectError(Fault.ReadbackGeometryMismatch, movingCore(whole, narrow));
+    try testing.expectError(Fault.ReadbackGeometryMismatch, dwellCore(whole, narrow));
 
     // **The negative control, and it is not decoration.** Every arm above
     // asserts a refusal, so a judge that refused everything would pass all of
