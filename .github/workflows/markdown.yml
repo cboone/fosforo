@@ -1,0 +1,117 @@
+name: markdown
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# Deliberately its own workflow rather than a job in ci.yml, on typos.yml's
+# precedent and for exactly its reason. That workflow ignores `*.md`, `docs/**`,
+# `LICENSE` and the agent config files on both triggers, which is right for a
+# set of macOS builds and precisely wrong for a Markdown check: the files this
+# job exists to judge are the files that would skip it, so a job added there
+# would be green on every pull request that could have failed it.
+# `paths-ignore` is workflow-level rather than job-level, so no job can be
+# exempted from it, and dropping `docs/**` from those lists would instead run
+# the CMake build on every documentation fix.
+#
+# This workflow therefore carries no `paths-ignore` at all: a check must not be
+# able to skip the change that governs it, and .prettierrc.json,
+# .markdownlint-cli2.jsonc, .prettierignore and this file all live in the set it
+# reads.
+#
+# That gap is what #85 was filed for. `.markdownlint-cli2.jsonc` pinned MD060 to
+# `aligned` and nothing ran it, so `main` reported 0 findings while a live
+# branch reported 129, of which 127 sat in that branch's own plan file with
+# nothing saying so. It is the fourth instance of the same shape here, after
+# typos (#28), ruff, and actionlint (#99).
+#
+# Ubuntu rather than macOS, matching `shell`, `python`, `typos` and
+# `actionlint`: this is platform-independent static analysis and the macOS
+# runner bills at ten times the rate.
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # 3 on the floor that `shell`, `python`, `typos` and `actionlint` share, and
+    # unmeasured for the same reason theirs were when they landed: this is
+    # structurally the same thing, an Ubuntu checkout plus a dependency install
+    # plus a tree walk over 79 files. Re-measure from real runs rather than
+    # copying this number onward, which is how the old ceilings propagated.
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      # The major only. What pins the tools' behaviour is package-lock.json,
+      # not Node's patch level, so tracking a patch release here would be churn
+      # that changes no finding. `cache: npm` keys on the lockfile, so a cache
+      # hit is by definition the same dependency tree.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+
+      # `npm ci` rather than `npm install`, because it installs the lockfile
+      # exactly and fails if package.json has drifted from it. This is the npm
+      # analogue of the `sha256sum --check --strict` the pinned release binaries
+      # in ci.yml use, and it reaches further: the lockfile carries an integrity
+      # hash for all 86 packages, not just the two named ones. That matters for
+      # markdownlint-cli2 specifically, whose rules ship inside that tree, so
+      # pinning only the top-level version would leave findings free to move
+      # under a green build.
+      - name: Install the pinned tooling
+        run: npm ci
+
+      # Confirms the lockfile resolved to the intended versions, so a
+      # package.json bumped without its lockfile, or the reverse, fails here
+      # rather than silently checking against different rules than the tree was
+      # cleared with.
+      - name: Report tool versions
+        run: |
+          npx prettier --version
+          npx markdownlint-cli2 --version
+
+      # The glob is quoted so Prettier expands it rather than the shell, and it
+      # is Markdown-only on purpose: a bare `prettier --check .` would pull every
+      # workflow, .markdownlint-cli2.jsonc and .claude/settings.json into
+      # Prettier's remit, which .editorconfig already governs. .prettierignore
+      # is the second half of that fence, for anyone running the tool by hand.
+      - name: Check Markdown formatting
+        id: prettier
+        run: npx prettier --check "**/*.md"
+
+      # No arguments: markdownlint-cli2 reads its globs and ignores from
+      # .markdownlint-cli2.jsonc. `node_modules/**` is on that ignore list and
+      # is load-bearing here rather than tidy, because this tool walks into
+      # node_modules and lints dependency READMEs, which the step above has just
+      # created. Prettier excludes them itself and needs no equivalent.
+      - name: Lint Markdown
+        id: markdownlint
+        run: npx markdownlint-cli2
+
+      # Only on the failing path, matching typos.yml and the clap-validator
+      # jobs, so the passing path pays nothing for it. Both steps are reported
+      # because either can fail alone: Prettier catches what it would rewrite,
+      # markdownlint catches what no formatter has an opinion about.
+      - name: Summarize the findings
+        if: failure() && (steps.prettier.outcome == 'failure' || steps.markdownlint.outcome == 'failure')
+        run: |
+          {
+            echo "### markdown"
+            echo
+            echo "Run \`npx prettier --write \"**/*.md\"\` to fix formatting."
+            echo "Fix markdownlint findings by hand; never pass \`--fix\`, which"
+            echo "ignores its file arguments and rewrites every matching file."
+            echo
+            echo '```text'
+            npx prettier --check "**/*.md" 2>&1 || true
+            npx markdownlint-cli2 2>&1 || true
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
