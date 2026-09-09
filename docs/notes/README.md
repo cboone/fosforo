@@ -6,6 +6,8 @@ Each file here records how some part of this project actually behaves: what was 
 
 **Every figure here was measured rather than reasoned about**, and several are the only copy in the repository. Before changing one, read [`.github/docs.instructions.md`](../../.github/docs.instructions.md): a corrected figure has to be grepped repo-wide, because these numbers are quoted across `AGENTS.md`, `CHANGELOG.md`, several ADRs, the build plan and sometimes a workflow comment.
 
+**Fifteen `AGENTS.md:<line>` citations in `docs/plans/done/` predate this split and no longer resolve.** They are historical records and are deliberately not updated; four of them had already stopped resolving before the split, since every merge since shifted the numbers. `15174cf` is the last commit in which `AGENTS.md` carried the gotchas, so `git show 15174cf:AGENTS.md` is what such a citation should be read against, or an earlier commit for one written further back.
+
 | Note                                                          | Read it before                                                          |
 | ------------------------------------------------------------- | ----------------------------------------------------------------------- |
 | [Build system](./build-system.md)                             | editing `build.zig`, `cmake/`, `macos/Info.plist`, or any identifier    |

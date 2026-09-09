@@ -218,3 +218,16 @@ Everything this file used to carry as a flat list of gotchas is in [`docs/notes/
 | changing `src/smoke.zig` or a `zig build smoke-*` step         | [smoke harness](docs/notes/smoke-harness.md)                           | what `smoke-trace` proves, the background colour, wall-clock waits, the watcher poll   |
 | reasoning about what `zig build test` compiles                 | [the test suite](docs/notes/the-test-suite.md)                         | the three optimize modes, lazy per-declaration analysis, `refAllDecls`                 |
 | judging whether the picture is the signal or an artifact       | [trace and phosphor physics](docs/notes/trace-and-phosphor-physics.md) | the rail, the floor, the moiré ceiling, railing, the transport-stop line               |
+
+## Maintaining this file
+
+**This file is loaded into every session in full, and `docs/notes/` is not.** That is the whole basis for deciding where something goes. Claude Code warns above `max(40000, contextWindow * 0.05 * charsPerToken)`, which is 150,000 in a 1M-context session and **40,000 everywhere else**, subagents with a model override included, so 40,000 is the floor to write against rather than the number a generous session reports. `scripts/check-doc-budget` refuses above 30,000 and warns above 27,000, and the `budget` job in `.github/workflows/markdown.yml` runs it on every push and pull request.
+
+It reached 166,639 characters before [#117](https://github.com/cboone/fosforo/issues/117), four times over that floor, and not through one bad commit: 139 commits had touched it, nearly every issue closing with a `docs: record …` commit appending to a flat gotchas list. So the question when adding something here is not whether it is true and worth recording. It is:
+
+- **Does an agent that has not opened anything need it?** A rule whose omission causes silent damage or a wrong pass belongs in [Rules](#rules). A rule whose omission causes a compile error or a failing test does not; the compiler is already telling them.
+- **Is it a settled decision?** Then it is an ADR, and [Non-negotiables](#non-negotiables) gets one line pointing at it.
+- **Is it a measurement, a refusal, or how some area behaves?** Then it is a note in [`docs/notes/`](docs/notes/README.md), and nothing is added here at all. This is the common case, and it is where a `docs: record …` commit should now land.
+- **Is it what has landed?** Then it belongs in the build plan's phase tables, which carry a `Status` column, or in `CHANGELOG.md`. [Current state](#current-state) is orientation and is not a record.
+
+**Raising the budget is not the repair.** The 40,000 it sits under is not ours to move, and every previous attempt to keep this file short by intention rather than by measurement is what produced the 166,639.
