@@ -69,7 +69,7 @@ Guard at the top: an empty ring zero-fills `dst` and reports coherent, which is 
 ### `src/clap/plugin.zig`
 
 | Site                    | Change                                                                                                                                                                                         |
-|-------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `Instance.history`      | Docstring rewritten: the storage has the instance's lifetime, why, and that this issue deleted the race rather than managing it                                                                |
 | `create`                | Allocates the ring, behind an `errdefer allocator.destroy(self)` so a failed sizing does not leak the instance                                                                                 |
 | `destroy`               | Frees the ring, **after** `self.editor.destroy()`, with a comment saying the order is what makes it safe                                                                                       |
@@ -125,7 +125,7 @@ The honest limit is worth writing down in the harness: it cannot read the drawab
 ## Tests
 
 | File         | Test                                                                                                               |
-|--------------|--------------------------------------------------------------------------------------------------------------------|
+| ------------ | ------------------------------------------------------------------------------------------------------------------ |
 | `ring.zig`   | `read` against a ring with no storage zero-fills and reports coherent                                              |
 | `gui.zig`    | `windowSamples` at 44.1, 48, 96 and 192 kHz, and its clamp at an absurd rate                                       |
 | `gui.zig`    | `windowSamples` never exceeds `gpu.max_window_samples`, walked rather than spot-checked                            |
@@ -162,7 +162,7 @@ zig build smoke-leaks
 
 `smoke-leaks` is the one that needed the instrument checked before its result was trusted, and checking it overturned the assumption above. **`leaks` cannot see a leaked `MTLBuffer` at all.**
 
-The plan assumed `scripts/smoke-leak-check`'s `PLUGIN_OWNED` pattern would catch one under whatever name `leaks` chose for it. It does not, and the failure is not the prefix. Dropping the release in `Renderer.deinit` and running 60 cycles produces a report the script calls clean; the *same* omission applied to the command queue is caught in the same run as `AGXG17XFamilyCommandQueue`, so the instrument works. None of the 234 leaked classes in the buffer run is a buffer under any name, while the leak is real: peak RSS across 200 cycles goes from 47.7 MB to 57.7 MB. `leaks` walks the malloc heap, and a Metal buffer's storage is not in it.
+The plan assumed `scripts/smoke-leak-check`'s `PLUGIN_OWNED` pattern would catch one under whatever name `leaks` chose for it. It does not, and the failure is not the prefix. Dropping the release in `Renderer.deinit` and running 60 cycles produces a report the script calls clean; the _same_ omission applied to the command queue is caught in the same run as `AGXG17XFamilyCommandQueue`, so the instrument works. None of the 234 leaked classes in the buffer run is a buffer under any name, while the leak is real: peak RSS across 200 cycles goes from 47.7 MB to 57.7 MB. `leaks` walks the malloc heap, and a Metal buffer's storage is not in it.
 
 So the verification this issue asked for did not cover the thing it was asked about, and the backend counts its own instead. `live_windows` is incremented by `buildWindows` and decremented by `releaseWindows`, `gpu.Renderer.liveWindowBuffers` reports it on `probe`'s precedent, and `src/smoke.zig` asserts it is zero after the cycle loop rather than inside it, because every fourth cycle leaves the editor to `plugin.destroy` in a `defer` the cycle cannot assert after. Removing the release from `deinit` now fails with `WindowBuffersLeaked` and names the count.
 
@@ -184,7 +184,7 @@ In Logic, where the Audio Unit destroys its editor rather than hiding it and dia
 Everything below passed. Splitting the automated half from the host half matters, because only one of them is repeatable by the next person to touch this.
 
 | Check                                                | Result                                                 |
-|------------------------------------------------------|--------------------------------------------------------|
+| ---------------------------------------------------- | ------------------------------------------------------ |
 | `zig fmt --check`, `zig build test`                  | 139 tests, all passing                                 |
 | `zig build`, `zig build validate-shaders`            | Clean                                                  |
 | `zig build smoke-gpu`, `smoke-appkit`, `smoke-leaks` | Clean, 400 cycles under `leaks`                        |

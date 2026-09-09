@@ -38,7 +38,7 @@ Worst case 5 s against a 120 s budget: 24x the slowest run observed.
 **The image-refresh precondition is unmet, and waiting is not a bounded wait.** The issue's fourth checkbox asks for a sample "across at least one runner image refresh". It cannot be ticked:
 
 - All 65 runs used one image, `macos-26-arm64` version `20260728.0273.1`, from the job's first run on 2026-07-30 to the latest on 2026-08-29. Thirty days, one image.
-- This repository's entire CI history contains exactly one refresh, `20260720.0258.1` to `20260728.0273.1`, between 2026-07-29 and 2026-07-30. It landed the day *before* the smoke job existed, so the job has never crossed an image boundary.
+- This repository's entire CI history contains exactly one refresh, `20260720.0258.1` to `20260728.0273.1`, between 2026-07-29 and 2026-07-30. It landed the day _before_ the smoke job existed, so the job has never crossed an image boundary.
 - The issue's claim that the sample spans "the `macos-latest` migration to macOS 26" is therefore false. This repository has never run CI on anything but `macos-26-arm64`; that migration predates its first CI run.
 - Upstream, the most recent 30 `actions/runner-images` releases run through 2026-08-25 and contain no macOS release at all.
 
@@ -66,7 +66,7 @@ The bound of 1,048,576 absorbs this without effort, the worst figure being 1.8% 
 
 ## A consequence worth stating before it surprises someone
 
-`Cycle the editor under leaks` carries `continue-on-error: true` and **no `if:` condition**. Today an AppKit failure cannot stop it, because `continue-on-error` keeps the job out of a failed state. Once `smoke-appkit` is required, a failing AppKit step will *skip* the leak step, and the notice will read `leaks: skipped`.
+`Cycle the editor under leaks` carries `continue-on-error: true` and **no `if:` condition**. Today an AppKit failure cannot stop it, because `continue-on-error` keeps the job out of a failed state. Once `smoke-appkit` is required, a failing AppKit step will _skip_ the leak step, and the notice will read `leaks: skipped`.
 
 That is correct rather than a regression: it is `scripts/smoke-leak-check`'s own first assertion, "the harness itself passed, because a leak report over a failed run means nothing", enforced one level up by the workflow. It needs saying because the notice's wording changes on exactly the runs anyone would be reading it.
 
@@ -77,10 +77,10 @@ That is correct rather than a regression: it is `scripts/smoke-leak-check`'s own
 The decision is one deleted line at `:195`:
 
 ```yaml
-      - name: Smoke-test the AppKit path
-        id: appkit
-        timeout-minutes: 2
-        run: zig build smoke-appkit
+- name: Smoke-test the AppKit path
+  id: appkit
+  timeout-minutes: 2
+  run: zig build smoke-appkit
 ```
 
 The notice at `:228-238` gains the runner image. `ImageOS` and `ImageVersion` are set by the runner images rather than by Actions and are **undocumented**, so both carry defaults: an unset variable must not take down the step that reports the leak figures, and a notice reading `unknown` is itself a finding.
@@ -116,7 +116,7 @@ A new `## Amended by issue #72` section after the `#63` one, covering: the rule 
 ### Two stale docstrings in source
 
 - `src/smoke.zig:246-247` says "so CI runs this without gating on it". That becomes false.
-- `src/smoke.zig:174` and `build.zig:512` both describe the GPU half as the one that *can be* required. Both become half-stale once each half is required for its own reasons. Light touch, same commit.
+- `src/smoke.zig:174` and `build.zig:512` both describe the GPU half as the one that _can be_ required. Both become half-stale once each half is required for its own reasons. Light touch, same commit.
 
 ### `scripts/smoke-leak-check:115-119` — in scope
 

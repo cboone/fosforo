@@ -20,7 +20,7 @@ The clarification that makes this decision easy, and which is worth stating plai
 
 The format difference lives entirely in the packaging and lifecycle layer, covering where the plugin runs, how it is delivered, and how it fails. It does not touch the signal path or the rendering path. Audio quality is a function of the DSP, the numeric precision, and the buffers the host provides, all of which are identical across formats because they are the same code reached through a different front door. Visual quality is a function of Metal and the shaders, which neither format touches.
 
-If anything, AUv3's out-of-process model adds one boundary to both the audio path and the GUI compositing path, so any lean on *output* quality tilts very slightly toward in-process AUv2.
+If anything, AUv3's out-of-process model adds one boundary to both the audio path and the GUI compositing path, so any lean on _output_ quality tilts very slightly toward in-process AUv2.
 
 This is liberating for planning: because output quality lives entirely in the layer shared across all formats, the format choice can be made purely on packaging merits with zero worry about compromising sound or pixels. Ship the easy-to-load AUv2 now; flip the AUv3 toggle if and when iPad reach, crash isolation, or the App Store becomes worth its packaging cost.
 

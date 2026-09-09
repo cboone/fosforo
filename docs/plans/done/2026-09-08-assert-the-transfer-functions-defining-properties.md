@@ -10,7 +10,7 @@ Issue: [#96](https://github.com/cboone/fosforo/issues/96). Type: `test:`. Item 8
 
 - **`tonemap` (`palette.zig:472`)** claims to be "equal to exactly one at `white` rather than approaching one asymptotically", which is the whole reason extended Reinhard was chosen over plain Reinhard. Its only two calls are inside a test about the decay clamp (`palette.zig:826-830`).
 - **`whitePoint` (`palette.zig:427`)** is never called with either of the values its docstring argues about: the `8e5` clamp the `@max` exists for, and the zero-decay end where everything above one deposit blows out white.
-- **`dominantToTonemapped` (`palette.zig:497`)** has been *analyzed* since [#95](https://github.com/cboone/fosforo/issues/95) added the declaration sweep, and is still asserted by nothing. It is the published inverse `scripts/measure-trace` mirrors in `tonemapped_from_dominant`.
+- **`dominantToTonemapped` (`palette.zig:497`)** has been _analyzed_ since [#95](https://github.com/cboone/fosforo/issues/95) added the declaration sweep, and is still asserted by nothing. It is the published inverse `scripts/measure-trace` mirrors in `tonemapped_from_dominant`.
 
 `resolved` at zero energy must reproduce `background_bytes`, which `verdict.resolve` asserts against the running shader as `BackgroundNotThePaletteAtZero` (`verdict.zig:723-727`) and nothing asserts against the model.
 
@@ -32,7 +32,7 @@ The issue predicts that a white point wrong by a factor of ten is the plant that
 
 **`tonemap(w, w) == 1.0` is asserted to `1e-6` and to the byte, not with `expectEqual`.** Measured in `f32` rather than assumed: the identity is bit-exact at `w = 0.8`, `3.5` and `8.0`, and reads **0.9999999** at the shipped 60 Hz white point of 7.999998 and **0.99999994** at the `8e5` clamp. That is the same trap `palette.zig:550-557` already names from the other end for `srgbEncode(1.0)`, and its answer is the one to copy: assert the float approximately, and assert the byte exactly, because the byte is what the display shows.
 
-**The clamp is pinned as the literal `8e5`, not as `white_headroom / min_dwell`.** Deriving it from the two constants would be a restatement that moves with them, which is exactly the failure the section above describes. `8e5` is the figure `palette.zig:341`, `palette.zig:430` and `AGENTS.md`'s phosphor-fade bullet all quote, so pinning it makes a change to either constant move a number a reader can already find. It is the single assertion that catches a factor of ten in the headroom *or* in the epsilon.
+**The clamp is pinned as the literal `8e5`, not as `white_headroom / min_dwell`.** Deriving it from the two constants would be a restatement that moves with them, which is exactly the failure the section above describes. `8e5` is the figure `palette.zig:341`, `palette.zig:430` and `AGENTS.md`'s phosphor-fade bullet all quote, so pinning it makes a change to either constant move a number a reader can already find. It is the single assertion that catches a factor of ten in the headroom _or_ in the epsilon.
 
 **The dwell floor becomes a named constant, because a pin needs a name to anchor on.** `scalarAfter` (`renderer.zig:3391`) matches `"NAME = "` and reads the number after it, so an inline `1e-6` inside a `max(...)` call is unreachable by the existing readers. `palette.min_dwell` is added, the MSL gains `constant float min_dwell`, the script gains `MIN_DWELL`, and both constants tests grow one row. Its charset already accepts `eE` and `+-`, so `1e-6` parses with no change to the reader (`renderer.zig:3395`).
 
@@ -126,7 +126,7 @@ Each planted on top of a passing run, and **committed before planting** so `git 
 | `dominantToTonemapped` drops the `- background` term  | Test 5's round trip and its zero anchor      |
 | `resolved` looks up at `tonemap(…) + 1e-3`            | Test 4                                       |
 
-**Three rows carry more than the column says.** The first is the one that closes something: nothing today calls `whitePoint` at a decay of one, so that plant currently fails nothing anywhere in the repository. The fourth is a control rather than a closing row, for the reason worked out above, and its acceptance is to **record every test that fires**, not only the new ones — the refresh-rate test's steady-state half is predicted to. The fifth carries the issue's own second acceptance box, which is that every *existing* test passes while test 1 fails.
+**Three rows carry more than the column says.** The first is the one that closes something: nothing today calls `whitePoint` at a decay of one, so that plant currently fails nothing anywhere in the repository. The fourth is a control rather than a closing row, for the reason worked out above, and its acceptance is to **record every test that fires**, not only the new ones — the refresh-rate test's steady-state half is predicted to. The fifth carries the issue's own second acceptance box, which is that every _existing_ test passes while test 1 fails.
 
 **Then plant the checkers.** After each production plant is confirmed, weaken that test's own assertions one at a time and confirm the weakened test stops failing. [ADR 0013](../../adr/0013-gui-smoke-harness-as-a-build-step.md)'s #92 amendment is the reason this is a separate pass: two arms there survived their own weakening, having been planted far enough outside a bound to be caught by something else. Test 3's four-rate table and test 5's round trip are the two most exposed to that, since both assert many values at once.
 
@@ -147,7 +147,7 @@ Each planted on top of a passing run, and **committed before planting** so `git 
 - The phosphor-fade bullet's "zero sends `whitePoint` to its 8e5 clamp for that frame, which `smoke-trace` caught at two levels off its prediction" gains a clause saying the clamp is now pinned in `zig build test` as well, so the figure is checked without a device.
 - The `scripts/measure-trace` bullet's list of restated constants gains the dwell floor.
 
-**[ADR 0019](../../adr/0019-brightness-is-a-fixed-transfer-function.md)**, one sentence. Line 31's "Extended Reinhard reaches its white point exactly at `e = w` while the steady state is only *approached*" gets the same treatment line 29 already gave the refresh-rate table: a clause recording that the claim is now an assertion rather than a derivation. No new decision, so no new ADR.
+**[ADR 0019](../../adr/0019-brightness-is-a-fixed-transfer-function.md)**, one sentence. Line 31's "Extended Reinhard reaches its white point exactly at `e = w` while the steady state is only _approached_" gets the same treatment line 29 already gave the refresh-rate table: a clause recording that the claim is now an assertion rather than a derivation. No new decision, so no new ADR.
 
 **Not touched.** No CHANGELOG entry, on #90's and #97's precedent. Nothing here decides anything and no new rule is created; the one new constant is a name for a literal that was already there in three places.
 
@@ -196,38 +196,38 @@ One plant per commit is the value of this issue, which is why 6 and 7 were kept 
 
 **Done.** Five tests across one file plus two constants tests, the suite from **265 named tests to 270** and from 285 runs to 290, and `zig build smoke-trace`'s transcript **byte-for-byte identical** at this branch's base and tip. **This section records what happened, not what was expected**, and three entries falsify what this plan predicted.
 
-| Plant                                                 | Result                                                          |
-| ----------------------------------------------------- | --------------------------------------------------------------- |
-| `min_dwell` 1e-6 to 1e-5, `palette.zig` alone         | Both constants tests, as the reference both compare against     |
-| the same, `shaders/scope.metal` alone                 | The shader constants test alone                                 |
-| the same, `scripts/measure-trace` alone               | The script constants test alone                                 |
-| the same, **all three at once**, before test 3        | **285 of 285 passing.** The hole this issue closes              |
-| the same, all three at once, after test 3             | Test 3 alone, through the `8e5` pin                             |
-| `white_headroom` 0.8 to 8.0, all three                | **Six tests, three of them pre-existing.** A control            |
-| Plain Reinhard, shoulder term dropped                 | **Four tests, two of them pre-existing.** Not the clean row     |
-| Remove `@min(…, 1.0)`                                 | Test 2 alone                                                    |
-| `tonemap` returns 1.0 unconditionally                 | Seven tests, four of them in `verdict.zig`                      |
-| `Palette.dominant` returns 1 for `.blue`              | Test 5 and the pre-existing dominant-channel test               |
-| `Palette.dominant` sends `.neutral` to channel 1      | **Test 5 alone, through the argmax arm alone**                  |
-| `dominantToTonemapped` drops `- background`           | Test 5 alone                                                    |
-| `resolved` looks up at `tonemap(…) + 1e-3`            | Test 4 and two pre-existing `verdict.zig` tests                 |
+| Plant                                            | Result                                                      |
+| ------------------------------------------------ | ----------------------------------------------------------- |
+| `min_dwell` 1e-6 to 1e-5, `palette.zig` alone    | Both constants tests, as the reference both compare against |
+| the same, `shaders/scope.metal` alone            | The shader constants test alone                             |
+| the same, `scripts/measure-trace` alone          | The script constants test alone                             |
+| the same, **all three at once**, before test 3   | **285 of 285 passing.** The hole this issue closes          |
+| the same, all three at once, after test 3        | Test 3 alone, through the `8e5` pin                         |
+| `white_headroom` 0.8 to 8.0, all three           | **Six tests, three of them pre-existing.** A control        |
+| Plain Reinhard, shoulder term dropped            | **Four tests, two of them pre-existing.** Not the clean row |
+| Remove `@min(…, 1.0)`                            | Test 2 alone                                                |
+| `tonemap` returns 1.0 unconditionally            | Seven tests, four of them in `verdict.zig`                  |
+| `Palette.dominant` returns 1 for `.blue`         | Test 5 and the pre-existing dominant-channel test           |
+| `Palette.dominant` sends `.neutral` to channel 1 | **Test 5 alone, through the argmax arm alone**              |
+| `dominantToTonemapped` drops `- background`      | Test 5 alone                                                |
+| `resolved` looks up at `tonemap(…) + 1e-3`       | Test 4 and two pre-existing `verdict.zig` tests             |
 
 ### Weakenings, which found more than the plants did
 
-| Weakening                                             | Result                                                          |
-| ----------------------------------------------------- | --------------------------------------------------------------- |
-| Test 2's rail loop removed, plant F                   | Still fails — the sweep catches it                              |
-| Test 2's `value <= 1.0` removed, plant F              | Still fails — the rail loop catches it                          |
-| Both removed, plant F                                 | **Still fails, at `value >= previous`.** See below              |
-| Test 1's byte loop removed, plant E                   | Still fails, through the float identity                         |
-| Test 1's float identity removed, plant E              | Still fails, through the byte loop                              |
-| Test 3's `8e5` pin made vacuous, plant D              | **Still failed, at test 2.** See below                          |
-| Test 5's argmax arm made vacuous, plant J             | **290 of 290 passing.** The arm is the sole catcher             |
-| Test 1's identity and margin removed, plant E         | Still fails, through the byte arm — after the review fix        |
+| Weakening                                     | Result                                                   |
+| --------------------------------------------- | -------------------------------------------------------- |
+| Test 2's rail loop removed, plant F           | Still fails — the sweep catches it                       |
+| Test 2's `value <= 1.0` removed, plant F      | Still fails — the rail loop catches it                   |
+| Both removed, plant F                         | **Still fails, at `value >= previous`.** See below       |
+| Test 1's byte loop removed, plant E           | Still fails, through the float identity                  |
+| Test 1's float identity removed, plant E      | Still fails, through the byte loop                       |
+| Test 3's `8e5` pin made vacuous, plant D      | **Still failed, at test 2.** See below                   |
+| Test 5's argmax arm made vacuous, plant J     | **290 of 290 passing.** The arm is the sole catcher      |
+| Test 1's identity and margin removed, plant E | Still fails, through the byte arm — after the review fix |
 
 ### What the review pass found, which the plants did not
 
-**Test 1's byte arm was asserting something much weaker than its comment claimed, in two of its three cases.** It read `resolved(table, shipped_palette, 0.0, w)` while looping over white points — but `resolved` takes a *decay* and derives the white point itself, so only the first iteration passed a matching pair. The other two asked whether an energy of `w` resolves white at a white point of 0.8, which is true of any monotone curve and of plain Reinhard too.
+**Test 1's byte arm was asserting something much weaker than its comment claimed, in two of its three cases.** It read `resolved(table, shipped_palette, 0.0, w)` while looping over white points — but `resolved` takes a _decay_ and derives the white point itself, so only the first iteration passed a matching pair. The other two asked whether an energy of `w` resolves white at a white point of 0.8, which is true of any monotone curve and of plain Reinhard too.
 
 Every plant still fired, which is why nothing caught it: the arm was redundant with the float identity beside it, so weakening one always left the other. **That is the ADR 0013 lesson in its exact form** — an arm that is individually sufficient for the plants you thought of can still be asserting the wrong thing. The helper now yields decays and each test derives its own `w`; with the identity made vacuous and the strictly-below arm removed, the byte arm fails on its own.
 
@@ -237,7 +237,7 @@ Every plant still fired, which is why nothing caught it: the arm was redundant w
 
 **The plain-Reinhard plant does not leave every existing test passing, and the issue's own acceptance box says it should.** It fires four tests: both new ones, plus `"the white point holds a deposit's brightness steady across refresh rates"` from #56 and `"a dwelt trace reaches the white point and is exactly white there"` from #92. Both require byte 255 at the dwell asymptote, which plain Reinhard cannot reach. The box was written against a tree those two issues had since changed — the same way the headroom prediction was, which this plan caught before starting and this one it did not.
 
-**The monotonicity sweep catches a missing clamp, incidentally.** With the `@min` and both rail arms removed, test 2 still fails at `value >= previous`: above the rail the unclamped curve is not monotone *in f32*, because the shoulder factor `1 + e/w²` advances by one ulp of 1.0 while the quotient it multiplies moves by less. The clamp flattens all of it to exactly 1.0. That is a real property of the shipping function and is recorded in the test, but the rail arms are what state where the rail is.
+**The monotonicity sweep catches a missing clamp, incidentally.** With the `@min` and both rail arms removed, test 2 still fails at `value >= previous`: above the rail the unclamped curve is not monotone _in f32_, because the shoulder factor `1 + e/w²` advances by one ulp of 1.0 while the quotient it multiplies moves by less. The clamp flattens all of it to exactly 1.0. That is a real property of the shipping function and is recorded in the test, but the rail arms are what state where the rail is.
 
 **Two assertions were on a knife edge in f32, and a plant is what exposed them.** `tonemap(w * 0.99, w) < 1.0` and its sibling at `w * 0.999` asked whether the curve is under one within a hundredth of the rail. `f(kw)` falls short of one by `(1 - k²) / (1 + kw)`, which at the 8e5 clamp has to clear the 6e-8 of one f32 step below one: at `k = 0.99` the shortfall is 0.0199 against a required 0.0475, so both passed on the luck of the rounding rather than on the curve. Planting `min_dwell` at 1e-5 moves the clamp to 8e4 and lands them on the other side, which is how this surfaced — as a test 2 failure under a plant that has nothing to do with test 2. Restated at `k = 0.9`, four times clear, after which the epsilon plant fails exactly one test.
 

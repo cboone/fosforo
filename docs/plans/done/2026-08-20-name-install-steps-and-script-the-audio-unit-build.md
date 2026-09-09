@@ -22,7 +22,7 @@ Three forks were settled before writing this, and the rest of the plan is downst
 
 1. **Keep the `install-*` names, and fix the destination confusion where it is actually read.** `b.install_tls.description` is a writable field on `std.Build`, so Zig's own `install` step can say `zig-out` out loud in `zig build --help` instead of "Copy build artifacts to prefix path". Renaming the two project steps would have cost a rename in `AGENTS.md`, `CONTRIBUTING.md`, `README.md` and eight files under `docs/plans/done/` to solve a problem one description string solves.
 1. **Remove the CMake clobber rather than encoding the ordering around it.** `cmake/CMakeLists.txt` drives a bare `zig build --release=fast` because the only thing it wants from Zig is `libfosforo_impl.a`; that command also reassembles and re-signs `zig-out/Fosforo.clap`. Pointing it at a dedicated `impl` step with its own `--prefix` makes it stop touching either. The ordering hazard then does not need encoding, because it no longer exists.
-1. **A missing Audio Unit reports, and does not refuse or delete.** When one is installed and none was built here, name it, its hash and its modification date, and say plainly that a host will load *that* bundle. Exit 0: the CLAP-only loop is deliberately the common one.
+1. **A missing Audio Unit reports, and does not refuse or delete.** When one is installed and none was built here, name it, its hash and its modification date, and say plainly that a host will load _that_ bundle. Exit 0: the CLAP-only loop is deliberately the common one.
 
 ## The step family
 
@@ -131,13 +131,13 @@ Everything above was run except the last item, which needs a DAW and is left to 
 
 **All five report shapes were exercised by hand,** by moving the built and installed components aside in turn:
 
-| State                                        | Report                                                          |
-| -------------------------------------------- | --------------------------------------------------------------- |
-| built here, installed                        | `audio unit: a0c2ec3412e5  Components/Fosforo.component`        |
-| `--clap-only`, built here, installed differs | `the installed one is NOT this build`, both hashes, how to fix  |
-| `--clap-only`, built here, installed matches | `the installed one IS this build`, with the hash                |
-| not built, installed                         | `NOT from this build`, hash, `modified 2026-08-20 10:35`        |
-| not built, not installed                     | `none built and none installed`, and what to run                |
+| State                                        | Report                                                         |
+| -------------------------------------------- | -------------------------------------------------------------- |
+| built here, installed                        | `audio unit: a0c2ec3412e5  Components/Fosforo.component`       |
+| `--clap-only`, built here, installed differs | `the installed one is NOT this build`, both hashes, how to fix |
+| `--clap-only`, built here, installed matches | `the installed one IS this build`, with the hash               |
+| not built, installed                         | `NOT from this build`, hash, `modified 2026-08-20 10:35`       |
+| not built, not installed                     | `none built and none installed`, and what to run               |
 
 The fourth row is the issue's case, reproduced against a genuinely foreign `5a7956287f88` from an earlier session, and it exits 0.
 

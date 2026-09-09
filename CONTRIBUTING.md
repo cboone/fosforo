@@ -144,7 +144,7 @@ sanitizer is not ([ADR 0016](docs/adr/0016-verify-the-ring-ordering-with-tsan.md
 `Gate` lives in `src/clap/gate.zig` rather than in `src/clap/gui.zig` so that a
 Linux target can reach it, and `src/gate_race.zig` races a plain buffer standing
 in for the editor's own fields. That payload is the whole reason the arm can
-discriminate anything: Thread Sanitizer reports unordered access to *non-atomic*
+discriminate anything: Thread Sanitizer reports unordered access to _non-atomic_
 memory, so an ordering that guards nothing but its own word is invisible to it.
 That is why `Pending` has no arm and keeps only its canary.
 

@@ -8,7 +8,7 @@ Issue [#56](https://github.com/cboone/fosforo/issues/56). Branch `feature/decay-
 
 The defect is observable in about a minute and has a measured baseline, which is the strongest position an issue like this can start from. Playing `click-2hz.wav`, a 1 ms burst at 0.8 repeated twice a second: at the panel's native ~120 Hz each click fades over roughly a quarter second, and pinned to 60 Hz in System Settings **the fade visibly doubles in length**. The acceptance criterion is that after this change those two are the same.
 
-[ADR 0007](../../adr/0007-renderer-simulates-a-crt.md) already requires this in as many words — *"Decay is exponential in real elapsed time against a user-facing time constant, so the look is identical at 60 Hz, 120 Hz, or variable refresh"* — so this issue discharges a consequence that ADR recorded rather than deciding anything that wants a new one. What it does decide is **which clock**, a question [#37](https://github.com/cboone/fosforo/issues/37)'s plan deferred here in writing.
+[ADR 0007](../../adr/0007-renderer-simulates-a-crt.md) already requires this in as many words — _"Decay is exponential in real elapsed time against a user-facing time constant, so the look is identical at 60 Hz, 120 Hz, or variable refresh"_ — so this issue discharges a consequence that ADR recorded rather than deciding anything that wants a new one. What it does decide is **which clock**, a question [#37](https://github.com/cboone/fosforo/issues/37)'s plan deferred here in writing.
 
 **Three things have changed since the issue was filed and all three make the work smaller.**
 
@@ -35,11 +35,11 @@ The trail figure is ADR 0019's: under the sRGB toe a single deposit falls below 
 
 The reasoning belongs beside the code, as the issue asks, and it is not "the cheap one won".
 
-**Exponential decay composes.** `exp(-(a + b) / tau) = exp(-a / tau) · exp(-b / tau)`, so the total fade across any interval depends only on the **sum** of the elapsed times and not on how that sum was cut into frames. Both candidate clocks are monotonic and both cover the whole interval, so both sum to the same wall time. What `CVTimeStamp`'s `output_time` buys is a more accurate *subdivision* on a frame that misses its deadline — a bounded per-frame phase error of at most one refresh period against a 158 ms time constant, which never accumulates because the next interval absorbs it.
+**Exponential decay composes.** `exp(-(a + b) / tau) = exp(-a / tau) · exp(-b / tau)`, so the total fade across any interval depends only on the **sum** of the elapsed times and not on how that sum was cut into frames. Both candidate clocks are monotonic and both cover the whole interval, so both sum to the same wall time. What `CVTimeStamp`'s `output_time` buys is a more accurate _subdivision_ on a frame that misses its deadline — a bounded per-frame phase error of at most one refresh period against a 158 ms time constant, which never accumulates because the next interval absorbs it.
 
 Against that: `CVTimeStamp` is 80 bytes with a nested `CVSMPTETime`, laid out by hand with no header to check it against, threaded through `DisplayLink.create`'s comptime callback into `Editor.tick`. A wrong field offset yields a plausible-but-wrong `dt`, which is the failure mode this project keeps naming as the hardest kind to notice. `monotonicNanos()` exists, is `CLOCK_UPTIME_RAW`, and is already the clock the render meter is measured against.
 
-`src/platform/displaylink.zig:34-42` currently promises the opposite — *"Phase 3's frame-rate-independent decay is the first thing that wants a timestamp, and restating the struct then is the same rule `src/gpu/iface.zig` already applies to the seam"*. That comment becomes the record of the refusal, since it is the one place someone would go looking.
+`src/platform/displaylink.zig:34-42` currently promises the opposite — _"Phase 3's frame-rate-independent decay is the first thing that wants a timestamp, and restating the struct then is the same rule `src/gpu/iface.zig` already applies to the seam"_. That comment becomes the record of the refusal, since it is the one place someone would go looking.
 
 ### The timestamp crosses the seam, and the renderer owns the interval
 
@@ -74,7 +74,7 @@ Derive `decay_tau_nanos` at comptime from the reference pair if `@log` is compti
 
 ### `src/gpu/metal/renderer.zig` — the constant goes, the clock arrives
 
-- **Delete `decay_per_frame` (`:215-229`) outright.** `renderer.zig` already imports `palette` for the gradient table, so it calls `palette.decayOver(dt)` rather than restating the arithmetic. The two-copy arrangement existed because `palette.zig` must not import the backend; the reverse import already exists, and duplicating a *formula* across two files in the same language is a worse trade than duplicating a scalar was.
+- **Delete `decay_per_frame` (`:215-229`) outright.** `renderer.zig` already imports `palette` for the gradient table, so it calls `palette.decayOver(dt)` rather than restating the arithmetic. The two-copy arrangement existed because `palette.zig` must not import the backend; the reverse import already exists, and duplicating a _formula_ across two files in the same language is a worse trade than duplicating a scalar was.
 - **`AccumUniforms` loses its default:** `decay: f32` with no `= decay_per_frame`. A default is now actively wrong — `.{}` would produce a plausible frame at a fixed decay — so the type system is what forces the value to be supplied.
 - **New field:** `last_frame_nanos: ?u64 = null`. Null before the first committed frame, which yields `dt = 0` on a pair `buildAccumulation` has just cleared: nothing to fade, and at one deposit the white point's influence is under a percent.
 - **`frame(self: *Renderer, now_nanos: u64)`:** compute `dt` and build `accum_uniforms` where `:1694` builds them today (read-only, before the early returns), and assign `self.last_frame_nanos = now_nanos` beside `self.accum_source ^= 1` at `:1826`. The comment there currently reads "Two invariants, two points"; it becomes three, and the third is the one this issue adds.
@@ -183,7 +183,7 @@ Also worth a look while there, because #55's resolve-gain defect was found by ey
 
 ### The host half, as far as it goes without hands
 
-`clap-host` loaded the installed debug bundle and reported `rendering at 60.0 Hz, 960x540 at 2.00x, 882 sample window, 420 uploaded, 0 torn` for as long as it was watched. **That line is stronger evidence than it was before this issue**, because `Editor.tick` now reads the clock once and hands the same reading to the decay and to the meter: a stable 60.0 Hz *is* the statement that the intervals feeding `decayOver` are 16.67 ms, and there is no separate reading that could be wrong while the meter looked right.
+`clap-host` loaded the installed debug bundle and reported `rendering at 60.0 Hz, 960x540 at 2.00x, 882 sample window, 420 uploaded, 0 torn` for as long as it was watched. **That line is stronger evidence than it was before this issue**, because `Editor.tick` now reads the clock once and hands the same reading to the decay and to the meter: a stable 60.0 Hz _is_ the statement that the intervals feeding `decayOver` are 16.67 ms, and there is no separate reading that could be wrong while the meter looked right.
 
 The display happened to be at 60 Hz, which is the anchor rate, so the decay in that session was exactly the 0.90 that shipped before — the picture is meant to be identical there and the capture says it is. Measured off a window-targeted `screencapture` at 1920x1080, converted out of Display P3:
 
@@ -198,7 +198,7 @@ Row 539 and `+0.0021` are the same figures #38 measured in REAPER and ADR 0019 m
 
 **Take the window by id rather than the screen.** A full-screen capture put `find_drawable`'s bounding box at 2296x1232 against a 1920x1080 drawable, swept in adjacent dark chrome, and was refused at 19.8% off the ray with a median deviation of 0.00 — the crop was wrong, not the picture. `screencapture -o -x -t png -l <window>` fixes it, and the id comes from `CGWindowListCopyWindowInfo`.
 
-**The acceptance test passed.** #56's comment states it as a criterion rather than a technique: *"After this issue, the visible fade duration of a `click-2hz.wav` click must be the same at 60 Hz and at 120 Hz. Before it, the 60 Hz fade is twice the 120 Hz one."* Run in REAPER against the installed debug bundle, switching the display between the two rates: **no visible effect on the fade duration.** That is the before-and-after this issue was filed with, and it is now the after.
+**The acceptance test passed.** #56's comment states it as a criterion rather than a technique: _"After this issue, the visible fade duration of a `click-2hz.wav` click must be the same at 60 Hz and at 120 Hz. Before it, the 60 Hz fade is twice the 120 Hz one."_ Run in REAPER against the installed debug bundle, switching the display between the two rates: **no visible effect on the fade duration.** That is the before-and-after this issue was filed with, and it is now the after.
 
 Worth naming what that adds over the offscreen check, because the two are not the same claim. `checkDecayIsInRealTime` renders a window it supplied itself and hands the renderer synthetic timestamps, so it says everything about the arithmetic and nothing about the audio path, the ring, the display link, or whether a real `CVDisplayLink` at two different rates produces the intervals the arithmetic assumes. The host says exactly that and by eye, which is the half no harness here can reach.
 
@@ -212,13 +212,13 @@ Committed first, so `git restore` could not revert the fix along with the plant.
 | The clock advances at the top of `frame`, above the semaphore wait | `checkHotCore`, `CoreNotWhite` | thirty deposits pile to 29.703 against 9.539           |
 | The clock advances below the semaphore wait but not at the commit  | **nothing**                    | unchanged at 0.5430                                    |
 
-The third is the honest one. `.no_frame_slot` returns *above* where the elapsed time is computed, so that placement loses nothing and the invariant holds there too; only hoisting above the semaphore breaks it, and in a host it is `.no_drawable` under a busy compositor that would do the same. The invariant is real and its blast radius is narrower than the plan claimed.
+The third is the honest one. `.no_frame_slot` returns _above_ where the elapsed time is computed, so that placement loses nothing and the invariant holds there too; only hoisting above the semaphore breaks it, and in a host it is `.no_drawable` under a busy compositor that would do the same. The invariant is real and its blast radius is narrower than the plan claimed.
 
 ### `--refresh` was added, and the measurement is why
 
 The plan said to measure before adding the flag and to keep a constant if the white point's influence stayed under a byte. It does for `lit_threshold` — 120.62 at 48 Hz to 120.33 at 240, three tenths of a byte — and it does not for `energy_from_tonemapped`, which reads 5.0 deposits at 60 Hz and 7.0 at 120 for the same `t = 0.9`. Inverting the curve near saturation is exactly where the white point does its work. One number needs the flag and the other does not, so the flag exists and defaults to 120.
 
-One consequence worth carrying: the lit threshold straddles a rounding boundary, so the *printed* integer goes 121 below about 90 Hz and 120 above. One level on a threshold changes no conclusion, but a re-measured capture that moved by one is explained.
+One consequence worth carrying: the lit threshold straddles a rounding boundary, so the _printed_ integer goes 121 below about 90 Hz and 120 above. One level on a threshold changes no conclusion, but a re-measured capture that moved by one is explained.
 
 ### The release binary
 

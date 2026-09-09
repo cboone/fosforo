@@ -14,7 +14,6 @@ Two decisions extend the issue's minimum. The `.editorconfig` also carries verif
 
 Everything below was confirmed empirically against the working tree with `shfmt` 3.13.1 and `shellcheck` 0.11.0, not assumed.
 
-<!-- prettier-ignore -->
 | Claim                                                      | Result                                                       |
 | ---------------------------------------------------------- | ------------------------------------------------------------ |
 | Bare `shfmt -d` diffs the script                           | Yes, 7 hunks: redirects and `case` indentation               |
@@ -93,41 +92,41 @@ Every indent value above matches what the tracked files already contain. `.zon` 
 Modelled on the existing `shaders` job, which is likewise a standalone job the reusable workflow does not cover.
 
 ```yaml
-  # The reusable Zig CI workflow's `format` job runs `zig fmt --check` and
-  # nothing else, so the .editorconfig profile would otherwise rest on someone
-  # remembering to run the tool locally. Ubuntu rather than macOS: both tools
-  # are platform-independent static analysis, and the macOS runner bills at ten
-  # times the rate. Both are pinned to the versions the profile was verified
-  # against; the runner image ships shellcheck 0.9.0, which would drift out from
-  # under this on the next image refresh.
-  shell:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    env:
-      SHFMT_VERSION: "3.13.1"
-      SHELLCHECK_VERSION: "0.11.0"
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+# The reusable Zig CI workflow's `format` job runs `zig fmt --check` and
+# nothing else, so the .editorconfig profile would otherwise rest on someone
+# remembering to run the tool locally. Ubuntu rather than macOS: both tools
+# are platform-independent static analysis, and the macOS runner bills at ten
+# times the rate. Both are pinned to the versions the profile was verified
+# against; the runner image ships shellcheck 0.9.0, which would drift out from
+# under this on the next image refresh.
+shell:
+  runs-on: ubuntu-latest
+  timeout-minutes: 10
+  env:
+    SHFMT_VERSION: "3.13.1"
+    SHELLCHECK_VERSION: "0.11.0"
+  steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Install shfmt and shellcheck
-        run: |
-          curl -sSfL -o shfmt \
-            "https://github.com/mvdan/sh/releases/download/v${SHFMT_VERSION}/shfmt_v${SHFMT_VERSION}_linux_amd64"
-          sudo install shfmt /usr/local/bin/shfmt
-          curl -sSfL \
-            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
-            | tar -xJf -
-          sudo install "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+    - name: Install shfmt and shellcheck
+      run: |
+        curl -sSfL -o shfmt \
+          "https://github.com/mvdan/sh/releases/download/v${SHFMT_VERSION}/shfmt_v${SHFMT_VERSION}_linux_amd64"
+        sudo install shfmt /usr/local/bin/shfmt
+        curl -sSfL \
+          "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
+          | tar -xJf -
+        sudo install "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
 
-      # No flags, deliberately: any formatting flag makes shfmt ignore
-      # .editorconfig, which is the entire point of the file. `-f .` finds the
-      # extensionless script by shebang, so neither step hardcodes a path that
-      # has to be maintained as scripts are added.
-      - name: Check shell formatting
-        run: shfmt -d .
+    # No flags, deliberately: any formatting flag makes shfmt ignore
+    # .editorconfig, which is the entire point of the file. `-f .` finds the
+    # extensionless script by shebang, so neither step hardcodes a path that
+    # has to be maintained as scripts are added.
+    - name: Check shell formatting
+      run: shfmt -d .
 
-      - name: Lint shell scripts
-        run: shfmt -f . | xargs -r shellcheck
+    - name: Lint shell scripts
+      run: shfmt -f . | xargs -r shellcheck
 ```
 
 Release binaries rather than a third-party setup action: it keeps the pin explicit and adds no new action to audit, consistent with how `clap-validator` is pinned by commit.
@@ -164,7 +163,6 @@ Add to `## Pull Request Process` after the existing formatting step: `shfmt -d .
 
 ## Files touched
 
-<!-- prettier-ignore -->
 | File                       | Change                                                          |
 | -------------------------- | --------------------------------------------------------------- |
 | `.editorconfig`            | New. The profile plus verified whole-repository defaults        |
@@ -251,7 +249,6 @@ Everything above says `shfmt` honours `.editorconfig` only when given "no flags"
 
 The rule was wrong. Tested per flag against the real script:
 
-<!-- prettier-ignore -->
 | Option group                                                    | Effect on `.editorconfig` |
 | --------------------------------------------------------------- | ------------------------- |
 | Output modes: `-d`, `-w`, `-l`, `-f`                            | Honoured                  |

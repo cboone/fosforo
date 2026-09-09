@@ -2,7 +2,7 @@
 
 ## Context
 
-Phase 3 has moved fast. Nine issues closed in under two weeks (#55, #64, #63, #22, #51, #61, #60, #56, and #57 about to), and five arrived while that happened (#77, #79, #80, #83, #84). The build plan has been maintained per issue, so most of it is current, but the parts that describe *the set of open work* rather than a single landed change have drifted, because no single issue owns them.
+Phase 3 has moved fast. Nine issues closed in under two weeks (#55, #64, #63, #22, #51, #61, #60, #56, and #57 about to), and five arrived while that happened (#77, #79, #80, #83, #84). The build plan has been maintained per issue, so most of it is current, but the parts that describe _the set of open work_ rather than a single landed change have drifted, because no single issue owns them.
 
 Three things are now wrong or missing in ways a reader would act on:
 
@@ -81,7 +81,7 @@ The sequence, with the parallel set named explicitly:
 
 1. **#58**, next, per #57's branch. Host lane.
 2. Beside it, in other lanes: **#77** (overdue, and #58 may move bindings again), **#62**'s algorithm half in the new `src/dsp/decimate.zig`, **#30**, **#65**.
-3. **#79** behind #58, and likely closing as *covered* rather than fixed: its body argues velocity weighting should make the transport-stop line dim by construction. Reads together with #53.
+3. **#79** behind #58, and likely closing as _covered_ rather than fixed: its body argues velocity weighting should make the transport-stop line dim by construction. Reads together with #53.
 4. **#59** behind #58.
 5. **#62**'s wiring with or after #59, which is where the point count stops being bounded by the sample rate.
 6. **#83** after #58 and #59, so the banding measured is the banding that ships.
@@ -97,7 +97,7 @@ Two collisions to record so they are not discovered mid-branch:
 
 Edit in place with a marked `> **Rewritten.**` note, following #80's own precedent, which is the house style for this.
 
-- **#58**: "Depends on step 4" is satisfied. Record what it inherits from #57 rather than what it waits for: the biweight profile, `TraceUniforms.density` and why that is *not* velocity weighting, and the 2.6133 deposits per pixel that retired the one-deposit premise. Add #79's claim on it.
+- **#58**: "Depends on step 4" is satisfied. Record what it inherits from #57 rather than what it waits for: the biweight profile, `TraceUniforms.density` and why that is _not_ velocity weighting, and the 2.6133 deposits per pixel that retired the one-deposit premise. Add #79's claim on it.
 - **#59**: same dependency correction; note that it now upsamples into real geometry.
 - **#62**: point its sequencing at #59 explicitly, and record that it is a phase-3 exit criterion.
 - **#77**: note that #57 has landed, so its trigger condition is met.
@@ -141,7 +141,7 @@ The CI jobs that matter are `typos`, which has no `paths-ignore` and so actually
 
 Everything above, plus two things the pass found rather than planned.
 
-**The build plan.** The ADR table completed to seven with 0018 and 0019; the milestone rule restated as *what must close before the phase's exit criteria are met*, which is what makes #62, #77, #79 and #80 legible on the milestone; the non-milestone set corrected from a stale seven to six, its composition rebuilt; the "#55 through #62" range replaced; the heading moved to "(in progress)"; three rows added to the phase 3 table; "stable under sample-rate change" attached to #62; and the "runs serially" claim replaced by three lanes plus a sequence that places every open issue. Verified mechanically: every open phase 3 issue now appears in both the issue table and the working order, which none of #62, #79, #80 or #83 did before.
+**The build plan.** The ADR table completed to seven with 0018 and 0019; the milestone rule restated as _what must close before the phase's exit criteria are met_, which is what makes #62, #77, #79 and #80 legible on the milestone; the non-milestone set corrected from a stale seven to six, its composition rebuilt; the "#55 through #62" range replaced; the heading moved to "(in progress)"; three rows added to the phase 3 table; "stable under sample-rate change" attached to #62; and the "runs serially" claim replaced by three lanes plus a sequence that places every open issue. Verified mechanically: every open phase 3 issue now appears in both the issue table and the working order, which none of #62, #79, #80 or #83 did before.
 
 **The tracker.** #83 to Phase 3, #84 to Phase 4. Six issue bodies rewritten with the marker (#58, #59, #62, #77, #83, #84). The Phase 3 milestone reads 8 open and will read 7 when #57's PR closes it, matching the table.
 

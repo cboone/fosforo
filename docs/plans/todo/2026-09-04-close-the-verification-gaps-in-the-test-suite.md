@@ -87,7 +87,7 @@ All three met.
 
 ### What it does not close
 
-Nothing about whether the trace half's *assertions* are right. That is item 4.
+Nothing about whether the trace half's _assertions_ are right. That is item 4.
 
 ## 2. Canary every ordering-critical declaration
 
@@ -175,7 +175,7 @@ The arms worth having, given what each primitive is for:
 
 The arms table named `enter`'s acquire as the defect for the gate's control. **That ordering comes back clean**, along with `enter`'s refusal store and `close`'s `fetchOr`; only `leave`'s release and the acquire load in `close`'s spin flag, and they are the two halves of one edge. A control built as specified would have reported nothing and the failure would have read as a broken sanitizer.
 
-**`Pending` gets no arm, and neither candidate for "how `Pending` stops needing `gpu.Size`" was taken**, because it does not need to. A Thread Sanitizer reports unordered access to *non-atomic* memory, and `Pending` packs its whole message into the `u64`, so a weakened `post` leaves nothing to report. A 2x2 confirmed it discriminates when something rides alongside the word and does not when nothing does. So `Size` stays in `src/gpu/iface.zig` and `Pending` stays in `src/clap/gui.zig`.
+**`Pending` gets no arm, and neither candidate for "how `Pending` stops needing `gpu.Size`" was taken**, because it does not need to. A Thread Sanitizer reports unordered access to _non-atomic_ memory, and `Pending` packs its whole message into the `u64`, so a weakened `post` leaves nothing to report. A 2x2 confirmed it discriminates when something rides alongside the word and does not when nothing does. So `Size` stays in `src/gpu/iface.zig` and `Pending` stays in `src/clap/gui.zig`.
 
 Two claims here are false on `main` and were checked while the files were open. The ADR 0005 comptime block is at `iface.zig:486`, not 430. And `Size` is used by `gui.zig` and the renderer but **not** by `src/platform/view.zig`, which names it nowhere and passes geometry as bare `u32`.
 
@@ -193,7 +193,7 @@ Two claims here are false on `main` and were checked while the files were open. 
 
 ADR 0013's #51 amendment already made this argument and won it, about the other half of the same analysis:
 
-> #38's defect was in the *analysis* and not in the shader: its first period counter read the topmost lit pixel against the centre row, a steep segment crossing the centre lights every row it spans, and every tone came back exactly one period low. An analysis that runs only against a GPU is an analysis nothing tests, so this one has its own tests.
+> #38's defect was in the _analysis_ and not in the shader: its first period counter read the topmost lit pixel against the centre row, a steep segment crossing the centre lights every row it spans, and every tone came back exactly one period low. An analysis that runs only against a GPU is an analysis nothing tests, so this one has its own tests.
 
 That reasoning was applied to `src/gpu/measure.zig`, which has 15 tests and a model rasterizer that deliberately reproduces the spanning behaviour that broke the original. It was not carried through to the **thirteen** `check*` functions, which hold the expectations rather than the extraction. #57 added two of those thirteen, `checkEdgeColumns` and `checkBeamProfile`, and both keep the `(energy, picture, window)` signature the split below depends on, so the premise is on firmer ground than when it was written rather than weaker. And it has already been vindicated a second time: `checkDecayIsInRealTime`'s per-step composition exists because asking `decayOver` for the whole span clamps and predicts 0.7684 against a true 0.5451, which `AGENTS.md` records as "the first thing this check caught and it was in the check itself".
 
@@ -232,11 +232,11 @@ Two arithmetic details to fix while the code is open, both currently correct and
 
 **Two corrections to this section as it was written.** The `decay_span_nanos / interval` item was right and is now a `@compileError` on a comptime table both the driver and the judge read. The `expectClose` item was **wrong**: that helper performed no division, and at zero it reduced to exact equality, which is the right answer for a relative tolerance. Planting the old spelling back made the test written for it pass, which is what surfaced the real defect, that it read its scale from one of its two arguments and so could return different verdicts for swapped arguments.
 
-**And the acceptance was not enough, which is worth carrying to the rest of this program.** "Every test added is verified by the plant it encodes" was satisfied by tests that did not discriminate: two arms sat far enough outside their bound to be caught by a sibling check, so weakening the arm they named changed nothing. Planting the *judge* rather than the shader is what found them, and that second pass is the one this criterion should have asked for.
+**And the acceptance was not enough, which is worth carrying to the rest of this program.** "Every test added is verified by the plant it encodes" was satisfied by tests that did not discriminate: two arms sat far enough outside their bound to be caught by a sibling check, so weakening the arm they named changed nothing. Planting the _judge_ rather than the shader is what found them, and that second pass is the one this criterion should have asked for.
 
 ### What it does not close
 
-The driving halves stay untested, correctly: they acquire a device. And this says nothing about whether the *drawable* looks right in a host, which `scripts/measure-trace` and #38's procedure still own.
+The driving halves stay untested, correctly: they acquire a device. And this says nothing about whether the _drawable_ looks right in a host, which `scripts/measure-trace` and #38's procedure still own.
 
 ## 5. Make the watcher's bookkeeping reachable from a test build
 
@@ -287,7 +287,7 @@ If any test does need to differ by mode, that is a finding worth recording rathe
 
 - **The `ci` job cannot host the step.** It is `uses: cboone/gh-actions/.github/workflows/run-zig-ci.yml@91f9abd`, a reusable workflow with no hook for one, so "a step in the `ci` job beside the existing one" was not available and `test-modes` is its own job. Its ceiling is unmeasured on `python`'s precedent and is to be set from real runs.
 - **`assert(fba.end_index == 0)` is vacuous in every mode**, not Debug-only. `scratchBytes` returns 0 unconditionally and both `passThrough` and `tap` take the allocator and discard it deliberately, so `end_index` is structurally always zero. It is a tripwire for a future step that wants scratch. The convention it stands for is real; that line is not evidence of it, and the issue should not have led with it.
-- **Zig's `std.debug.assert` evaluates its argument in every optimize mode**, because it is an ordinary function rather than a macro. So the C bug class of work inside an assert does not exist here, and the plant designed to be the discriminating one — `buildPalette`'s whole loop moved into an assert argument — stayed **green in all three modes**. What ReleaseFast strips is the `unreachable` branch, not the call. **There is consequently no plant in this codebase where Debug is green and ReleaseFast is red**, and that is the honest statement of what these steps buy: not extra detection, since every difference between the modes *removes* a check, but the suite running at all in the build that ships, so a refusal that lapsed would be caught where nothing else is looking.
+- **Zig's `std.debug.assert` evaluates its argument in every optimize mode**, because it is an ordinary function rather than a macro. So the C bug class of work inside an assert does not exist here, and the plant designed to be the discriminating one — `buildPalette`'s whole loop moved into an assert argument — stayed **green in all three modes**. What ReleaseFast strips is the `unreachable` branch, not the call. **There is consequently no plant in this codebase where Debug is green and ReleaseFast is red**, and that is the honest statement of what these steps buy: not extra detection, since every difference between the modes _removes_ a check, but the suite running at all in the build that ships, so a refusal that lapsed would be caught where nothing else is looking.
 - **An assertion is worth least in the mode where it is the only thing left**, which the `Ring.init` plant quantified rather than asserted. Deleting `if (minimum_capacity == 0) return error.EmptyCapacity;`: Debug prints `panic: reached unreachable code` with a trace through `std/math.zig:1219`'s own `assert(value != 0)`; ReleaseSafe prints the same panic with the trace optimized down to the test runner, naming no `std.math` line; ReleaseFast prints `terminated with signal TRAP` and nothing else. The prediction in the plan was that ReleaseFast would return a wrong `error.Overflow` off a `usize` underflow. It does not — it traps opaquely, which is worse and is the sharper argument for the refusal.
 - **The Debug run cannot be retired**, measured rather than reasoned about. `shader.zig`'s "nothing is read from disk in a test build" asserts `!shader.live`, and `live` is `builtin.mode == .Debug and !builtin.is_test`, so outside Debug the first clause has already decided it. Planted, `zig build test` fails 1 of 285 and both release steps report 285 of 285. That is why the steps are additive and why a fourth was not substituted for the first.
 
@@ -295,7 +295,7 @@ If any test does need to differ by mode, that is a finding worth recording rathe
 
 ### What it does not close
 
-The watcher, which is stubbed out in ReleaseFast too. That is item 5. And nothing about the five `if (builtin.mode != .Debug) return;` sites — `Editor.report`, the two render-thread assertions and the two `objc` thread assertions — where the release steps take a *different* path rather than a harder one, so they are not evidence about those either.
+The watcher, which is stubbed out in ReleaseFast too. That is item 5. And nothing about the five `if (builtin.mode != .Debug) return;` sites — `Editor.report`, the two render-thread assertions and the two `objc` thread assertions — where the release steps take a _different_ path rather than a harder one, so they are not evidence about those either.
 
 ## 7. Analyze every public declaration, and settle the one with no caller
 
@@ -331,7 +331,7 @@ Two parts, and the first is what closes the class:
 
 **Landed.** Plan: [`2026-09-08-assert-the-transfer-functions-defining-properties.md`](../done/2026-09-08-assert-the-transfer-functions-defining-properties.md). Five tests, the suite from 265 named to 270, and `zig build smoke-trace`'s transcript byte-identical across the branch.
 
-**The acceptance below is wrong about which plant closes something, and the correction is the useful part of this item.** A white point wrong by a factor of ten fires **six** tests, three of them pre-existing, because [#56](https://github.com/cboone/fosforo/issues/56) added a steady-state assertion that requires byte 255 at `1 / (1 - decay)` and #92 added its counterpart in `verdict.zig`. The quote it rests on was written before either existed. What was genuinely uncovered is the *other* constant in the same expression: the `1e-6` the `@max` clamps at, restated in Zig, MSL and Python and pinned in none. Moving it by a factor of ten in all three at once left the suite at 285 of 285 passing. It is now `palette.min_dwell`, pinned in both constants tests, and the resulting `8e5` is pinned as a literal — after which that plant fails exactly one test.
+**The acceptance below is wrong about which plant closes something, and the correction is the useful part of this item.** A white point wrong by a factor of ten fires **six** tests, three of them pre-existing, because [#56](https://github.com/cboone/fosforo/issues/56) added a steady-state assertion that requires byte 255 at `1 / (1 - decay)` and #92 added its counterpart in `verdict.zig`. The quote it rests on was written before either existed. What was genuinely uncovered is the _other_ constant in the same expression: the `1e-6` the `@max` clamps at, restated in Zig, MSL and Python and pinned in none. Moving it by a factor of ten in all three at once left the suite at 285 of 285 passing. It is now `palette.min_dwell`, pinned in both constants tests, and the resulting `8e5` is pinned as a literal — after which that plant fails exactly one test.
 
 ### The gap
 
@@ -406,7 +406,7 @@ Worth folding in while the workflows are open: the deprecation warnings the last
 
 **Done**, with its own plan at [`2026-09-08-lint-the-workflows-in-ci.md`](../done/2026-09-08-lint-the-workflows-in-ci.md). One correction to the section above: `actionlint` sits in the build plan's **phase 0** exit criteria, not phase 1.
 
-**The second acceptance criterion was answered in the negative, and before the job was written.** `actionlint` would not have caught the `version-file` warning, for a reason that is structural rather than a gap a newer release closes: it validates `with:` inputs against a database bundled in the binary and keyed by *tag*, so pinning every action to a commit — which this repository does deliberately and will keep doing — defeats the check outright. Measured both ways, with a positive control in the same run: `actions/checkout@v4` with a bogus input is reported and the identical input on the same action pinned by SHA is not. It does not resolve a remote reusable workflow's inputs at all either, which retires a claim in `docs/plans/done/2026-07-29-tighten-ci-job-timeouts.md` that it "resolves the pinned SHA to check" them.
+**The second acceptance criterion was answered in the negative, and before the job was written.** `actionlint` would not have caught the `version-file` warning, for a reason that is structural rather than a gap a newer release closes: it validates `with:` inputs against a database bundled in the binary and keyed by _tag_, so pinning every action to a commit — which this repository does deliberately and will keep doing — defeats the check outright. Measured both ways, with a positive control in the same run: `actions/checkout@v4` with a bogus input is reported and the identical input on the same action pinned by SHA is not. It does not resolve a remote reusable workflow's inputs at all either, which retires a claim in `docs/plans/done/2026-07-29-tighten-ci-job-timeouts.md` that it "resolves the pinned SHA to check" them.
 
 What the job does catch was measured the same way: a misspelled `runs-on`, an `if:` naming a missing step id, a `needs:` naming a missing job, a `shellcheck` finding inside a `run:` block, and both unknown and missing-required inputs on the local composite action. **Two silent skips were found and one of them shaped the job**: `actionlint` resolves local actions through the git project root, so it quietly checks less outside a checkout, and with no `shellcheck` on `PATH` it skips `run:` blocks entirely while still exiting 0. The job therefore installs the pinned `shellcheck` rather than trusting the runner image, and `SHELLCHECK_VERSION` and `SHELLCHECK_SHA256` moved to workflow-level `env` so the `shell` job and this one cannot drift apart.
 
@@ -428,7 +428,7 @@ These are real gaps and each already has an issue. This plan should not duplicat
 
 ## Sequencing and contention
 
-The build plan sorts work into three exclusive lanes and one free lane, separated by *why* each resource is exclusive: Logic and the Audio Unit (the filesystem, so not negotiable at all), the install path and a host (a choice, since `CLAP_PATH` works and is deliberately not used), and the GPU and the window server (hardware). Everything else overlaps freely.
+The build plan sorts work into three exclusive lanes and one free lane, separated by _why_ each resource is exclusive: Logic and the Audio Unit (the filesystem, so not negotiable at all), the install path and a host (a choice, since `CLAP_PATH` works and is deliberately not used), and the GPU and the window server (hardware). Everything else overlaps freely.
 
 **Ten of these eleven are in the free lane.**
 

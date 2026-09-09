@@ -149,16 +149,16 @@ Three passages assert that nothing verifies the ordering. Once the job lands the
 In `ci.yml` rather than its own workflow. That file's `paths-ignore` covers `*.md`, `docs/**`, `LICENSE` and the agent config files, none of which can hide a change to `src/dsp/ring.zig` or `build.zig`, so the check cannot skip the change that governs it. This is the opposite of `typos`, which needed its own workflow for exactly that reason.
 
 ```yaml
-  ring-race:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        with:
-          version-file: build.zig.zon
-      - name: Race-check the history buffer
-        run: zig build ring-race
+ring-race:
+  runs-on: ubuntu-latest
+  timeout-minutes: 10
+  steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+    - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      with:
+        version-file: build.zig.zon
+    - name: Race-check the history buffer
+      run: zig build ring-race
 ```
 
 The header comment states why it is Ubuntu (the check cannot run on the development machine, which is the point of ADR 0016, and Ubuntu bills at a tenth of macOS), and that the ceiling is **borrowed rather than measured**, per `AGENTS.md:162`. Ten rather than the eight the other borrowed ceilings use, because Zig builds the TSan runtime from C++ sources on a cold cache and nothing here has measured that. Replace it with a real figure and sample size once this pull request's runs supply one, the way every other ceiling was set (#17).

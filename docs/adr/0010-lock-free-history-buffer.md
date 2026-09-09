@@ -20,7 +20,7 @@ Connect the audio and render threads with a **circular history buffer** carrying
 
 ## Consequences
 
-A scope wants the most recent *window* and is perfectly happy to overwrite everything older. A queue models "deliver every item exactly once," which is neither needed nor wanted, and costs complexity to provide.
+A scope wants the most recent _window_ and is perfectly happy to overwrite everything older. A queue models "deliver every item exactly once," which is neither needed nor wanted, and costs complexity to provide.
 
 The protocol is small enough to state completely: the producer writes samples and publishes the advanced cursor with release semantics; the consumer reads a trailing window relative to an acquire load of that cursor.
 
