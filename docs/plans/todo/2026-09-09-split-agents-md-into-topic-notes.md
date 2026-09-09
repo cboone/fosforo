@@ -1,6 +1,6 @@
 # Split AGENTS.md into topic notes and guard the budget
 
-Issue: to file. Type: `docs:`. Branch: `chore/refactor-claude-md`, stacked on `chore/improve-linting`.
+Issue: [#117](https://github.com/cboone/fosforo/issues/117). Type: `docs:`. Branch: `chore/refactor-claude-md`, stacked on `chore/improve-linting`.
 
 ## Context
 
@@ -57,17 +57,19 @@ The convention that mitigates the rest is rebasing onto `main` and retargeting b
 
 ## What the audit measured
 
+Re-measured after the rebase, at the 166,639 baseline:
+
 | Section              |   Chars | Share |
 | -------------------- | ------: | ----: |
-| `## Gotchas`         | 141,992 | 86.0% |
-| `## Current state`   |  10,005 |  6.1% |
-| `## Development`     |   4,769 |  2.9% |
+| `## Gotchas`         | 143,429 | 86.1% |
+| `## Current state`   |  10,003 |  6.0% |
+| `## Development`     |   4,960 |  3.0% |
 | `## Structure`       |   4,031 |  2.4% |
 | `## Releasing`       |   2,046 |  1.2% |
 | `## Non-negotiables` |   1,929 |  1.2% |
 | `## Overview`        |     230 |  0.1% |
 
-Deleting every section except Gotchas still leaves 142 KB, so the target is decided entirely inside Gotchas.
+Deleting every section except Gotchas still leaves 143 KB, so the target is decided entirely inside Gotchas.
 
 **Sixteen categories of material exist only in `AGENTS.md`**, verified by repo-wide `grep -F` returning zero hits elsewhere: both capture-guard margin tables (a completed plan explicitly designates `AGENTS.md` as their home); the `t = 0.9` quantization ladder; the colour-space error measurement; the `SATURATED` 8338-of-2,073,600 figure; the six-defect by five-instrument leak blindness matrix; the moiré ceiling bullet, the railing sweep and the 54-versus-31-frame persistence doubling; the one-host-stream rule, the GPU/window-server exclusivity paragraph and the host-mention count retraction; the hardened-runtime entitlements measurement; the CI macOS five-concurrent-job arithmetic; `ruff` 0.16.5's `PLW`/`EXE` rule set and the `typos` word-versus-identifier rule; the shader compile-cost distribution; the `CAMetalDisplayLink` availability finding; the `clap-host` operational details; the `pyobjc` window-id one-liner and the observed REAPER window titles; and the AUv2 `_destroyWindow` behaviour. These move verbatim and are never summarised.
 
