@@ -677,7 +677,7 @@ var live_textures: std.atomic.Value(usize) = .init(0);
 
 /// What has happened to the shader on disk, process-wide.
 ///
-/// The one instance of `reload.Counters`, which is where the five atomics and the
+/// The one instance of `reload.Counters`, which is where the six atomics and the
 /// rule mapping an outcome onto them now live. They moved because every writer of
 /// them sits inside a `shader.live` branch, and `shader.live` folds in
 /// `!builtin.is_test`, so nothing a test binary compiles could reach the
@@ -3400,6 +3400,7 @@ test "a mismatch found is a mismatch counted, which nothing compiled until #93" 
     // refuse anything: it disturbed nothing else.
     try testing.expectEqual(@as(u64, 0), counters.stats().reloads);
     try testing.expectEqual(@as(u64, 0), counters.stats().rejected);
+    try testing.expectEqual(@as(u64, 0), counters.stats().unreadable);
     try testing.expectEqual(@as(u64, 0), counters.stats().fallbacks);
 
     // The negative control, without which "the mismatch was counted" could not be

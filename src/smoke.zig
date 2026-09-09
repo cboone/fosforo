@@ -375,6 +375,31 @@ fn renameResolve(buf: []u8) ![]const u8 {
     return buf[0 .. len + rest.len];
 }
 
+/// A file the watcher can see change and cannot read.
+///
+/// **The only way to fail the watcher's read while the change is still noticed.**
+/// `Watcher.poll` stats the file first and hands the result to `reload.Watch.look`,
+/// so deleting it or making it unstattable fails the *stat*, which `look` maps to
+/// the "learned nothing" case that never reaches `shader.read` at all. A file that
+/// stats cleanly and then will not fit is the remaining door, and `shader.read`
+/// refuses a read that fills its buffer rather than truncating it, because a
+/// returned length equal to the buffer's cannot be told from a file that fit
+/// exactly.
+///
+/// So exactly `shader.max_bytes`, which is that boundary rather than a size past
+/// it: the ambiguous case is the one the refusal exists for. The body is the
+/// shipped shader padded with newlines, and the padding is not load-bearing —
+/// nothing here reaches a compiler.
+fn oversizedShader(buf: []u8) ![]const u8 {
+    if (buf.len < shader.max_bytes) return error.FixtureTooLarge;
+
+    const body = buf[0..shader.max_bytes];
+    @memcpy(body[0..shader.embedded.len], shader.embedded);
+    @memset(body[shader.embedded.len..], '\n');
+
+    return body;
+}
+
 /// The embedded shader reading its samples somewhere the encoder does not bind
 /// them.
 ///
@@ -442,6 +467,7 @@ fn reloadFallbackArms() !void {
     if (!gpu.Renderer.shaderStats().path_resolved) return error.ShaderPathNotResolved;
     if (gpu.Renderer.shaderStats().reloads == start.reloads) return error.ShaderNotReadFromDisk;
     if (gpu.Renderer.shaderStats().fallbacks != start.fallbacks) return error.UnexpectedShaderFallback;
+    if (gpu.Renderer.shaderStats().unreadable != start.unreadable) return error.UnexpectedUnreadableShader;
 
     // **The negative control for the binding check**, and it belongs on this arm
     // rather than on its own: this is the file the shipped shader *is*, so a
@@ -459,6 +485,13 @@ fn reloadFallbackArms() !void {
     }
     try probeSucceeds("a shader path that does not exist");
     if (gpu.Renderer.shaderStats().fallbacks != missing.fallbacks + 1) return error.MissingShaderNotRefused;
+
+    // **Both counters, because after #118 they are different claims.** `fallbacks`
+    // says the embedded copy is what the editor opened with, which is the arm's
+    // point; `unreadable` says the file was never read, which is why. The watcher
+    // moves the second without the first, and nothing here can reach that — the
+    // arm for it is in `hotReloadPhase`, where there is a running shader to keep.
+    if (gpu.Renderer.shaderStats().unreadable != missing.unreadable + 1) return error.MissingShaderNotCounted;
 
     // Something that is not MSL at all.
     try fixture.use();
@@ -491,6 +524,7 @@ fn reloadFallbackArms() !void {
     if (after_moved.reloads != moved.reloads + 1) return error.MovedBindingWasRefused;
     if (after_moved.rejected != moved.rejected) return error.MovedBindingWasRejected;
     if (after_moved.fallbacks != moved.fallbacks) return error.MovedBindingFellBack;
+    if (after_moved.unreadable != moved.unreadable) return error.MovedBindingWasNotRead;
 
     // And back to something good, so a later arm in the same process starts from
     // a state this one understands.
@@ -526,8 +560,9 @@ const reload_timeout_us: u64 = 6 * std.time.us_per_s;
 ///
 /// What it asserts, in order: an edit is picked up, a *second* edit of the same
 /// length is picked up too, a broken shader is refused without stopping the loop,
-/// a shader that compiles but defines the wrong things is refused the same way,
-/// and the next good edit recovers with no restart.
+/// a shader that compiles but defines the wrong things is refused the same way, a
+/// file too large to read is refused a *third* way, and the next good edit
+/// recovers with no restart.
 fn hotReloadPhase(factory: *const c.clap_plugin_factory_t, parent: *anyopaque) !void {
     if (comptime !shader.live) {
         say("  skipping the live shader swap: this build has no reload path", .{});
@@ -603,6 +638,32 @@ fn hotReloadPhase(factory: *const c.clap_plugin_factory_t, parent: *anyopaque) !
 
     if (gpu.Renderer.shaderStats().reloads != before_renamed.reloads) return error.BrokenShaderWasSwappedIn;
 
+    // **A file the watcher can see change and cannot read, which is the row #118
+    // was filed about and the first instrument to execute it.** The two arms above
+    // are compiler refusals and move `rejected`; this one never reaches a compiler
+    // and moves `unreadable` alone. Before #118 it moved `fallbacks` instead,
+    // claiming the embedded copy was used on the one path that keeps the shader
+    // already running, and no arm anywhere would have noticed either way.
+    //
+    // It also executes `shader.read`'s size refusal, which nothing else does:
+    // `shader.zig`'s tests are all pure and the file asserts that none of them
+    // opens anything.
+    const before_oversized = gpu.Renderer.shaderStats();
+    const frames_before_oversized = instance.framesPresented();
+    try fixture.write(try oversizedShader(&buf));
+    try waitForReload(
+        .{ .unreadable = before_oversized.unreadable + 1 },
+        "a shader too large to read",
+    );
+
+    // The same three things the broken arm asserts, because "refused" has to mean
+    // the same thing here: nothing swapped in, nothing fell back, and the loop
+    // kept drawing through it.
+    const after_oversized = gpu.Renderer.shaderStats();
+    if (after_oversized.reloads != before_oversized.reloads) return error.OversizedShaderWasSwappedIn;
+    if (after_oversized.fallbacks != before_oversized.fallbacks) return error.OversizedShaderFellBack;
+    if (instance.framesPresented() <= frames_before_oversized) return error.ShaderReloadStoppedTheLoop;
+
     // And recovery, with no restart, which is the property that makes any of this
     // usable: a typo must cost a save rather than a relaunch.
     const before_recovery = gpu.Renderer.shaderStats();
@@ -618,7 +679,7 @@ fn hotReloadPhase(factory: *const c.clap_plugin_factory_t, parent: *anyopaque) !
     p.*.deactivate.?(p);
     active = false;
 
-    say("  the shader swapped live, refused two bad ones, and recovered", .{});
+    say("  the shader swapped live, refused three bad ones, and recovered", .{});
 }
 
 /// Block until the backend reports the counter an arm is waiting on.
@@ -626,21 +687,26 @@ fn hotReloadPhase(factory: *const c.clap_plugin_factory_t, parent: *anyopaque) !
 /// Polls, on `waitForFrames`' reasoning: the counters are written by a thread
 /// this one does not coordinate with, and a second synchronisation primitive is
 /// one more thing that can be the reason a run hangs.
-fn waitForReload(want: struct { reloads: ?u64 = null, rejected: ?u64 = null }, what: []const u8) !void {
+fn waitForReload(
+    want: struct { reloads: ?u64 = null, rejected: ?u64 = null, unreadable: ?u64 = null },
+    what: []const u8,
+) !void {
     var waited_us: u64 = 0;
     while (true) {
         const now = gpu.Renderer.shaderStats();
         if (want.reloads) |target| if (now.reloads >= target) return;
         if (want.rejected) |target| if (now.rejected >= target) return;
+        if (want.unreadable) |target| if (now.unreadable >= target) return;
 
         if (waited_us >= reload_timeout_us) {
             say("  waited {d}ms for the watcher to pick up {s}", .{
                 reload_timeout_us / std.time.us_per_ms,
                 what,
             });
-            say("  reloads={d} rejected={d} fallbacks={d} mismatches={d} path_resolved={}", .{
+            say("  reloads={d} rejected={d} unreadable={d} fallbacks={d} mismatches={d} path_resolved={}", .{
                 now.reloads,
                 now.rejected,
+                now.unreadable,
                 now.fallbacks,
                 now.binding_mismatches,
                 now.path_resolved,
