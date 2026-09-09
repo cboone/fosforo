@@ -191,6 +191,46 @@ An App Store Connect API key rather than an app-specific password, because it is
 
 **The certificates on hand expire 2027-02-01 and replacing them is outstanding** ([#30](https://github.com/cboone/fosforo/issues/30)). They were issued through Xcode under the G1 intermediate rather than G2, which caps both leaves at their issuer's expiry; the gotcha below has the full diagnosis and the check that surfaces it. Nothing already signed is at risk, because a secure timestamp outlives the certificate — what stops is signing anything new, and on current sequencing that happens before v0.1.0 is cut. Re-issue from the developer portal rather than Xcode, and do not revoke the superseded pair.
 
+## Rules
+
+Every one of these is here because omitting it causes **silent damage or a wrong pass**, not a legible error. The reasoning behind each is in the note named beside it; these lines are the part that has to be in context before you have opened anything.
+
+- **Confirm provenance before trusting any result a host gave you.** The failure reads as a pass. `zig build install-clap` builds what it installs and prints the hash and provenance of what landed. See [host verification](docs/notes/host-verification.md).
+- **One host stream at a time.** Install, launch, read. The shared plug-in folder and the window server are both exclusive, so a second stream corrupts someone else's run, not only yours. See [host verification](docs/notes/host-verification.md).
+- **The REAPER pipe needs `2>&1` and `grep --line-buffered`, and each fails differently.** Without the first the plugin's lines pass through unfiltered; without the second the render meter arrives in bursts minutes apart, which reads as a stopped render loop. See [reading diagnostics](docs/notes/reading-diagnostics.md).
+- **Run the worktree's own `scripts/measure-trace`, never a copy from anywhere else.** It restates constants a branch may have moved, so another copy runs and reports confident numbers against the wrong mapping. See [measuring a capture](docs/notes/measuring-a-capture.md).
+- **Verify at 48 kHz.** Above it the window holds more samples than the drawable has pixels, and structure that appears only at a higher rate is moiré rather than signal. See [trace and phosphor physics](docs/notes/trace-and-phosphor-physics.md).
+- **Captures go in `verification/`, never into a commit.** They are working artifacts of one session; what belongs in the repository is the numbers read out of them. One reached a commit before this rule existed and removing it meant rewriting three commits.
+- **`zig build` does not rebuild the smoke harness.** `zig build && zig-out/bin/fosforo-smoke appkit 40` runs whatever a previous smoke step left there, with no warning and no hash to compare. Run a smoke step. See [the smoke harness](docs/notes/smoke-harness.md).
+- **Run Prettier before the Markdown linter, and never pass `--fix` to `markdownlint-cli2`.** `npm run format` then `npm run lint:md`. `--fix` ignores the files you name and rewrites everything matching its `globs`, including completed plans. See [linters](docs/notes/linters.md).
+- **Select files for `shfmt` with `git ls-files`, never `shfmt -d .` or `-w .`.** `shfmt` does not read `.gitignore`, so a tree walk reaches vendored scripts under `build/`. A fresh CI checkout has no `build/`, so this passes there and fails locally. See [linters](docs/notes/linters.md).
+- **When a diff corrects a measured figure, grep the old value across the repository.** Figures here are quoted across `AGENTS.md`, `CHANGELOG.md`, several ADRs, the build plan and sometimes a workflow comment, so a correction applied where you noticed it leaves the stale copies reading as current.
+- **Anything in `docs/plans/done/` is a historical record.** Never update a citation, a figure or a line number in one. A done plan's `path:line` citations are pre-change locations and are correct precisely because they no longer resolve. `docs/notes/` is the opposite: living, and corrected in place.
+- **No job counts or run counts in prose about CI.** A declared job is not a rollup entry and reusable workflows expand, so any count goes stale on the next workflow edit. Anchor a measurement to a run id or leave it out. See [CI workflows](docs/notes/ci-workflows.md).
+
+Two more are settled decisions rather than rules of thumb, and are stated in full under [Non-negotiables](#non-negotiables): nothing reachable from the audio thread may allocate, lock, or make a syscall; and no Metal type may be named above `src/gpu/iface.zig`.
+
+## Where the depth lives
+
+Everything this file used to carry as a flat list of gotchas is in [`docs/notes/`](docs/notes/README.md), one document per thing you might be about to do. They are **living documents**: a stale figure in one is repaired by a fresh measurement written in place, unlike an ADR, which is superseded, or a done plan, which is never corrected at all.
+
+| Read before                                                    | Note                                                                   | Answers                                                                                |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| editing `build.zig`, `cmake/`, `macos/Info.plist`, identifiers | [build system](docs/notes/build-system.md)                             | restated constants, `translate-c`, git stamping, optimize-mode split, display name     |
+| editing `.github/workflows/*.yml`                              | [CI workflows](docs/notes/ci-workflows.md)                             | what dispatches `ci.yml`, `actionlint`'s blind spot, pins, timeouts, runner ceiling    |
+| touching an atomic, a canary, `std.Io`, a race harness         | [concurrency and canaries](docs/notes/concurrency-and-canaries.md)     | `ring-race`, `gate-race`, why `Pending` has no arm, `use_llvm`, `Threaded.init`        |
+| running the plugin in a host, or trusting a result from one    | [host verification](docs/notes/host-verification.md)                   | provenance, `CLAP_PATH`, the symlinked AU, one stream at a time, AU registration       |
+| adding an allocation, or reading a `leaks` report              | [leak instruments](docs/notes/leak-instruments.md)                     | what `leaks` cannot see, the byte bound, the counters, the blindness matrix            |
+| running or configuring a linter                                | [linters](docs/notes/linters.md)                                       | `shfmt` and `.editorconfig`, `typos` tables, Prettier vs markdownlint, `ruff`'s rules  |
+| capturing the editor, or quoting a number from a capture       | [measuring a capture](docs/notes/measuring-a-capture.md)               | the colour guard, sRGB versus the display profile, cropping, the test signals          |
+| looking for a log line from the plugin                         | [reading diagnostics](docs/notes/reading-diagnostics.md)               | REAPER discards `clap.log`, Logic cannot be launched, `clap-host`                      |
+| editing `src/clap/gui.zig`, `src/platform/`, `Renderer.frame`  | [render loop lifecycle](docs/notes/render-loop-lifecycle.md)           | the teardown gate, bounded waits, semaphore slots, buffer staging, ownership           |
+| editing `shaders/scope.metal` or anything that binds to it     | [shader plumbing](docs/notes/shader-plumbing.md)                       | `TraceUniforms` drift, binding indices, compile cost, hot reload, the validation layer |
+| signing, packaging, or cutting a release                       | [signing and notarization](docs/notes/signing-and-notarization.md)     | two certificates, the G1 expiry trap, stapling, why entitlements are inert             |
+| changing `src/smoke.zig` or a `zig build smoke-*` step         | [smoke harness](docs/notes/smoke-harness.md)                           | what `smoke-trace` proves, the background colour, wall-clock waits, the watcher poll   |
+| reasoning about what `zig build test` compiles                 | [the test suite](docs/notes/the-test-suite.md)                         | the three optimize modes, lazy per-declaration analysis, `refAllDecls`                 |
+| judging whether the picture is the signal or an artifact       | [trace and phosphor physics](docs/notes/trace-and-phosphor-physics.md) | the rail, the floor, the moiré ceiling, railing, the transport-stop line               |
+
 ## Gotchas
 
 - **`xcrun` caches tool lookups.** If `xcrun metal` reports the Metal toolchain missing right after installing it, run `xcrun --kill-cache`.
