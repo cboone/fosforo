@@ -191,15 +191,39 @@ Twenty-one commits, each `-S` signed. The ordering has one non-obvious property 
 
 ## Verification
 
-- **The target is met.** `wc -c AGENTS.md` is under 30,000. Then confirm the loaded size rather than the file: start a session on a **200k-context** model, which is the configuration the whole plan is aimed at, and confirm no `over the …-char limit` line appears.
-- **The symlink survives.** `git ls-files -s CLAUDE.md` still shows mode `120000`.
-- **Nothing was lost.** `grep -rF '<string>' docs/ AGENTS.md` returns **exactly one** hit for each of: `34.39`, `1.29%`, `8338`, `8.77`, `70.9`, `443 pixels`, `54 frames`, `113 vtable`, `960x605`, `MidiInCore`, `PLW`, `34285826257`, `_destroyWindow`, `CAMetalDisplayLink`, `kCGWindowNumber`, `moiré`. Zero means it was dropped; two means it was copied rather than moved.
-- **The guard fails when it should.** Append 10,000 characters to `AGENTS.md` and confirm `scripts/check-doc-budget` exits non-zero; replace `CLAUDE.md` with a regular-file copy and confirm it fails for the other reason. Restore both. A guard never seen to fail is the thing this repository has been caught by four times.
-- **The workflow runs on the change that governs it.** Push a commit touching only `AGENTS.md` and confirm `markdown.yml` dispatches while `ci.yml` does not.
-- **The linters are clean.** `npx prettier --check "**/*.md"`, `npx markdownlint-cli2` at 0 errors over 93 files rather than 78, `typos` (which has no `paths-ignore` and so does read the 15 new files), `git ls-files -z | xargs -0 shfmt -f | xargs shfmt -d` with no parser or printer options and the same pipeline into `shellcheck`, both of which now reach `scripts/check-doc-budget`, and `actionlint`.
-- **The pointers resolve.** Every relative link added to `AGENTS.md` and `docs/notes/README.md` opens. `markdownlint`'s `relative-links` rule is not enabled, so this is a manual pass.
-- **The test count is re-measured, not carried.** `AGENTS.md` states "285 of 285" and `src/` now holds 297 `test` blocks. Those are not the same measurement; the repair is a fresh `zig build test`, never editing one number to match the other.
-- **The design is falsified if** an agent handed only the new `AGENTS.md` and a real task cannot answer "how do I run this and what will I break" without a tool call, which means the Rules list is under-selected; or if `docs/notes/*.md` files turn out to be edited in the same commits as code more than about one time in three, which means they are specification and belong in source comments or ADRs.
+Run, with results, on the branch as it stands.
+
+| Check                                                        | Result                                                            |
+| ------------------------------------------------------------ | ----------------------------------------------------------------- |
+| `wc -c AGENTS.md`                                            | **26,127**, from 166,639: 84% off, and 34% under the 40,000 floor |
+| `git ls-files -s CLAUDE.md`                                  | mode `120000`, still a symlink                                    |
+| `scripts/check-doc-budget`, +10,000 chars                    | exits 65, naming the budget                                       |
+| `scripts/check-doc-budget`, +3,500 chars                     | exits 0 and warns, so the warning band is reachable               |
+| `scripts/check-doc-budget`, `CLAUDE.md` copied not linked    | exits 65 for the other reason                                     |
+| 20 orphaned figures, `grep -rlF` over `AGENTS.md docs/notes` | each in exactly one file                                          |
+| relative links in `AGENTS.md`, `docs/notes/`, `.github/*.md` | 0 broken, resolved against the filesystem                         |
+| `npm run format:check` and `npm run lint:md`                 | clean, 0 errors over 95 files                                     |
+| `typos`, `actionlint`, `shfmt -d`, `shellcheck`              | all clean                                                         |
+| `zig fmt --check build.zig src/`                             | clean                                                             |
+| `zig build test --summary all`                               | **297/297**                                                       |
+| `zig build`                                                  | produces a signed `zig-out/Fosforo.clap`                          |
+
+**Nothing was lost, checked rather than assumed.** Each of `34.39`, `1.29%`, `8338`, `8.77`, `70.9`, `443 pixels`, `54 frames`, `113 vtable`, `960x605`, `MidiInCore`, `PLW`, `34285826257`, `_destroyWindow`, `CAMetalDisplayLink`, `kCGWindowNumber`, `moiré`, `__tsan_write8`, `NeverContended`, `MAXIMUM_LEAKED_BYTES` and `MTLCompilerService` resolves to exactly one file, except two that are correct at two: `moiré` also appears in the Rules summary, and `MTLCompilerService` is named by both the compile-cost bullet and the entitlements bullet in the original text.
+
+**The extraction was mechanical, and that was the point.** A script sliced each bullet out of `AGENTS.md` and wrote it unchanged, so no measurement passed through a transcription. It refuses unless each topic's match string hits exactly one bullet, which caught one ambiguity: `Logic cannot be launched from a terminal` matched two, because the `clap-host` bullet's single long line contains the phrase as well.
+
+**Six cross-references were orphaned by the split and are repaired.** Two in `AGENTS.md` pointed at the deleted section; four pointed across the new file boundaries. Found by grepping for directional words, because a broken "the bullet above" reads exactly like a working one. Six others survived because both ends landed in the same file.
+
+**The test count needed no repair.** `zig build test` reports 297/297. Both `285` figures in the notes are anchored to #94's and #96's planting experiments, not present-tense claims, so under `.github/docs.instructions.md` they stay exactly as written.
+
+### Left for after the push
+
+- **The workflow runs on the change that governs it.** Confirm `markdown.yml` dispatches on this pull request and `ci.yml` does not, which is `paths-ignore` working rather than a symptom.
+- **The loaded size, not the file size.** Start a session on a **200k-context** model, which is the configuration the whole plan is aimed at, and confirm no `over the …-char limit` line appears.
+
+### What would falsify the design
+
+An agent handed only the new `AGENTS.md` and a real task cannot answer "how do I run this and what will I break" without a tool call, which means the Rules list is under-selected. Or `docs/notes/*.md` files turn out to be edited in the same commits as code more than about one time in three, which means they are specification and belong in source comments or ADRs.
 
 ## Risks
 
