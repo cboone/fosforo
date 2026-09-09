@@ -152,7 +152,7 @@ cmake -B build cmake/                       # what the script does once per work
 cmake --build build --target fosforo_all    # and every time; not fosforo_auv2, see below
 ```
 
-Validate with `clap-validator validate zig-out/Fosforo.clap`. CI runs it on every push against **both** `.clap` bundles, the Zig-built one and the clap-wrapper-built `build/assets/Fosforo.clap`, so neither is only a local step, and it asserts every bundle's signature alongside them. The Audio Unit has no equivalent: `auval` cannot see this component at all, for the reason in the gotchas below, so loading it in Logic is the only check there is.
+Validate with `clap-validator validate zig-out/Fosforo.clap`. CI runs it on every push against **both** `.clap` bundles, the Zig-built one and the clap-wrapper-built `build/assets/Fosforo.clap`, so neither is only a local step, and it asserts every bundle's signature alongside them. The Audio Unit has no equivalent: `auval` cannot see this component at all, for the reason in [host verification](docs/notes/host-verification.md), so loading it in Logic is the only check there is.
 
 ## Releasing
 
@@ -177,7 +177,7 @@ xcrun notarytool store-credentials "fosforo-notary" \
 
 An App Store Connect API key rather than an app-specific password, because it is scoped, independently revocable, and not the Apple ID password. The `.p8` downloads once and never again, so the copy on disk is the only copy; `.gitignore` covers `*.p8` for that reason.
 
-**The certificates on hand expire 2027-02-01 and replacing them is outstanding** ([#30](https://github.com/cboone/fosforo/issues/30)). They were issued through Xcode under the G1 intermediate rather than G2, which caps both leaves at their issuer's expiry; the gotcha below has the full diagnosis and the check that surfaces it. Nothing already signed is at risk, because a secure timestamp outlives the certificate — what stops is signing anything new, and on current sequencing that happens before v0.1.0 is cut. Re-issue from the developer portal rather than Xcode, and do not revoke the superseded pair.
+**The certificates on hand expire 2027-02-01 and replacing them is outstanding** ([#30](https://github.com/cboone/fosforo/issues/30)). They were issued through Xcode under the G1 intermediate rather than G2, which caps both leaves at their issuer's expiry; [signing and notarization](docs/notes/signing-and-notarization.md) has the full diagnosis and the one check that surfaces it. Nothing already signed is at risk, because a secure timestamp outlives the certificate — what stops is signing anything new, and on current sequencing that happens before v0.1.0 is cut. Re-issue from the developer portal rather than Xcode, and do not revoke the superseded pair.
 
 ## Rules
 
