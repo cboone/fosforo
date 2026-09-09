@@ -83,23 +83,31 @@ jobs:
           npx prettier --version
           npx markdownlint-cli2 --version
 
-      # The glob is quoted so Prettier expands it rather than the shell, and it
-      # is Markdown-only on purpose: a bare `prettier --check .` would pull every
+      # Through the npm scripts rather than spelling the commands out again, so
+      # that CI and the invocation AGENTS.md, CONTRIBUTING.md and the PR
+      # template all document are one string with two readers rather than two
+      # that can drift. package.json is where the glob lives; changing it here
+      # would otherwise leave CI checking something the docs do not describe.
+      #
+      # What that glob is doing is still worth knowing. It is quoted inside the
+      # script so Prettier expands it rather than the shell, and it is
+      # Markdown-only on purpose: a bare `prettier --check .` would pull every
       # workflow, .markdownlint-cli2.jsonc and .claude/settings.json into
       # Prettier's remit, which .editorconfig already governs. .prettierignore
       # is the second half of that fence, for anyone running the tool by hand.
       - name: Check Markdown formatting
         id: prettier
-        run: npx prettier --check "**/*.md"
+        run: npm run format:check
 
-      # No arguments: markdownlint-cli2 reads its globs and ignores from
-      # .markdownlint-cli2.jsonc. `node_modules/**` is on that ignore list and
-      # is load-bearing here rather than tidy, because this tool walks into
-      # node_modules and lints dependency READMEs, which the step above has just
-      # created. Prettier excludes them itself and needs no equivalent.
+      # `lint:md` takes no arguments: markdownlint-cli2 reads its globs and
+      # ignores from .markdownlint-cli2.jsonc. `node_modules/**` is on that
+      # ignore list and is load-bearing here rather than tidy, because this tool
+      # walks into node_modules and lints dependency READMEs, which the install
+      # step above has just created. Prettier excludes them itself and needs no
+      # equivalent.
       - name: Lint Markdown
         id: markdownlint
-        run: npx markdownlint-cli2
+        run: npm run lint:md
 
       # Only on the failing path, matching typos.yml and the clap-validator
       # jobs, so the passing path pays nothing for it. Both steps are reported
@@ -117,7 +125,7 @@ jobs:
             echo "and rewrites every file matching its globs."
             echo
             echo '```text'
-            npx prettier --check "**/*.md" 2>&1 || true
-            npx markdownlint-cli2 2>&1 || true
+            npm run --silent format:check 2>&1 || true
+            npm run --silent lint:md 2>&1 || true
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
