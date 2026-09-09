@@ -282,39 +282,22 @@ The second row is why there are two arms rather than one: `h / len` is within 5%
 
 The last row was planted expecting a catch and is a correction to the plan. A value equal at all four corners interpolates to itself, so `[[flat]]` here is a cost saving and a statement of intent rather than a correctness requirement. `TraceOut`'s existing comment is about _deriving_ per-corner values, which is the row above it and is caught.
 
-### Outstanding
+### The host session, and what it settled
 
-`white_headroom` is **settled**: judged in REAPER at 0.4 and 1.2 with no visible difference, which is arithmetic rather than eyesight, and the re-judgement moved to phase 4. See the commit and ADR 0019.
+Run in REAPER at 48 kHz against the tones at `~/Music/fosforo-test-tones/`. All five arms pass.
 
-What remains is one host session. `smoke-trace` renders a window it supplied itself and says nothing about the audio path, the ring, the display link or the compositor.
+| #   | Arm                                                                | Result                                                                                                                                                        |
+| --- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | [#79](https://github.com/cboone/fosforo/issues/79), transport stop | **Gone.** The bright vertical line a transport stop drew is no longer there. #79 closes as covered rather than fixed                                          |
+| 2   | The characteristic look, 1 kHz                                     | **Visible.** The gradient along the trace, bright at turning points and dim through crossings, is what ADR 0007 calls the whole point and it is now on screen |
+| 3   | Resize during playback                                             | No visible change, which is consistent rather than contradictory: see below                                                                                   |
+| 4   | Level sweep                                                        | Unchanged, which is the criterion. ADR 0017's stalled peak still behaves as #38 recorded                                                                      |
+| 5   | Sample rate, 48/96/192 kHz                                         | Unchanged, which is the criterion. The ring and `windowSamples` are unaffected                                                                                |
 
-```bash
-zig build install-clap    # prints the hash and provenance of what landed, and of what it replaced
-/Applications/REAPER.app/Contents/MacOS/REAPER 2>&1 | grep --line-buffered fosforo
-```
+Arms 4 and 5 passing _by not moving_ is the point of running them. Velocity weighting changes what a pixel is worth and must not touch where the trace goes, and it did not.
 
-Both `2>&1` and `--line-buffered` are required and each fails differently; see AGENTS.md. Verify at **48 kHz**, since above it the display aliases until [#62](https://github.com/cboone/fosforo/issues/62). Capture with `screencapture -o -x -t png -W verification/shot.png` and click the editor window, which is titled `CLAP: Fósforo (Catamount) - Track N` at about 960x593, not the project window. Read every capture with `scripts/measure-trace --explain --refresh 120`.
+**`white_headroom` is settled at 0.8 and the re-judgement moved to phase 4.** Judged at 0.4 and 1.2 with no visible difference, which is arithmetic rather than eyesight: a moving trace deposits 1.57 once and slides on while white sits at 15.6 at 120 Hz. ADR 0019 blamed the 2:1 range, #58 fixed that range, and it was not the binding constraint. A white core on moving material is a property of a _triggered_ display.
 
-| #   | Arm                                                                    | Signal                                     | Pass criterion                                                                                                                                                         |
-| --- | ---------------------------------------------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | **[#79](https://github.com/cboone/fosforo/issues/79), transport stop** | any tone, then stop                        | The bright vertical line is gone. Predicted green **15 to 30** against a background of 5 and a trace at 190. If so, close #79 as covered rather than fixed             |
-| 2   | **The characteristic look**                                            | `sine-1000hz-0.5.wav`                      | A visible gradient along the trace: turning points at green **190**, crossings at **99**. This is what #58 was for and it is the one arm that should be obvious by eye |
-| 3   | Resize during playback                                                 | any tone                                   | Brightness holds on slow parts and the fast parts change; the contrast moves by up to 1.6x. Subtle, and already measured offscreen, so confirmation only               |
-| 4   | Level sweep                                                            | 1.000, 1.050, 1.089, 2.000                 | The implied sample tracks the level and then **stops**: +1.0000, +1.0500, +1.0889, +1.0889. Watching for a flat top is the wrong test (ADR 0017)                       |
-| 5   | Sample rate                                                            | `sine-100hz-0.5.wav` at 48, 96 and 192 kHz | Peak still inverts to +0.5000 at every rate. Change REAPER's **device** rate, not the files. Exercises the ring and `windowSamples`, not the weight                    |
+**Arm 3 downgrades the `density` follow-up rather than confirming it.** The offscreen measurement stands: the slow-to-fast contrast moves with the editor's geometry by up to 1.6x. In a host, on real material, that is **not visible**, because the whole effect lives at the dim end where a handful of bytes separate green 29 from green 42. So the defect is real, measurable and cosmetically inert, which is worth knowing before anyone spends a reference-geometry constant on it.
 
-Arms 1 and 2 are the ones worth the session. Arms 3 to 5 are confirmation and regression.
-
-Then the pre-PR sweep, all currently green:
-
-```bash
-zig build test && zig build validate-shaders && zig build smoke-gpu && zig build smoke-trace
-zig build smoke-appkit && zig build smoke-leaks -Dleak-cycles=40
-clap-validator validate zig-out/Fosforo.clap
-zig fmt --check build.zig src/ && typos && markdownlint-cli2
-uvx ruff format --check . && uvx ruff check .          # the log must read 1 file
-git ls-files -z | xargs -0 shfmt -f | xargs shfmt -d
-git ls-files -z | xargs -0 shfmt -f | xargs shellcheck
-```
-
-**Before quoting any number, put `white_headroom` and `palette_row` back to 0.8 and 0** and re-run `zig build test`. Each is tied to `src/gpu/palette.zig` by the constants test, so an experiment left in place fails CI, and a capture taken against an edited shader was measured against a mapping the model has never seen.
+One observation from arm 3 that is not #58's: during an active drag the trail cannot build, so the picture shows about three overlapping traces and looks faint, recovering as soon as the drag stops. That is `Renderer.resize` reallocating and therefore clearing the accumulation on every size change (#55), it predates this issue, and it is transient by construction.
