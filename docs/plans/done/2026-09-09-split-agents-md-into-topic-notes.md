@@ -195,17 +195,17 @@ Run, with results, on the branch as it stands.
 
 | Check                                                        | Result                                                            |
 | ------------------------------------------------------------ | ----------------------------------------------------------------- |
-| `wc -c AGENTS.md`                                            | **26,127**, from 166,639: 84% off, and 34% under the 40,000 floor |
+| `wc -c AGENTS.md`                                            | **26,390**, from 166,639: 84% off, and 34% under the 40,000 floor |
 | `git ls-files -s CLAUDE.md`                                  | mode `120000`, still a symlink                                    |
 | `scripts/check-doc-budget`, +10,000 chars                    | exits 65, naming the budget                                       |
 | `scripts/check-doc-budget`, +3,500 chars                     | exits 0 and warns, so the warning band is reachable               |
 | `scripts/check-doc-budget`, `CLAUDE.md` copied not linked    | exits 65 for the other reason                                     |
 | 20 orphaned figures, `grep -rlF` over `AGENTS.md docs/notes` | each in exactly one file                                          |
 | relative links in `AGENTS.md`, `docs/notes/`, `.github/*.md` | 0 broken, resolved against the filesystem                         |
-| `npm run format:check` and `npm run lint:md`                 | clean, 0 errors over 95 files                                     |
+| `npm run format:check` and `npm run lint:md`                 | clean, 0 errors over 96 files                                     |
 | `typos`, `actionlint`, `shfmt -d`, `shellcheck`              | all clean                                                         |
 | `zig fmt --check build.zig src/`                             | clean                                                             |
-| `zig build test --summary all`                               | **297/297**                                                       |
+| `zig build test --summary all`                               | **318/318**                                                       |
 | `zig build`                                                  | produces a signed `zig-out/Fosforo.clap`                          |
 
 **Nothing was lost, checked rather than assumed.** Each of `34.39`, `1.29%`, `8338`, `8.77`, `70.9`, `443 pixels`, `54 frames`, `113 vtable`, `960x605`, `MidiInCore`, `PLW`, `34285826257`, `_destroyWindow`, `CAMetalDisplayLink`, `kCGWindowNumber`, `moiré`, `__tsan_write8`, `NeverContended`, `MAXIMUM_LEAKED_BYTES` and `MTLCompilerService` resolves to exactly one file, except two that are correct at two: `moiré` also appears in the Rules summary, and `MTLCompilerService` is named by both the compile-cost bullet and the entitlements bullet in the original text.
@@ -214,7 +214,7 @@ Run, with results, on the branch as it stands.
 
 **Six cross-references were orphaned by the split and are repaired.** Two in `AGENTS.md` pointed at the deleted section; four pointed across the new file boundaries. Found by grepping for directional words, because a broken "the bullet above" reads exactly like a working one. Six others survived because both ends landed in the same file.
 
-**The test count needed no repair.** `zig build test` reports 297/297. Both `285` figures in the notes are anchored to #94's and #96's planting experiments, not present-tense claims, so under `.github/docs.instructions.md` they stay exactly as written.
+**The test count needed no repair.** `zig build test` reports 318/318, having read 297/297 before the rebase pulled in #93's tests. Both `285` figures in the notes are anchored to #94's and #96's planting experiments, not present-tense claims, so under `.github/docs.instructions.md` they stay exactly as written.
 
 ### Left for after the push
 
