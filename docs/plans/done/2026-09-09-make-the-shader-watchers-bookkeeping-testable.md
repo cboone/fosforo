@@ -1,6 +1,6 @@
 # Make the shader watcher's bookkeeping reachable from a test build
 
-Issue: [#93](https://github.com/cboone/fosforo/issues/93). Type: `refactor:` then `test:`. Item 5 of [the verification-gaps program](2026-09-04-close-the-verification-gaps-in-the-test-suite.md), and one of the two still open there alongside [#98](https://github.com/cboone/fosforo/issues/98).
+Issue: [#93](https://github.com/cboone/fosforo/issues/93). Type: `refactor:` then `test:`. Item 5 of [the verification-gaps program](../todo/2026-09-04-close-the-verification-gaps-in-the-test-suite.md), which was one of the two still open there when this started; [#98](https://github.com/cboone/fosforo/issues/98) is now the last.
 
 ## Context
 
@@ -256,11 +256,58 @@ Small and at logical boundaries, each carrying `(#93)`.
 
 1. `docs: plan making the shader watcher's bookkeeping testable (#93)`
 2. `refactor: move the shader reload bookkeeping into src/gpu/metal/reload.zig (#93)`
-3. `test: encode the poll state machine and the outcome table as tests (#93)`
-4. `test: cover the binding-mismatch bump by passing the tally in (#93)`
-5. `test: canary the note call sites and the mismatch ordering (#93)`
-6. `docs: correct two comments the reload paths outgrew (#93)`
-7. `docs: record what the watcher's bookkeeping extraction covered (#93)`
+3. `test: cover the binding-mismatch bump by passing the tally in (#93)`
+4. `test: canary the outcome call sites and the watcher's two orderings (#93)`
+5. `docs: correct three comments the reload paths outgrew (#93)`
+6. `docs: record what the watcher's bookkeeping extraction covered (#93)`
+
+**One deviation from the sequence above, and it is forced rather than a preference.** The module's tests were to be commit 3, separate from the move. They cannot be: `src/main.zig`'s "every module a test build compiles carries a declaration sweep" requires a `refAllDecls(@This());` block in every module, and that block lives in the test section, so an implementation-only commit would fail the suite. The move and its tests land together for the same reason #92's vacuity guards landed inside its move. Commit 5 covers three comments rather than two, because `iface.zig`'s zero-counters test made a claim that this change narrowed.
+
+## Results
+
+| Check                                           | Result                                                              |
+| ----------------------------------------------- | ------------------------------------------------------------------- |
+| `zig build test`                                | 297 before, **318** after, all passing                              |
+| `zig build test-safe`, `test-release`           | 318 of 318 each                                                     |
+| `zig build`                                     | Clean; the only build that type-checks the live `poll`              |
+| `zig build smoke-gpu`, transcript diff          | **Byte-identical**, 12 lines                                        |
+| `zig build smoke-appkit`, transcript diff       | Identical but for its fixture's pid and a ±1 meter count; see below |
+| `zig build smoke-trace`                         | Pass, unaffected                                                    |
+| `zig build smoke-leaks -Dleak-cycles=40`        | 288 leaks, 18,816 bytes — the recorded baseline exactly             |
+| `clap-validator`                                | 44 run, 21 passed, **0 failed**, 23 skipped                         |
+| Plants, one weakening at a time                 | 13 planted, **13** refused by the test named for the row            |
+| `zig fmt --check`, `typos`, `markdownlint-cli2` | Clean; `uvx ruff@0.16.5` reads **1 file** as its control            |
+
+`src/gpu/metal/reload.zig` is 546 lines with 18 test blocks; `renderer.zig` gained two canary tests and one `noteBindings` test.
+
+**The two `smoke-appkit` differences were both controlled rather than argued away.** The fixture path carries the harness's pid, and two runs of the _unchanged_ build differ there too. The render meter read `121 uploaded` once against the baseline's `122`; sampled three more times on each build it read 122, 121, 122 on both, in step, so it is the meter's own jitter over a wall-clock second at 120 Hz.
+
+**And the leak figure needed a control of its own.** The first run here read 192 leaks for 12,544 bytes against the 285-288 recorded in `AGENTS.md`, which is outside the range that document says the count wanders in. Measured on the unchanged build in a second worktree it read 288 / 18,816, exactly the recorded figure; two further paired runs then read 288 / 18,816 on **both**. So the 192 was a one-off in the runner's own AppKit chatter, not this change, and the recorded baseline stands.
+
+### The control, which falsified the issue
+
+**Nothing in this repository caught the defect this issue was filed about.** The acceptance plant was applied to `poll` as it stood, on `f7fba29`, before anything moved:
+
+| Instrument               | Under the plant                                          |
+| ------------------------ | -------------------------------------------------------- |
+| `zig build test`         | **297 of 297 passed**                                    |
+| `zig build smoke-appkit` | **`smoke: appkit ok`**, all five hot-reload arms running |
+
+The transcript confirms the arms ran rather than being skipped: three `recompiled` lines at 23411, 23411 and 23426 bytes — the first two equal by design, since arm 2 is the same-length control — and both rejection diagnostics, then `the shader swapped live, refused two bad ones, and recovered`.
+
+**The prediction in this plan was wrong too, in the opposite direction**, and is left standing above rather than edited. It guessed the arm that would fail was `BrokenShaderWasSwappedIn`, on the reasoning that `reloads` would climb four times a second between the `before_broken` capture and the assertion. It does not: the plant still advances `seen` on the success path, so a good file compiles once and `reloads` is stable. Only the failure paths repeat, and `rejected` is read only through `>=` comparisons.
+
+**A weakness in arm 4 falls out of that, and it is not fixed here.** Under this defect, `hotReloadPhase`'s renamed-function arm can pass without the renamed shader ever being read: it captures `before_renamed` while arm 3's broken file is still being re-rejected, then waits for `rejected >= before_renamed.rejected + 1`, which that file satisfies on its own. ADR 0013's #61 amendment calls arm 4 "the one a counter cannot replace"; that holds for the _diagnostic_ and not for the _counter_ the arm asserts on. Recorded in ADR 0013's #93 amendment.
+
+### What planting produced that reading did not
+
+**A third site, which the issue did not name.** `noteBindings` is private and was reached only from the two gated call sites, so Zig's lazy analysis left it out of every test binary: `firstBindingMismatch` beneath it had five tests and the pairing "a mismatch found is a mismatch counted" had none. Taking the tally as a parameter gave it a caller.
+
+**One plant was a no-op and had to be rewritten.** `null-stat-is-a-change`, spelled `now orelse self.seen`, reduces to returning `.idle` on the same path, so it passed everything and proved nothing. Respelled as a substituted zero stamp it fails the test named for it. **The plant was wrong, not the test** — which is the `expectClose` situation from the other side, and the reason each plant here was read for what it actually does rather than trusted to its name.
+
+**One plant did not compile on the first attempt**, which is the program plan's own rule at work: deleting `counters.noteMismatch();` leaves the parameter unused. Respelled as `_ = counters;` it compiles and fails the right test. A plant that does not compile is not a passing plant.
+
+**And `git restore` ate a test.** After the first non-compiling plant, restoring the file reverted the uncommitted `noteBindings` test written moments earlier, and the next measurement silently read 315 of 315 instead of 316 — a _lower_ count that looked like a pass. Commit before planting.
 
 ## Out of scope
 
