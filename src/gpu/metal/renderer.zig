@@ -3360,6 +3360,40 @@ test "a renamed parameter reads as a mismatch rather than as a pass" {
     try testing.expectEqual(@as(?u64, null), mismatch.found);
 }
 
+test "a mismatch found is a mismatch counted, which nothing compiled until #93" {
+    // **The pairing, which is the half `firstBindingMismatch`'s five tests do not
+    // reach.** `noteBindings` is private and was called only from the two paths
+    // behind `shader.live`, so Zig's lazy analysis left it out of every test
+    // binary: the decision was covered five ways and the increment behind it not
+    // at all. Passing the tally in is what gives it a caller here.
+    var buf: [shader_source.len]u8 = undefined;
+    const moved = try replaceOnce(
+        &buf,
+        shader_source,
+        "device const float *samples [[buffer(0)]]",
+        "device const float *samples [[buffer(3)]]",
+    );
+
+    var counters: reload.Counters = .{};
+    noteBindings(moved, &counters);
+    try testing.expectEqual(@as(u64, 1), counters.stats().binding_mismatches);
+
+    // **It counts and does not refuse**, which is #77's decision and the thing
+    // `src/smoke.zig` asserts against a device as `MovedBindingWasRefused`. Here
+    // the weaker half is what is assertable, since this function has no way to
+    // refuse anything: it disturbed nothing else.
+    try testing.expectEqual(@as(u64, 0), counters.stats().reloads);
+    try testing.expectEqual(@as(u64, 0), counters.stats().rejected);
+    try testing.expectEqual(@as(u64, 0), counters.stats().fallbacks);
+
+    // The negative control, without which "the mismatch was counted" could not be
+    // told from "every source is counted as a mismatch". This is the shader the
+    // build shipped, so it must move nothing at all.
+    var clean: reload.Counters = .{};
+    noteBindings(shader_source, &clean);
+    try testing.expectEqual(iface.ShaderStats{}, clean.stats());
+}
+
 /// `haystack` with the first `from` replaced by `to`, into caller-owned storage.
 ///
 /// A test helper, and the reason it is one rather than a formatted literal: the
