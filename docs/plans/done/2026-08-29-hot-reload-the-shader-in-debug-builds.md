@@ -352,13 +352,13 @@ Landed as planned. Everything above held except where the measurements below mov
 
 ### The host result, measured rather than judged by eye
 
-`clap-host` takes an explicit plugin path, so it needs no install, no project and no DAW, and it turns out to make this the rare rendering change whose *picture* can be verified automatically. The editor was captured by window id, the watched shader's background literal was edited from `float3(0.02, 0.02, 0.03)` to `float3(0.80, 0.05, 0.05)`, and the capture was repeated.
+`clap-host` takes an explicit plugin path, so it needs no install, no project and no DAW, and it turns out to make this the rare rendering change whose _picture_ can be verified automatically. The editor was captured by window id, the watched shader's background literal was edited from `float3(0.02, 0.02, 0.03)` to `float3(0.80, 0.05, 0.05)`, and the capture was repeated.
 
-| Capture                       | Background pixels | Strong-red pixels |
-| ----------------------------- | ----------------- | ----------------- |
-| Before the edit               | 518,298           | 17                |
-| After the edit                | 0                 | 518,323           |
-| After reverting the file      | 518,298           | 17                |
+| Capture                  | Background pixels | Strong-red pixels |
+| ------------------------ | ----------------- | ----------------- |
+| Before the edit          | 518,298           | 17                |
+| After the edit           | 0                 | 518,323           |
+| After reverting the file | 518,298           | 17                |
 
 The whole drawable changed and changed back, with no restart, in a real host, and the log carries one `recompiled` line per edit. **Both edits were byte-identical in length**, since the two literals are the same width, so this is also an independent confirmation in a host of what the same-length smoke arm asserts: the change detector does not rely on size.
 
@@ -378,8 +378,8 @@ Both findings on the pull request were of one kind, which is worth naming becaus
 
 `ShaderStats.watching` claimed to be false "in a debug build whose path is missing", while the code set it true as soon as an absolute path resolved. The name was the real defect, since `probe` sets it without starting a watcher; it is now `path_resolved` and documents the two things it does not mean.
 
-**The lesson to carry is about where to look, not about either bug.** Both were in text this branch added *to explain* the design, which is exactly the material that gets read closely once and then trusted. Neither would have been caught by any check here, because no check reads a docstring.
+**The lesson to carry is about where to look, not about either bug.** Both were in text this branch added _to explain_ the design, which is exactly the material that gets read closely once and then trusted. Neither would have been caught by any check here, because no check reads a docstring.
 
 ### The host result is worth noting beyond itself
 
-This is worth noting beyond its own result. ADR 0013 records that nothing automated here has ever answered what the pixels became, and #55 proved the cost of that the expensive way. A window-id capture plus a pixel count against a deliberately unmissable edit is not a general answer to that, and it is not the offscreen readback [#51](https://github.com/cboone/fosforo/issues/51) has since landed, which measures the embedded shader against the constants rather than watching a reload arrive. It is a usable one for *this* kind of change, where the question is whether a swap reached the screen at all rather than whether the picture is right.
+This is worth noting beyond its own result. ADR 0013 records that nothing automated here has ever answered what the pixels became, and #55 proved the cost of that the expensive way. A window-id capture plus a pixel count against a deliberately unmissable edit is not a general answer to that, and it is not the offscreen readback [#51](https://github.com/cboone/fosforo/issues/51) has since landed, which measures the embedded shader against the constants rather than watching a reload arrive. It is a usable one for _this_ kind of change, where the question is whether a swap reached the screen at all rather than whether the picture is right.

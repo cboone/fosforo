@@ -32,7 +32,7 @@ Signing and notarization run **locally, never in CI**. This repository is public
 
 **The user gets one download and no instructions.** This is the whole point, and it is the only option of the three that achieves it.
 
-**Two certificates are needed, not one.** Bundles are signed with Developer ID *Application*; the pkg is signed with Developer ID *Installer*. They are distinct certificate types and easy to conflate. `security find-identity -v -p codesigning` does not list installer certificates at all, so a null result there is not evidence that one is missing; check with `security find-identity -v` and no policy.
+**Two certificates are needed, not one.** Bundles are signed with Developer ID _Application_; the pkg is signed with Developer ID _Installer_. They are distinct certificate types and easy to conflate. `security find-identity -v -p codesigning` does not list installer certificates at all, so a null result there is not evidence that one is missing; check with `security find-identity -v` and no policy.
 
 **The release path is not exercised by CI and can rot.** Accepted, and the direct cost of keeping distribution keys out of a public repository. CI guards the one direction it can: `scripts/assert-adhoc-signature` asserts that the default build stays ad-hoc, unhardened and untimestamped, so the conditional that enables the release path cannot silently leak into the hermetic one. The positive direction is checked by hand, and the scripts under `scripts/` are the executable record of the procedure.
 

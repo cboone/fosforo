@@ -69,7 +69,7 @@ reason worth keeping:
 | ----------------------- | ------------------------------------------------------------------------------------------------ |
 | Where the CI check goes | A new `test-modes` job in this repo's `ci.yml`                                                   |
 | `zig build test`        | Stays mode-following, so `-Doptimize=ReleaseSmall` and friends remain available ad hoc           |
-| `ReleaseSafe`           | **Added** as `test-safe`, not refused: it is the only mode that optimizes *and* keeps the checks |
+| `ReleaseSafe`           | **Added** as `test-safe`, not refused: it is the only mode that optimizes _and_ keeps the checks |
 | Instrument check        | A comptime pin, so a dropped optimize mode is a compile error rather than a silently green job   |
 
 ## Changes
@@ -88,7 +88,7 @@ bake an absolute worktree path into a release-mode binary, which is the exact ne
 time on every `zig build` invocation. Measured before and after rather than budgeted for:
 `zig build --help` reads **0.11 s** with one mode and 0.11 s with three, against ~10 ms for
 the `xcrun` each instance runs. Zig caches a dependency instance by its argument hash, so
-`-Doptimize=ReleaseFast` yields two instances rather than four, and nothing is *built* unless
+`-Doptimize=ReleaseFast` yields two instances rather than four, and nothing is _built_ unless
 a step that wants it was asked for. The figure is in `coreAt`'s comment.
 
 **`Core.Options` gains `pinned_optimize: []const u8 = ""`**, published through the existing
@@ -230,7 +230,7 @@ a green job testing Debug twice.
 **Plant 1 — the literal criterion: the refusal, not the safety check, is what holds in the
 shipping build.** Delete `if (minimum_capacity == 0) return error.EmptyCapacity;`
 (`ring.zig:114`). Unplanted, all three steps pass and all three return `error.EmptyCapacity`
-from `ring.zig:396`, which *is* the criterion: the ReleaseFast run refuses the bad capacity.
+from `ring.zig:396`, which _is_ the criterion: the ReleaseFast run refuses the bad capacity.
 Planted, all three fail, and the signatures are the finding:
 
 | Step           | Failure                                                                         |
@@ -252,7 +252,7 @@ is the `unreachable` branch, not the call.
 
 **So there is no plant in this codebase where Debug is green and ReleaseFast is red**, and
 that is the honest statement of what these steps buy. Every difference between the modes
-*removes* a check, so ReleaseFast is a strictly weaker detector of runtime faults. What it
+_removes_ a check, so ReleaseFast is a strictly weaker detector of runtime faults. What it
 adds is that the suite runs at all in the build that ships, where a refusal that had lapsed
 into an assertion would be caught by nothing else.
 
@@ -300,7 +300,7 @@ set `timeout-minutes` from that measurement, and confirm the other eight jobs ar
   stubs it in a test build. That is [#93](https://github.com/cboone/fosforo/issues/93).
 - **`Editor.report`, the two render-thread assertions and the two `objc` thread assertions**
   (`gui.zig:819`, `renderer.zig:850`, `:868`, `objc.zig:62`, `:78`) are all
-  `if (builtin.mode != .Debug) return;`, so the release steps exercise a *different* path
+  `if (builtin.mode != .Debug) return;`, so the release steps exercise a _different_ path
   through those five functions rather than a harder one. No coverage is lost today, since
   nothing tests them, but the release runs are not evidence about them either.
 - **`src/smoke.zig`**, which is a separate executable outside all three test steps and follows

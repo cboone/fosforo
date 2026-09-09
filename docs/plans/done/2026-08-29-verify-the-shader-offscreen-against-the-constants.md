@@ -18,7 +18,7 @@ ADR 0013:85 refuses two things, and this is neither.
 
 It refuses **reading the drawable back**, because `attachLayer` sets `setFramebufferOnly: true` and relaxing that would change the shipping renderer's storage mode in every host on every frame. Nothing here touches the layer, the drawable or that flag.
 
-It refuses **a harness-only readable path**, on the grounds that "a path the shipping renderer never takes is a paraphrase." The answer is to make the offscreen path a *variant of the shipping path* chosen at construction, not a copy of it: the harness calls the real `upload` and the real `frame`, and `frame` differs only in where it gets its colour attachment and whether it presents. That is `probe`'s principle (share `buildPipelines` rather than paraphrase it) applied to the frame instead of to the pipeline.
+It refuses **a harness-only readable path**, on the grounds that "a path the shipping renderer never takes is a paraphrase." The answer is to make the offscreen path a _variant of the shipping path_ chosen at construction, not a copy of it: the harness calls the real `upload` and the real `frame`, and `frame` differs only in where it gets its colour attachment and whether it presents. That is `probe`'s principle (share `buildPipelines` rather than paraphrase it) applied to the frame instead of to the pipeline.
 
 ADR 0013:87 sets the criterion for a golden: "when the picture is expensive enough to justify a golden and stable enough that the golden does not churn." This builds **no golden**. It asserts extracted features against values computed from `iface.trace_full_scale` and `iface.trace_rail`, which is what the throwaway #38 probe actually did, and what survives #57, #58 and #60 with changed expected numbers rather than a rewritten instrument.
 
@@ -151,13 +151,13 @@ The rows are #38's table, from an instrument sharing nothing with the throwaway 
 
 Sines at 1, 2, 4, 5, 8 and 20 cycles counted exactly, the rail held row 5 for every level from 1.111 to 1000.0, and the background reached the picture as `RGBA(5, 5, 8, 255)`, which is the value `find_drawable` searches a window capture for.
 
-**One deposit peaks at exactly 1.0000.** That answers the open question this plan declined to prejudge: a line strip's shared vertices do *not* deposit twice, so coverage is counted once per pixel at this geometry. It is a measurement at one geometry rather than a general claim about the rasterizer, and #57 replaces the primitive it is about.
+**One deposit peaks at exactly 1.0000.** That answers the open question this plan declined to prejudge: a line strip's shared vertices do _not_ deposit twice, so coverage is counted once per pixel at this geometry. It is a measurement at one geometry rather than a general claim about the rasterizer, and #57 replaces the primitive it is about.
 
 The beam's ray measured red/green 0.2998 and blue/green 0.4500 against literals of 0.30 and 0.45, with a worst deviation of 0.00000 across every lit pixel: half-float precision, and the first executable confirmation of the premise `scripts/measure-trace`'s colour guard rests on.
 
 ## Verification
 
-The harness's own correctness is established by planting defects and confirming each fails a *named* assertion. **All ten were planted and all ten were caught**, measured rather than predicted. Twelve rows and ten defects: two pairs collapse, being the same defect with a check relaxed to reach the second net behind it.
+The harness's own correctness is established by planting defects and confirming each fails a _named_ assertion. **All ten were planted and all ten were caught**, measured rather than predicted. Twelve rows and ten defects: two pairs collapse, being the same defect with a check relaxed to reach the second net behind it.
 
 **The fourth column was added by [#92](https://github.com/cboone/fosforo/issues/92) and is what makes these regress.** Each of these was verified once, by hand, against a GPU, and then written down here; nothing re-ran them, so a later refactor could make a judge vacuous and this table would go on describing a check that no longer existed. The judgements now live in `src/gpu/verdict.zig` and every row expressible as a synthetic readback is a test there, planted against the judge in isolation rather than against a device. Two rows are not, and say why.
 
@@ -182,7 +182,7 @@ Three things fell out of doing this rather than predicting it.
 
 **Binding the wrong accumulation texture does not compile.** Zig's unused-local rule catches it before any harness runs, which is a better outcome than a caught defect and worth recording as the reason that row needed `_ = &source;` to be exercised at all.
 
-**A uniform change to the beam's colour is invisible to the ray check, by construction.** The check takes its reference from the brightest lit pixel rather than from a restated literal, so it asserts that every deposit is the *same* colour and says nothing about which. That is the premise `scripts/measure-trace`'s guard rests on and had never been checked; pinning the literal here would be a fourth copy with nothing tying it back.
+**A uniform change to the beam's colour is invisible to the ray check, by construction.** The check takes its reference from the brightest lit pixel rather than from a restated literal, so it asserts that every deposit is the _same_ colour and says nothing about which. That is the premise `scripts/measure-trace`'s guard rests on and had never been checked; pinning the literal here would be a fourth copy with nothing tying it back.
 
 **A fourth thing fell out of making the column true, and it is about this table rather than about the shader** ([#92](https://github.com/cboone/fosforo/issues/92)). Encoding a row is not the same as covering it, and twenty-two weakenings planted against the judges found two arms that were not discriminating. The centreline plant sat at 0.01 of full scale, which is 2.4 times a whole backing pixel, so widening the twentieth-of-a-pixel bound twentyfold changed no verdict and the arm was asserting only that the error had a detectable sign; it now sits at 0.001, between the two bounds. And the background plant sat one byte off the palette's value at zero, which `resolve`'s per-pixel loop refuses anyway within its own one-level slack, so removing the dedicated check traded one fault for another instead of letting a wrong picture through; it is now five levels off. **Both looked like tests of the thing they named and were tests of something weaker**, which is the same failure mode as a tolerance wide enough to absorb a systematic error, one level up.
 
@@ -214,13 +214,13 @@ Its log settles provenance without a hash comparison, which is #22's whole point
 
 **Then measured, not looked at.** A full-screen capture was **refused** by `scripts/measure-trace`, at 61.9% of pixels off the colour ray: this display is scaled, so a screen-sized capture resamples the drawable. That is the guard #64 built doing exactly its job, and it is a positive control for everything below. Capturing the window by its `CGWindowID` instead gives a lossless 1920x1080 drawable at **0.02% off the ray**, three orders of magnitude better, which is the margin that guard was calibrated to.
 
-| Reading            | Measured                          | Expected                                       |
-| ------------------ | --------------------------------- | ---------------------------------------------- |
-| Drawable           | 1920 x 1080                       | 960x540 at 2x, as the render meter reported    |
-| Columns lit        | 1920 of 1920                      | silence draws full width                       |
-| Row                | 539, top and bottom               | one row, one pixel above an even centre        |
-| Implied sample     | +0.0021                           | the one-pixel floor, about -53.7 dBFS          |
-| Off the colour ray | 0.02%                             | under the 0.5% the guard permits               |
+| Reading            | Measured            | Expected                                    |
+| ------------------ | ------------------- | ------------------------------------------- |
+| Drawable           | 1920 x 1080         | 960x540 at 2x, as the render meter reported |
+| Columns lit        | 1920 of 1920        | silence draws full width                    |
+| Row                | 539, top and bottom | one row, one pixel above an even centre     |
+| Implied sample     | +0.0021             | the one-pixel floor, about -53.7 dBFS       |
+| Off the colour ray | 0.02%               | under the 0.5% the guard permits            |
 
 **Row 539 is the number that matters**, because it is the one AGENTS.md already records from REAPER at this geometry, from before any of this work: silence lands one pixel above centre because an even height puts the centre on an exact pixel boundary. The shipping path after the `Surface` union reproduces it exactly, measured by an instrument that shares no code with the new harness.
 

@@ -30,17 +30,17 @@ Checked rather than asserted: at 960x540 a railed profile spans rows 3.4 to 6.4 
 
 ### The fragment shades by distance to the segment, so caps are round and adjacent quads overlap
 
-Distance to the *segment* rather than to its infinite line, which is six ALU operations and buys three things at once: joints are covered with no wedge gap on the outside of a turn, the endpoints at `x = ±1` are covered because the cap has area, and a degenerate segment becomes a dot rather than a `normalize(0)` NaN.
+Distance to the _segment_ rather than to its infinite line, which is six ALU operations and buys three things at once: joints are covered with no wedge gap on the outside of a turn, the endpoints at `x = ±1` are covered because the cap has area, and a degenerate segment becomes a dot rather than a `normalize(0)` NaN.
 
 The quad is **oriented**, not axis-aligned: the segment's own box, extended by the half-width along its direction at both ends and by the half-width along its normal on both sides. That is the capsule's oriented bounding box, and the fragment does the rounding inside it.
 
-The cost is that adjacent quads overlap and both deposit. **Two premises retire because of it.** `shaders/scope.metal:135-140` and `src/gpu/palette.zig:456-464` both justify extended Reinhard over plain Reinhard by saying the attainable domain is `(0, 1 / (1 - decay)]` "because a line strip's x is monotone in `vertex_id` so one frame cannot deposit twice on a pixel". That is false afterwards. The *conclusion* survives and gets stronger, since a wider domain is exactly what extended Reinhard handles and plain Reinhard does not, but the sentence has to be rewritten rather than left standing. [ADR 0013](../../adr/0013-gui-smoke-harness-as-a-build-step.md)'s finding that "a line strip deposits once per pixel here" is superseded, and predicted its own obsolescence.
+The cost is that adjacent quads overlap and both deposit. **Two premises retire because of it.** `shaders/scope.metal:135-140` and `src/gpu/palette.zig:456-464` both justify extended Reinhard over plain Reinhard by saying the attainable domain is `(0, 1 / (1 - decay)]` "because a line strip's x is monotone in `vertex_id` so one frame cannot deposit twice on a pixel". That is false afterwards. The _conclusion_ survives and gets stronger, since a wider domain is exactly what extended Reinhard handles and plain Reinhard does not, but the sentence has to be rewritten rather than left standing. [ADR 0013](../../adr/0013-gui-smoke-harness-as-a-build-step.md)'s finding that "a line strip deposits once per pixel here" is superseded, and predicted its own obsolescence.
 
 **One deviation from ADR 0007's wording, which the amendment has to name rather than gloss.** The ADR says "shaded by perpendicular distance from the centerline", which is the infinite line and has neither caps nor overlap. Distance to the segment is a deliberate departure, made for the edge columns and the joints, and it is what introduces the overlap. Four files carry the older phrasing.
 
 ### The deposit is scaled by sample density, and that is not velocity weighting
 
-Additive overlap makes per-pixel brightness linear in samples per logical point, roughly `1 + 1.6 * s`, scale-invariant because the half-width and the segment pitch both scale together. At one sample per point that is about 2.6 deposits. At four it is 7.4, and the *moving* trace saturates to white: reachable at 96 kHz on a 480-point editor and at 192 kHz on a 960-point one, both ordinary. Today the line rasterizer is idempotent in overdraw, which is what ADR 0013's measured 1.0000 records, so oversampling costs nothing; quads make it cost, and phase 3's exit criteria include stability under sample-rate change.
+Additive overlap makes per-pixel brightness linear in samples per logical point, roughly `1 + 1.6 * s`, scale-invariant because the half-width and the segment pitch both scale together. At one sample per point that is about 2.6 deposits. At four it is 7.4, and the _moving_ trace saturates to white: reachable at 96 kHz on a 480-point editor and at 192 kHz on a 960-point one, both ordinary. Today the line rasterizer is idempotent in overdraw, which is what ADR 0013's measured 1.0000 records, so oversampling costs nothing; quads make it cost, and phase 3's exit criteria include stability under sample-rate change.
 
 The fix is one scalar in `TraceUniforms`, computed once per frame: `min(1, viewport_width / (sample_count - 1))`, the segment pitch in device pixels, clamped so it only ever attenuates.
 
@@ -54,7 +54,7 @@ The fix is one scalar in `TraceUniforms`, computed once per frame: `min(1, viewp
 
 **Compact support is worth more than it looks.** Because the profile is exactly zero at and beyond the half-width, unlit pixels hold exactly 0.0, so `checkResolve`'s background assertions and `probe.pixel(0, 0)` survive untouched, and the centroid can be summed over a whole column for free. A Gaussian would have neither property, on top of needing a transcendental and showing a truncation seam.
 
-The published *values* do move, because overlap raises a moving trace from one deposit to about 2.6. Worked through `palette.zig`'s own arithmetic at `whitePoint(0.9) = 8.0`:
+The published _values_ do move, because overlap raises a moving trace from one deposit to about 2.6. Worked through `palette.zig`'s own arithmetic at `whitePoint(0.9) = 8.0`:
 
 |          | today, e = 1.0     | after, e ≈ 2.6       |
 | -------- | ------------------ | -------------------- |
@@ -68,7 +68,7 @@ The published *values* do move, because overlap raises a moving trace from one d
 
 This is what makes five smoke checks stronger rather than merely surviving, and it is the answer to the centre-line half pixel.
 
-`src/gpu/measure.zig` reads `extremes(...).top` as the trace's position. With a one-pixel line that *is* the trace. With a profile it is the threshold contour's upper edge, biased above the true centreline by the lit half-width, systematically and with the same sign at every level. `pixelTolerance` is one backing pixel by construction and cannot absorb that; the file's own docstring says a tolerance wide enough to hide a systematic error is a tolerance that hides one.
+`src/gpu/measure.zig` reads `extremes(...).top` as the trace's position. With a one-pixel line that _is_ the trace. With a profile it is the threshold contour's upper edge, biased above the true centreline by the lit half-width, systematically and with the same sign at every level. `pixelTolerance` is one backing pixel by construction and cannot absorb that; the file's own docstring says a tolerance wide enough to hide a systematic error is a tolerance that hides one.
 
 A symmetric profile's energy-weighted centroid is exactly its centreline. At silence the beam centres on `y = 0` in NDC, which is pixel-space `y = 270.0` at a height of 540, equidistant from the centres of rows 269 and 270. The centroid is `269.5` in row-index units, and `impliedSample` there is `(1 - 2 * 270 / 540) / 0.9`, **exactly zero**. The `+0.0021` #38 measured and declined to correct is not corrected by a bias; it disappears because the estimator reads what the geometry says.
 
@@ -90,7 +90,7 @@ A `distance_to_segment` helper, guarded at `dot(ab, ab) > 1e-12`.
 
 - `vertex_id & 2` is 0 or **2**, not 0 or 1. `fullscreen_vertex` exploits that deliberately, so the idiom reads as correct arriving from four lines above and yields a quad twice as tall as intended. Use a boolean test or `(vertex_id >> 1) & 1`.
 - Strip order must be the Z order `(0,0), (1,0), (0,1), (1,1)`. The ring order gives a bowtie covering half the quad, and nothing sets a cull mode, a winding, a viewport, a scissor or a sample count, so neither a bowtie nor a mirrored quad announces itself.
-- **Metal's NDC-to-window transform negates y.** The file says "No Y flip" three times, meaning the *vertex* function does not negate because the rasterizer does. A pixel-space conversion written as `(y * 0.5 + 0.5) * H` is vertically mirrored against `in.position.y`, and those comments point straight at the wrong sign.
+- **Metal's NDC-to-window transform negates y.** The file says "No Y flip" three times, meaning the _vertex_ function does not negate because the rasterizer does. A pixel-space conversion written as `(y * 0.5 + 0.5) * H` is vertically mirrored against `in.position.y`, and those comments point straight at the wrong sign.
 - `[[flat]]` takes the provoking vertex's value, which differs between the strip's two triangles. This is harmless **only** because all four corners compute the same `p0`/`p1`. Deriving this corner's own endpoint instead would put a discontinuity along the quad's diagonal with no compile error.
 
 Docstrings to rewrite: lines 22-24, 135-140, and the whole of `trace_vertex`'s 225-245.
@@ -202,11 +202,11 @@ zig build install-clap
 
 **Arm 1, the trace's position.** Play `sine-100hz-0.5.wav`, capture the plugin's window, and run `scripts/measure-trace --refresh 120 verification/shot.png`. The peak and trough must invert to ±0.5000, and the guard's off-ray fraction must stay under `MAX_OFF_RAY`. **Done**: reads `+0.5000` and `-0.5000` at 0.26%.
 
-**Arm 2, the rail.** The level sweep at 1.000, 1.050, 1.089 and 2.000. The centroid inverts straight to a sample value, so the criterion is that the implied sample tracks the level and then *stops*: +1.0000, +1.0500, +1.0889, +1.0889. Watching for a flat top is the wrong test, as `AGENTS.md` records; the peak ceasing to climb is the whole of what ADR 0017 means by refusing to say how far over a signal is. **Partly done**: `level-2.000` reads `+1.0893` against a predicted 1.08889 and prints the "on the rail" line. 1.000, 1.050 and 1.089 remain.
+**Arm 2, the rail.** The level sweep at 1.000, 1.050, 1.089 and 2.000. The centroid inverts straight to a sample value, so the criterion is that the implied sample tracks the level and then _stops_: +1.0000, +1.0500, +1.0889, +1.0889. Watching for a flat top is the wrong test, as `AGENTS.md` records; the peak ceasing to climb is the whole of what ADR 0017 means by refusing to say how far over a signal is. **Partly done**: `level-2.000` reads `+1.0893` against a predicted 1.08889 and prints the "on the rail" line. 1.000, 1.050 and 1.089 remain.
 
 **Arm 3, sample rate.** Change REAPER's **device** rate in preferences, not the files: `gui.windowSamples` is `sample_rate * 0.020`, so the negotiated rate is what sets the window length and the files stay 48 kHz throughout. Play `sine-100hz-0.5.wav` at 48, 96 and 192 kHz and confirm the peak still inverts to +0.5000 at every rate. That exercises `windowSamples`, the ring at three block sizes and the upload path at three window lengths, none of which the harness's fixed 960-sample window reaches.
 
-**What this arm does *not* do is check `TraceUniforms.density`, and an earlier draft of this plan said it was the only thing that could.** That was wrong twice over and the correction is below, under what the host settled.
+**What this arm does _not_ do is check `TraceUniforms.density`, and an earlier draft of this plan said it was the only thing that could.** That was wrong twice over and the correction is below, under what the host settled.
 
 **Arm 4, by eye.** The beam is visibly wider and smoother with no seam where the geometry ends, and a transport stop still draws the bright vertical line [#79](https://github.com/cboone/fosforo/issues/79) describes, which is #58's to remove rather than this issue's.
 
@@ -274,9 +274,9 @@ Seven commits, in the planned order, with one inserted: the non-finite guard bec
 
 ### Three predictions in this plan were wrong
 
-**The caps are not what fixes the edge columns.** The plan, ADR 0007's amendment and the CHANGELOG all said the endpoints at `x = ±1` are covered "because the cap has area". Planting butt joints — no extension along the segment at all — still reads 960 of 960. What covers column zero is the quad's *body*: the first segment spans a whole pixel horizontally and therefore contains its centre, where a line's endpoint was a point that had to exit a diamond to light anything. All four places carrying the claim were corrected. The fix is that a quad has area at all, which is weaker and more robust than what was written.
+**The caps are not what fixes the edge columns.** The plan, ADR 0007's amendment and the CHANGELOG all said the endpoints at `x = ±1` are covered "because the cap has area". Planting butt joints — no extension along the segment at all — still reads 960 of 960. What covers column zero is the quad's _body_: the first segment spans a whole pixel horizontally and therefore contains its centre, where a line's endpoint was a point that had to exit a diamond to light anything. All four places carrying the claim were corrected. The fix is that a quad has area at all, which is weaker and more robust than what was written.
 
-**An over-large quad is harmless.** `vertex_id & 2` read as 0-or-1 was planted expecting `checkBeamProfile` to catch a doubled height. Nothing caught it, and nothing should have: the fragment clamps `u` to 1, so geometry beyond the half-width deposits exactly zero and the picture is bit-identical. The failure mode is an *under*-sized quad, which clips the profile; planted that way it fails `RailMisplaced`.
+**An over-large quad is harmless.** `vertex_id & 2` read as 0-or-1 was planted expecting `checkBeamProfile` to catch a doubled height. Nothing caught it, and nothing should have: the fragment clamps `u` to 1, so geometry beyond the half-width deposits exactly zero and the picture is bit-identical. The failure mode is an _under_-sized quad, which clips the profile; planted that way it fails `RailMisplaced`.
 
 **Two plants were caught by an earlier check than predicted.** The inverted Y flip was expected at `checkSymmetry` and fails `checkLevels`; the clip-space half-width was expected at `checkBeamProfile` and fails `checkSaturation`. Both because the centroid made the earlier checks exact, which is the change's own doing.
 
@@ -316,7 +316,7 @@ At the time this section was written, nothing above had been checked in a host. 
 
 Not a plant and not a review finding: it fell out of working through the sample-rate arm of the verification above, which is the one thing here no automated check covers.
 
-**The corrector was scale-dependent while the thing it corrects is not.** Overlap depends on `half_width / pitch`; the half-width is `beam_width_points * scale` and the pitch in pixels is `points * scale / instances`, so the scale cancels and overlap is a function of samples per logical *point* alone. `min(1, viewport_width / span)` was computed in **backing pixels**, which does not cancel. Measured offscreen at a 960-point editor by forcing both scales:
+**The corrector was scale-dependent while the thing it corrects is not.** Overlap depends on `half_width / pitch`; the half-width is `beam_width_points * scale` and the pitch in pixels is `points * scale / instances`, so the scale cancels and overlap is a function of samples per logical _point_ alone. `min(1, viewport_width / span)` was computed in **backing pixels**, which does not cancel. Measured offscreen at a 960-point editor by forcing both scales:
 
 | Session               | 1x     | 2x, before | 2x, after  |
 | --------------------- | ------ | ---------- | ---------- |
@@ -325,7 +325,7 @@ Not a plant and not a review finding: it fell out of working through the sample-
 
 At 48 kHz the two scales already agreed within 7%. At 192 kHz they were a factor of **1.87** apart, in opposite directions from their own baselines — 1x fading 29% and 2x brightening 41%. Afterwards they agree to 7%, the same as at 48 kHz. [ADR 0019](../../adr/0019-brightness-is-a-fixed-transfer-function.md) makes brightness a function of accumulated energy and of nothing else, and a term tracking the backing scale is exactly what that forbids, so this was a defect rather than an imprecision.
 
-**`zig build smoke-trace` could not have caught it**, and that is the structural limit this plan already recorded as a coverage gap turning out to be a correctness gap: `initOffscreen` always passes a scale of 1.0, so the harness measures one side of a two-sided defect and reads it as *dimmer* where the shipping display reads *brighter*. The answer is that the arithmetic moved into `beamDensity`, a pure function with no GPU anywhere near it, and two tests assert the property directly.
+**`zig build smoke-trace` could not have caught it**, and that is the structural limit this plan already recorded as a coverage gap turning out to be a correctness gap: `initOffscreen` always passes a scale of 1.0, so the harness measures one side of a two-sided defect and reads it as _dimmer_ where the shipping display reads _brighter_. The answer is that the arithmetic moved into `beamDensity`, a pure function with no GPU anywhere near it, and two tests assert the property directly.
 
 ### Planted defects, second round
 
@@ -350,7 +350,7 @@ Captured in REAPER 7.79 at the default editor on a 2x display, 1920x1080 drawabl
 
 `sine-100hz-0.5.wav` inverts to **+0.5000 and -0.5000**, exactly. That is the centre-line and level mapping confirmed through the whole chain the harness cannot see: the audio path, the ring, the display link and the compositor.
 
-Getting there found two defects in the screenshot tool, both introduced by this issue and both invisible offscreen. The centroid was taken over the whole **column**, which under persistence averages the trail rather than the beam and reported that same sine as **+0.0359** — silence — while the lit rows either side implied ±0.505 correctly; it now reads a column's first and last contiguous lit *run*. And `rail_row` was missing the pixel-centre term, the same half-pixel the `implied_sample` fix had just corrected in one place and left in another; a level-2.000 capture exposed it, because its trough centroid landed on 1068.68 against a printed 1069.2 and a Zig-side 1068.7.
+Getting there found two defects in the screenshot tool, both introduced by this issue and both invisible offscreen. The centroid was taken over the whole **column**, which under persistence averages the trail rather than the beam and reported that same sine as **+0.0359** — silence — while the lit rows either side implied ±0.505 correctly; it now reads a column's first and last contiguous lit _run_. And `rail_row` was missing the pixel-centre term, the same half-pixel the `implied_sample` fix had just corrected in one place and left in another; a level-2.000 capture exposed it, because its trough centroid landed on 1068.68 against a printed 1069.2 and a Zig-side 1068.7.
 
 ### Arm 2: the rail
 
@@ -379,7 +379,7 @@ Nine captures, `sine-100hz-0.5.wav` at three device rates, three per rate, defau
 | 96 kHz  | 8.77, 7.69, 7.22         | 7.69   |
 | 192 kHz | 7.22, 6.80, 4.88         | 6.80   |
 
-The predicted effect is a 1.41x fall; the scatter within a single rate is **1.8x**. Worse, the *defect* would have read `g≈249` against the observed `g≈243`, six byte levels apart, inside an observed scatter of ten. **So this method could not have caught the bug it was written for.** It is the wrong instrument rather than a noisy one.
+The predicted effect is a 1.41x fall; the scatter within a single rate is **1.8x**. Worse, the _defect_ would have read `g≈249` against the observed `g≈243`, six byte levels apart, inside an observed scatter of ten. **So this method could not have caught the bug it was written for.** It is the wrong instrument rather than a noisy one.
 
 The arithmetic shows why, and it is `AGENTS.md`'s existing warning about inverting near saturation made concrete: every reading here maps to one byte, and one byte is about **0.45 deposits** at this part of the curve — 6.80, 7.22, 7.69, 8.21 and 8.77 are `g` of 243, 244, 245, 246 and 247.
 
@@ -387,13 +387,13 @@ The arithmetic shows why, and it is `AGENTS.md`'s existing warning about inverti
 
 Density is verified, and it always was, in two places that do not depend on a screenshot. **The property**, with no GPU: `beamDensity` agrees to 1e-6 at 1x, 2x and 3x across five window lengths, and the pixel-based version fails it at 1 against 0.50026. **The magnitude**, offscreen at both scales: 2.6133, 2.0996 and 1.8486 at 1x, and 2.4434 and 1.7266 at 2x against **3.4531** before the fix — single deposit into a cleared accumulation, so no dwell, no free-running phase and no byte quantization, matching the model to three significant figures.
 
-**The minimum editor is unverifiable in REAPER**, and by construction rather than by accident: `AGENTS.md` records that REAPER implements `request_resize` and holds the *view* at the minimum while its own FX window still drags smaller and clips the view inside it, so the drawable stops being visible before it stops being small. A half-width editor does not rescue the comparison either — 480 against 960 points predicts 2.10 against 2.60, a 1.24x difference against that same 1.8x scatter.
+**The minimum editor is unverifiable in REAPER**, and by construction rather than by accident: `AGENTS.md` records that REAPER implements `request_resize` and holds the _view_ at the minimum while its own FX window still drags smaller and clips the view inside it, so the drawable stops being visible before it stops being small. A half-width editor does not rescue the comparison either — 480 against 960 points predicts 2.10 against 2.60, a 1.24x difference against that same 1.8x scatter.
 
 ## Arm 4, and the beading question answered
 
 **No beading.** The one thing in this issue that could not be settled by derivation is settled by looking: a 2:1 brightness ripple at the segment pitch would have shown as a regular string of brighter dots along every steep crossing, green 219 against 189, and there is none. So of the two analyses this plan recorded, the **side-by-side** one was right: when the segment pitch is under the beam width — one device pixel against three at the harness geometry, two against six at the shipping one — adjacent capsules overlap along their whole length rather than meeting end to end, and coverage is uniform.
 
-That is by eye rather than by instrument, which is weaker than the rest of this document and is worth stating. It is not weak for *this* claim: a 16% brightness ripple repeating at a fixed spatial period is exactly what an eye is good at, and it is why the question was put to one.
+That is by eye rather than by instrument, which is weaker than the rest of this document and is worth stating. It is not weak for _this_ claim: a 16% brightness ripple repeating at a fixed spatial period is exactly what an eye is good at, and it is why the question was put to one.
 
 The other three held. The beam is visibly wider and smoother than the aliased single device pixel it replaced. There is no seam at the quad's edge, which is the biweight reaching zero with zero slope rather than being truncated there, and is the property a Gaussian would not have had. Silence is flat and stable, with no flicker between adjacent rows.
 

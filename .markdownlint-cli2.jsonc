@@ -13,13 +13,39 @@
     // Inline HTML is used sparingly where Markdown has no equivalent.
     "MD033": false,
 
+    // Prettier owns emphasis style, and the default "consistent" cannot
+    // express what it does. Prettier writes `_emphasis_` everywhere except
+    // where the emphasis falls inside a word, because CommonMark does not
+    // read `_un_defined` as emphasis at all, so it correctly leaves those
+    // asterisks alone. "consistent" then takes the first such asterisk as
+    // the file's expected style and reports every underscore after it:
+    // 4 findings in docs/plans/done/2026-07-29-consistent-display-name-
+    // across-clap-and-au.md, whose line 33 says `*un*defined`. Pinning
+    // "underscore" fails that same line from the other direction. `false`
+    // is the only setting that survives a case Prettier gets right, and it
+    // costs nothing, because the formatter decides this before the linter
+    // is asked.
+    "MD049": false,
+
     // Pin the table style rather than letting it be inferred per table,
     // which otherwise reports contradictory "compact" and "aligned"
-    // expectations within the same document.
+    // expectations within the same document. Prettier is what makes this
+    // affordable: its table output satisfies "aligned" exactly, so this
+    // rule verifies an auto-fixer rather than naming one misaligned pipe
+    // per error with no remedy but hand-padding.
     "MD060": { "style": "aligned" }
   },
   "globs": ["**/*.md"],
   "ignores": [
+    // Load-bearing since this repository acquired a package.json, and the
+    // failure it prevents is loud but confusing: markdownlint-cli2 walks
+    // into node_modules and lints dependency READMEs. Measured rather than
+    // assumed, a single installed package carrying one misaligned table
+    // took a clean run from 78 files and 0 errors to 79 and 2, naming a
+    // file nobody here wrote. Prettier needs no equivalent entry, because
+    // it excludes node_modules itself.
+    "node_modules/**",
+
     "build/**",
     "zig-out/**",
     "zig-pkg/**",

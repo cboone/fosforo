@@ -16,7 +16,6 @@ The plan originally recommended declaring the primitives against libc and record
 
 That is true of the vtable and false of the binary. Measured against this tree:
 
-<!-- prettier-ignore -->
 | Measurement                            | Result                                              |
 | -------------------------------------- | --------------------------------------------------- |
 | Debug `.clap`, before (libc clock)     | 2,118,064 bytes, **325 `Threaded` symbols already** |
@@ -34,7 +33,6 @@ The cost the first recommendation was avoiding does not exist, so the recommenda
 
 Everything else checked against Zig 0.16.0, for the record:
 
-<!-- prettier-ignore -->
 | Claim                                          | Result                                                               |
 | ---------------------------------------------- | -------------------------------------------------------------------- |
 | `std.time` still has clocks                    | No. Constants only, no `Timer`, no `nanoTimestamp`                   |
@@ -66,7 +64,6 @@ Callers stay where their reason is legible: the clock next to the render loop it
 
 ## Files
 
-<!-- prettier-ignore -->
 | File                                            | Change                                             |
 | ----------------------------------------------- | -------------------------------------------------- |
 | `src/platform/io.zig`                           | New. The one `Io` instance                         |
@@ -108,7 +105,6 @@ zig build --release=fast && stat -f%z zig-out/Fosforo.clap/Contents/MacOS/Fosfor
 
 ## Results
 
-<!-- prettier-ignore -->
 | Check                            | Result                                             |
 | -------------------------------- | -------------------------------------------------- |
 | `zig fmt --check`                | Clean                                              |

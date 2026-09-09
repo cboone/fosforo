@@ -6,7 +6,7 @@ Issue: [#77](https://github.com/cboone/fosforo/issues/77). Type: `test:`. Step "
 
 [#61](https://github.com/cboone/fosforo/issues/61) made a debug build compile `shaders/scope.metal` from disk while a host is running it. Everything tying the Zig constants to the MSL read the **embedded** copy at comptime, which is correct and had to stay correct: a test about a file that can differ between a build and a frame would say nothing, and making `zig build test` read the filesystem is the hermeticity [ADR 0009](../../adr/0009-runtime-shader-compilation.md) exists to protect.
 
-The consequence is that a *reloaded* shader got `buildPipeline`'s missing-function check and nothing else. Move a `[[buffer(N)]]` and the reload succeeds.
+The consequence is that a _reloaded_ shader got `buildPipeline`'s missing-function check and nothing else. Move a `[[buffer(N)]]` and the reload succeeds.
 
 The issue predicted this "becomes real at [#57](https://github.com/cboone/fosforo/issues/57)". It did: #57 restructured `trace_vertex` into instanced quads and added `TraceUniforms.density`, and [#60](https://github.com/cboone/fosforo/issues/60) added the palette texture. [#58](https://github.com/cboone/fosforo/issues/58) moves bindings again if velocity weighting adds a uniform of its own, so this landed ahead of it rather than behind it.
 
@@ -74,7 +74,7 @@ So the check is asserted rather than trusted. A warning on a stream nothing read
 
 `moveBinding` is the embedded shader with `samples` reading `buffer(3)`. It compiles cleanly and defines everything the pipelines ask for, which is what makes it a different fixture from `renameResolve` rather than a variation on it: every check that existed before this passes that file.
 
-The arm asserts the decision rather than the mechanism — `binding_mismatches` moved by one *and* `reloads` moved by one — so reversing warn-to-refuse fails something. The identical-copy arm above it carries the negative control at `:452`, without which "the mismatch was noticed" cannot be told from "every reload is reported as a mismatch".
+The arm asserts the decision rather than the mechanism — `binding_mismatches` moved by one _and_ `reloads` moved by one — so reversing warn-to-refuse fails something. The identical-copy arm above it carries the negative control at `:452`, without which "the mismatch was noticed" cannot be told from "every reload is reported as a mismatch".
 
 ### A canary for the watcher's call site, at `src/gpu/metal/renderer.zig:3999`
 
@@ -84,7 +84,7 @@ The watcher's call site is not reachable from a smoke arm, for the validation-la
 
 **`TraceUniforms` layout drift.** MSL computes its own struct offsets, so a field added or reordered on one side only leaves text that still describes the struct correctly and draws a plausible trace at the wrong scale. Nothing reading the source can see it.
 
-[#51](https://github.com/cboone/fosforo/issues/51) does not close it either, which is worth stating because the obvious reading is that it would: `zig build smoke-trace` measures the **embedded** shader and nothing reloads during a trace run. Closing it needs a readback of a *reloaded* shader, which ADR 0013 refuses, since pointing the readback at the filesystem would make `smoke-trace` depend on it.
+[#51](https://github.com/cboone/fosforo/issues/51) does not close it either, which is worth stating because the obvious reading is that it would: `zig build smoke-trace` measures the **embedded** shader and nothing reloads during a trace run. Closing it needs a readback of a _reloaded_ shader, which ADR 0013 refuses, since pointing the readback at the filesystem would make `smoke-trace` depend on it.
 
 Said in three places rather than one: `noteBindings`' docstring, the `binding_mismatches` field, and the ADR 0009 consequence.
 
@@ -121,4 +121,4 @@ Not run, and neither is reachable from this change: a host, since nothing here a
 
 ## Out of scope
 
-Anything needing a readback of a *reloaded* shader, for the ADR 0013 reason above. Validating the embedded shader, since the comptime tests already do it and should keep doing it. Putting `MTL_DEBUG_LAYER` in CI, which is [#69](https://github.com/cboone/fosforo/issues/69).
+Anything needing a readback of a _reloaded_ shader, for the ADR 0013 reason above. Validating the embedded shader, since the comptime tests already do it and should keep doing it. Putting `MTL_DEBUG_LAYER` in CI, which is [#69](https://github.com/cboone/fosforo/issues/69).

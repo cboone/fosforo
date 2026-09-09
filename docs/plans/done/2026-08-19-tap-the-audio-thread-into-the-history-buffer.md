@@ -63,7 +63,7 @@ underneath it. Publishing after the fill does not fix that, and publishing befor
 same hole to readers that snapshot during the fill. One store cannot bracket a write as wide as the
 whole buffer, and no ordering of one store and one memset is safe.
 
-`write` is not exposed to this, because it writes *ahead* of the cursor while a reader reads behind
+`write` is not exposed to this, because it writes _ahead_ of the cursor while a reader reads behind
 it, so the two only overlap when the producer laps, and lapping is exactly what the cursor shows.
 The fix is therefore to make the clear literally a sequence of `write` calls over a static block of
 silence, rather than something merely shaped like one. That inherits `write`'s property instead of
@@ -97,12 +97,12 @@ compare against the bounds before casting and to saturate: an absurd rate become
 which `ceilPowerOfTwo` rejects as `error.Overflow` before allocating anything, and `activate` refuses
 and logs.
 
-| `sample_rate` | Samples requested   | `Ring.init`                | `activate`     |
-| ------------- | ------------------- | -------------------------- | -------------- |
-| 48 000        | 48 000              | 65 536, 256 KiB            | true           |
-| 96 000        | 96 000              | 131 072, 512 KiB           | true           |
-| 0.5           | 0                   | `error.EmptyCapacity`      | false, logged  |
-| 1e300         | `maxInt(usize)`     | `error.Overflow`, no alloc | false, logged  |
+| `sample_rate` | Samples requested | `Ring.init`                | `activate`    |
+| ------------- | ----------------- | -------------------------- | ------------- |
+| 48 000        | 48 000            | 65 536, 256 KiB            | true          |
+| 96 000        | 96 000            | 131 072, 512 KiB           | true          |
+| 0.5           | 0                 | `error.EmptyCapacity`      | false, logged |
+| 1e300         | `maxInt(usize)`   | `error.Overflow`, no alloc | false, logged |
 
 **The capacity is deliberately not floored at `max_frames`.** `Ring.write` is already total against a
 block longer than its capacity, documented at `src/dsp/ring.zig:136` and tested at
@@ -136,7 +136,7 @@ heap call on the audio thread. The docstring has to stop saying phase 2 will fix
    binding name.
 2. Add `history: ring.Ring = .{ .samples = &.{} }` to `Instance`, after `scratch`. The default
    matches what `Ring.deinit` leaves behind, so a never-activated instance and a deactivated one
-   agree about the shape. The docstring should say the storage belongs to the *activation* rather
+   agree about the shape. The docstring should say the storage belongs to the _activation_ rather
    than the instance because its size derives from `sample_rate`, and should note in one sentence
    that `deactivate` frees it on the main thread while, once #37 lands, a render thread may be
    reading it. That race is #37's to resolve and must not be papered over here.
@@ -214,7 +214,7 @@ Sizing and lifecycle, placed beside the existing `activate` refusal test:
   a full second of silence as if it were audio.
 - `activate refuses when the history cannot be allocated` — `std.testing.FailingAllocator` threaded
   through `create`. **Derive the index rather than hardcoding it**: set `state.fail_index =
-  state.alloc_index` after `create` returns, because `scratchBytes` returns 0 and a zero-byte `alloc`
+state.alloc_index` after `create` returns, because `scratchBytes` returns 0 and a zero-byte `alloc`
   short-circuits before reaching the vtable, so the count is 1 today and would rot silently.
   Assert `has_induced_failure`, which is what separates "refused because the allocation failed" from
   "refused because validation rejected the rate".
@@ -298,9 +298,8 @@ demonstrations, both reverted:
 1. **The assertion is live and reached.** Change it to `fba.end_index == 1` and run `zig build test`.
    Expect a panic rather than a failed expectation, with a frame at `process`, and the run stopping
    at the first test in file order that calls `process`.
-2. **The assertion catches a real allocation.** Make `scratchBytes` return 64 *and* add
-   `_ = allocator.alloc(u8, 16) catch {};` inside the tap. Expect the same panic with `end_index` at
-   16. `the audio path is handed an allocator that cannot reach the heap` fails first, on
+2. **The assertion catches a real allocation.** Make `scratchBytes` return 64 _and_ add
+   `_ = allocator.alloc(u8, 16) catch {};` inside the tap. Expect the same panic with `end_index` at 16. `the audio path is handed an allocator that cannot reach the heap` fails first, on
    `self.scratch.len == 0`; that is the harness noticing the configuration changed, not a second
    defect.
 
@@ -324,7 +323,7 @@ assertion live. It checks no leaks, so a `deactivate` that forgot to free would 
 
 **The memory-ordering gap stays open and belongs to #37.** Every test here is single-threaded, so
 replacing `write`'s release store with `.monotonic` still passes all of them. The PR should say so
-rather than let a larger green count imply otherwise, and should state what was *read* for the
+rather than let a larger green count imply otherwise, and should state what was _read_ for the
 no-locks, no-syscalls claim: `tap` calls `Ring.write` and `Ring.clear`, which between them reach
 `@memcpy`, `@memset` and `std.atomic.Value` load and store, and nothing else.
 

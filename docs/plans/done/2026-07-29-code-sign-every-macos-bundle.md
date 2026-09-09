@@ -4,18 +4,18 @@ Addresses [#20](https://github.com/cboone/fosforo/issues/20).
 
 ## Context
 
-Every bundle this repository produces fails `codesign --verify`. The linker ad-hoc signs the Mach-O binary, which is automatic and mandatory on arm64 and is why the plugins load at all, but nothing signs the *bundle*. Without `Contents/_CodeSignature/CodeResources`, `codesign` reports:
+Every bundle this repository produces fails `codesign --verify`. The linker ad-hoc signs the Mach-O binary, which is automatic and mandatory on arm64 and is why the plugins load at all, but nothing signs the _bundle_. Without `Contents/_CodeSignature/CodeResources`, `codesign` reports:
 
 ```console
 code has no resources but signature indicates they must be present
 ```
 
-Confirmed against the installed artifacts. The Zig-built `.clap` produces that exact error and reports `Sealed Resources=none`, `flags=0x20002(adhoc,linker-signed)`. Issue #20 records the same for the `.component`. clap-wrapper cannot help: at the pinned commit `35f524b`, its only `codesign` calls are in `cmake/wrap_auv2.cmake`, and all three sign the *generated build helper executable*, never a plugin bundle. `cmake/wrap_clap.cmake` contains no `codesign` at all, and `cmake/make_clapfirst.cmake:270` says signing is the consuming project's job.
+Confirmed against the installed artifacts. The Zig-built `.clap` produces that exact error and reports `Sealed Resources=none`, `flags=0x20002(adhoc,linker-signed)`. Issue #20 records the same for the `.component`. clap-wrapper cannot help: at the pinned commit `35f524b`, its only `codesign` calls are in `cmake/wrap_auv2.cmake`, and all three sign the _generated build helper executable_, never a plugin bundle. `cmake/wrap_clap.cmake` contains no `codesign` at all, and `cmake/make_clapfirst.cmake:270` says signing is the consuming project's job.
 
 Three things are wrong as a result:
 
 - An unsigned bundle is not distributable. A Developer ID signature and notarization both start here.
-- `cmake/CMakeLists.txt:155` reasons *from* the absence of a signature to justify its `POST_BUILD` plist rewrites: "Nothing signs the .component on this path, so there is no signature to invalidate." True today, false the moment signing lands.
+- `cmake/CMakeLists.txt:155` reasons _from_ the absence of a signature to justify its `POST_BUILD` plist rewrites: "Nothing signs the .component on this path, so there is no signature to invalidate." True today, false the moment signing lands.
 - Verifying a component locally means remembering to sign it by hand, which is exactly the step that gets skipped and then blamed on something else.
 
 The intended outcome: `zig build` and `cmake --build` each emit bundles that pass `codesign --verify` with no keychain access and no certificate, a release identity is one cache variable away, and CI proves it on every push.

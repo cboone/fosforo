@@ -6,13 +6,13 @@ Closes [#22](https://github.com/cboone/fosforo/issues/22).
 
 This repository is normally checked out as several worktrees on several branches, and all of them compete for one pair of directories under `~/Library/Audio/Plug-Ins/`. Nothing connects a build to an install but a copy someone remembers to make, so the installed bundle belongs to whichever worktree copied last. The failure is silent and reads as a pass: a branch that added a resizable editor was once "verified" against an installed build whose `can_resize` returned false, where nothing happening was the only available outcome.
 
-The issue names two independent collisions, **path** and **identity**, and observes that fixing either alone is not enough. It is right about that, and it is also true that only one of the two has actually cost anything. Every incident on record (#43, the two voided verification runs, the hour lost to `auval` and cache invalidation while verifying #9) is a *path* collision that went **unnoticed**, not an identity collision. Two bundles claiming one `id` has never happened here, because two bundles have never been installed at once.
+The issue names two independent collisions, **path** and **identity**, and observes that fixing either alone is not enough. It is right about that, and it is also true that only one of the two has actually cost anything. Every incident on record (#43, the two voided verification runs, the hour lost to `auval` and cache invalidation while verifying #9) is a _path_ collision that went **unnoticed**, not an identity collision. Two bundles claiming one `id` has never happened here, because two bundles have never been installed at once.
 
 So the ordering this plan takes is: make the ambiguity **visible** first, then remove the shared path where a format allows it, and leave identity namespacing unbuilt until something needs it. Concretely:
 
 - A build stamps its own branch, commit and dirty state into the binary, and `scripts/install-plugins` reads that back out of what is **already installed**. That is the piece that answers "which worktree is loaded" for a bundle nobody in this worktree built, which is exactly the case where the existing `shasum` comparison compares against a file that does not exist.
 - The CLAP stops needing the shared directory at all, via `CLAP_PATH`.
-- The Audio Unit, which has no `CLAP_PATH` equivalent, gets an opt-in symlink install so the shared path at least *points* at a named worktree instead of holding an anonymous copy.
+- The Audio Unit, which has no `CLAP_PATH` equivalent, gets an opt-in symlink install so the shared path at least _points_ at a named worktree instead of holding an anonymous copy.
 
 Phase 3's remaining issues are all judged in a running host, so this is prerequisite work rather than polish. The build plan puts #22 next for that reason.
 
@@ -26,7 +26,7 @@ Phase 3's remaining issues are all judged in a running host, so this is prerequi
 
 ## Two findings that change the shape of the work
 
-**A configure-time subprocess already exists, so `git` in `build.zig` is not a new dependency class.** ADR 0009's hermeticity is scoped to Xcode toolchain *components* and to the network, and the worry here was that shelling out to `git` breaks it. It does not, and the evidence is stronger than an argument by analogy to `/usr/bin/codesign`: `b.dependency("objc", ...)` runs zig-objc's `build()` at configure time, which calls `appleSDKPath` → `std.zig.system.darwin.getSdk`, whose own comment reads "This executes `xcrun` to get the SDK path." A plain `zig build` therefore already runs a subprocess and already hard-requires a valid Xcode/CLT installation, because it cannot link Cocoa or Metal without the SDK that call finds. `git` is strictly weaker than that: it needs no network, and unlike `xcrun` it degrades to a fallback value instead of failing the build.
+**A configure-time subprocess already exists, so `git` in `build.zig` is not a new dependency class.** ADR 0009's hermeticity is scoped to Xcode toolchain _components_ and to the network, and the worry here was that shelling out to `git` breaks it. It does not, and the evidence is stronger than an argument by analogy to `/usr/bin/codesign`: `b.dependency("objc", ...)` runs zig-objc's `build()` at configure time, which calls `appleSDKPath` → `std.zig.system.darwin.getSdk`, whose own comment reads "This executes `xcrun` to get the SDK path." A plain `zig build` therefore already runs a subprocess and already hard-requires a valid Xcode/CLT installation, because it cannot link Cocoa or Metal without the SDK that call finds. `git` is strictly weaker than that: it needs no network, and unlike `xcrun` it degrades to a fallback value instead of failing the build.
 
 **CI checks out shallow and detached, so the branch name is not available there.** `fetch-depth` appears nowhere in this repository, so `actions/checkout@v4` gives depth 1 with HEAD detached. `git rev-parse --abbrev-ref HEAD` returns the literal `HEAD`, there are no tags, and on `pull_request` the checked-out SHA is the ephemeral merge commit rather than the PR head. This is fine (a CI build is never installed anywhere) but the format has to accommodate it rather than emit `HEAD` as a branch name.
 
@@ -48,7 +48,7 @@ Use `b.runAllowFail(argv, &code, .ignore)` rather than `b.run`, because `b.run` 
 
 **Three details that are load-bearing:**
 
-- **Two `git` calls, not one.** `git rev-parse --abbrev-ref HEAD --short HEAD` prints the branch name *twice*: `--abbrev-ref` is sticky across the refs that follow it, so the second field would silently be the branch rather than the SHA. Measured, not assumed. Use `rev-parse --abbrev-ref HEAD` and `rev-parse --short HEAD` separately.
+- **Two `git` calls, not one.** `git rev-parse --abbrev-ref HEAD --short HEAD` prints the branch name _twice_: `--abbrev-ref` is sticky across the refs that follow it, so the second field would silently be the branch rather than the SHA. Measured, not assumed. Use `rev-parse --abbrev-ref HEAD` and `rev-parse --short HEAD` separately.
 - **Fall back to `unknown`, and map detached HEAD to `detached`.** A tarball built from `build.zig.zon`'s `.paths` has no `.git` (it lists `src`, `shaders`, `cmake`, `scripts` and three files, and no `.git`), and CI is detached. Neither is an error.
 - **Dirty is `git status --porcelain` being empty.** It respects `.gitignore`, so `zig-out/` and `build/` do not register.
 
@@ -71,7 +71,7 @@ The unknown case is `0.0.0+unknown`; the CI case is `0.0.0+detached.<sha>`.
 
 ### 3. `src/clap/plugin.zig`: carry it, and say it once per instance
 
-- `descriptor.version` (`plugin.zig:52`) takes `build_info.descriptor_version.ptr` instead of `build_options.version.ptr`. The existing test at `plugin.zig:1167` asserts only non-emptiness, so it still passes; add one asserting the string still *starts with* `build_options.version`, so the base version stays readable.
+- `descriptor.version` (`plugin.zig:52`) takes `build_info.descriptor_version.ptr` instead of `build_options.version.ptr`. The existing test at `plugin.zig:1167` asserts only non-emptiness, so it still passes; add one asserting the string still _starts with_ `build_options.version`, so the base version stays readable.
 - In `init` (`plugin.zig:221-252`), immediately after `self.log = log.Log.init(self.host);`, emit the provenance line. Use `CLAP_LOG_INFO` rather than the `CLAP_LOG_DEBUG` the neighbouring lifecycle messages use: the `stderr` mirror is compiled out of a release build (`log.zig:109`), so the host channel is the only carrier there, and this is the one message whose value is highest in a build you are merely holding.
 - `plugin.zig:1164` and `cmake/set-au-display-name` are **untouched**; both keep asserting `Fósforo` exactly.
 
@@ -177,8 +177,8 @@ Ordered so the cheap checks fail first, and so the two exclusive resources (the 
 
 Recorded on completion, because three things differed from the plan above and the reasoning for all three now lives in [ADR 0018](../../adr/0018-stamp-provenance-without-namespacing-identity.md).
 
-**Item 7's gate closed against it, so the symlinked Audio Unit was removed rather than shipped.** macOS does not register a symlinked component at all: Logic's own scan log reads 60 Audio Units with `Fósforo` present as a copy, 59 with it absent as a symlink, and 60 again when the copy is restored. `link_note` survives as a diagnostic, which the refusal makes *more* valuable rather than less, because a link made by hand produces a plugin silently missing from Logic with nothing wrong inside the bundle.
+**Item 7's gate closed against it, so the symlinked Audio Unit was removed rather than shipped.** macOS does not register a symlinked component at all: Logic's own scan log reads 60 Audio Units with `Fósforo` present as a copy, 59 with it absent as a symlink, and 60 again when the copy is restored. `link_note` survives as a diagnostic, which the refusal makes _more_ valuable rather than less, because a link made by hand produces a plugin silently missing from Logic with nothing wrong inside the bundle.
 
-**The first attempt at that measurement was a false negative, and its own control caught it.** An earlier A/B read 59 for the symlink *and* 59 for the copy, because `AudioComponentRegistrar` had not settled after several rapid reinstalls. Waiting before relaunching Logic is what makes the reading stable. Without the control, "symlinks do not work" would have been recorded as a measurement while resting on an instrument answering the same way to everything.
+**The first attempt at that measurement was a false negative, and its own control caught it.** An earlier A/B read 59 for the symlink _and_ 59 for the copy, because `AudioComponentRegistrar` had not settled after several rapid reinstalls. Waiting before relaunching Logic is what makes the reading stable. Without the control, "symlinks do not work" would have been recorded as a measurement while resting on an instrument answering the same way to everything.
 
 **Item 8 confirmed `CLAP_PATH` and found the reader takes the longest match, not the first.** REAPER 7.79 honours the variable, and every instantiation printed its own provenance line naming the worktree. Separately, Zig emits `marker_prefix` as a literal in its own right beside the marker composed from it, so a Debug binary holds two matches and a ReleaseFast one holds a single match; taking the first reported a marker consisting of nothing but its own prefix, which `--check` then called malformed.

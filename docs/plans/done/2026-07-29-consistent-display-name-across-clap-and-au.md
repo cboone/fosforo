@@ -6,7 +6,6 @@ Addresses [#9](https://github.com/cboone/fosforo/issues/9).
 
 The plugin presents itself under two different names depending on the format, and the Audio Unit additionally exposes a clap-wrapper implementation detail in a user-visible field.
 
-<!-- prettier-ignore -->
 | Field                            | Today                        | Wanted                                  |
 | -------------------------------- | ---------------------------- | --------------------------------------- |
 | CLAP descriptor `name`           | `Fósforo`                    | unchanged                               |
@@ -43,7 +42,7 @@ The survey did confirm the `"Vendor: Product"` shape is universal (`Sixth Sample
 
 A sibling to `cmake/narrow-au-resource-usage`, not an extension of it. The two have different lifecycles: the sandbox script is a workaround that should quietly no-op once clap-wrapper is fixed upstream, while this one is permanent project metadata. Merging them would make both names lie.
 
-Model it closely on the existing script, which is the house style for this: same `--check` flag, same `64`/`65`/`66` exit codes, same `warn()` helper, same `plutil -extract`/`-replace` approach, same doc-comment shape explaining *why* the post-process exists.
+Model it closely on the existing script, which is the house style for this: same `--check` flag, same `64`/`65`/`66` exit codes, same `warn()` helper, same `plutil -extract`/`-replace` approach, same doc-comment shape explaining _why_ the post-process exists.
 
 Constants at the top, so `--check` needs only a plist path and CI stays a one-liner:
 
@@ -73,6 +72,7 @@ Invoke the `write-bash-scripts` skill before writing it.
   ```
 
   `target_add_clap_configuration` sets this to `OUTPUT_NAME`, and CMake's default bundle template writes it out as `CFBundleName`. `LIBRARY_OUTPUT_NAME` is untouched, so the file stays `Fosforo.clap`. This is Finder-only polish: CLAP hosts read the descriptor, not the plist.
+
 - Register the new script as a second `POST_BUILD` command on `${PROJECT_NAME}_auv2`, immediately after the `narrow-au-resource-usage` block and inside the same `if(APPLE AND TARGET ...)` guard. The two touch disjoint keys, so their order does not matter. Carry a comment in the established voice explaining why a post-process is needed at all (the `OUTPUT_NAME` double duty above).
 
 ### 3. `.github/workflows/ci.yml`
@@ -178,4 +178,4 @@ Two notes for whoever verifies an Audio Unit next, both of which cost a long det
 
 ### Found along the way, out of scope here
 
-The AUv2 bundle is never code-signed by the build. The linker ad-hoc signs the arm64 binary, but there is no `_CodeSignature` directory, so `codesign --verify` fails with "code has no resources but signature indicates they must be present" where a working AU reports `valid on disk`. The component above was signed by hand to test it, which is not reproducible from a clean build. Filed separately. That issue carries a constraint this plan creates: once the bundle is signed, `Info.plist` becomes sealed, so signing has to run *after* both `POST_BUILD` scripts, not before.
+The AUv2 bundle is never code-signed by the build. The linker ad-hoc signs the arm64 binary, but there is no `_CodeSignature` directory, so `codesign --verify` fails with "code has no resources but signature indicates they must be present" where a working AU reports `valid on disk`. The component above was signed by hand to test it, which is not reproducible from a clean build. Filed separately. That issue carries a constraint this plan creates: once the bundle is signed, `Info.plist` becomes sealed, so signing has to run _after_ both `POST_BUILD` scripts, not before.

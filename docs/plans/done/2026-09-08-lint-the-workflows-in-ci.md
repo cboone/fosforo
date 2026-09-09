@@ -23,7 +23,7 @@ The intended outcome is a job that fails on a workflow defect, on the `shell`, `
 | Unknown input on a **local** composite action          | yes    | reads `.github/actions/*/action.yml`              |
 | Missing **required** input on a local composite action | yes    | same                                              |
 | Unknown input on a **SHA-pinned** third-party action   | **no** | input DB is keyed by tag; a commit pin defeats it |
-| `version-file:` on `mlugg/setup-zig`                   | **no** | both of the above: SHA-pinned *and* not in the DB |
+| `version-file:` on `mlugg/setup-zig`                   | **no** | both of the above: SHA-pinned _and_ not in the DB |
 | Unknown input on a **remote reusable workflow**        | **no** | not resolved at all, pinned or otherwise          |
 
 Three consequences worth carrying.
@@ -40,7 +40,7 @@ Three consequences worth carrying.
 
 ### 1. The `actionlint` job, in `ci.yml`
 
-**In `ci.yml` rather than its own workflow, and this is confirmed rather than assumed.** `typos` is separate because `ci.yml` ignores `*.md`, `docs/**`, `LICENSE`, `.claude/**` and the two agent config globs, so the files it checks are the files that would skip it. None of those patterns matches `.github/**`, and `paths-ignore` skips a run only when *every* changed file matches, so a workflow edit always triggers `ci.yml`. The `typos` argument therefore does not apply and the `shell`/`python` precedent does.
+**In `ci.yml` rather than its own workflow, and this is confirmed rather than assumed.** `typos` is separate because `ci.yml` ignores `*.md`, `docs/**`, `LICENSE`, `.claude/**` and the two agent config globs, so the files it checks are the files that would skip it. None of those patterns matches `.github/**`, and `paths-ignore` skips a run only when _every_ changed file matches, so a workflow edit always triggers `ci.yml`. The `typos` argument therefore does not apply and the `shell`/`python` precedent does.
 
 The residue, stated rather than fixed here: `ci.yml`'s `pull_request` carries `branches: [main]`, so a stacked pull request runs no `actionlint` either. That is [#87](https://github.com/cboone/fosforo/issues/87) and governs all nine jobs, not this one.
 

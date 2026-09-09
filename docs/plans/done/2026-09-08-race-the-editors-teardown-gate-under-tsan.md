@@ -12,7 +12,7 @@ Issue: [#91](https://github.com/cboone/fosforo/issues/91). Type: `test:`. Item 3
 
 ## The finding that reshapes the issue
 
-**A Thread Sanitizer arm discriminates only where the atomic orders access to *non-atomic* memory.** TSan builds a happens-before graph and reports two threads reaching one address with no edge between them; two relaxed atomic accesses to the same word are not a race in that model, whatever the ordering.
+**A Thread Sanitizer arm discriminates only where the atomic orders access to _non-atomic_ memory.** TSan builds a happens-before graph and reports two threads reaching one address with no edge between them; two relaxed atomic accesses to the same word are not a race in that model, whatever the ordering.
 
 That rule sorts the three primitives:
 
@@ -50,7 +50,7 @@ Move with it:
 
 ### 2. `close` reports the spin count
 
-Acceptance criterion 3 asks that `Gate`'s spin body is genuinely entered, "confirmed by a counter the harness prints, so a `close` that never waited is visible as a vacuous pass". Nothing outside `Gate` can observe that: a holder that waits for a "closing" flag before leaving makes the spin *less* likely, not more, and no arrangement of the harness's own atomics can see inside the loop.
+Acceptance criterion 3 asks that `Gate`'s spin body is genuinely entered, "confirmed by a counter the harness prints, so a `close` that never waited is visible as a vacuous pass". Nothing outside `Gate` can observe that: a holder that waits for a "closing" flag before leaving makes the spin _less_ likely, not more, and no arrangement of the harness's own atomics can see inside the loop.
 
 So `close` returns the number of spins it performed. One word, no new state, and the canaried lines are unchanged. Call sites become `_ = self.gate.close();` at `gui.zig:439` and in the moved tests.
 
@@ -74,7 +74,7 @@ closer (main):     spin until inside.load(.monotonic)
 
 **Three details are load-bearing and each looks incidental.** The `inside` flag is `.monotonic` on both sides deliberately, because an acquire/release pair there would supply the very happens-before edge under test and hide a weakened `leave`, which is the same trap `ring_race.zig`'s one-shot warm-up exists for. The payload is written **before** `join`, because `join` is itself an edge and joining first would make every arm clean. And the holder spins a fixed count after signalling rather than waiting for the closer, so contention is the common case rather than the rare one.
 
-**A fourth was found by the check going red rather than by writing this section.** Reading the payload is not a long enough hold on its own, because how long the holder takes to *leave* is the cost of the ordering being varied: Thread Sanitizer instruments a release store as a full clock publish and a relaxed one as almost nothing, so the weakened arm's holder left before the closer arrived and `contended` came back 0 against the clean arm's 195. The control had stopped closing a gate with a tick inside it. The explicit `hold_spins` is the repair, and it is deliberately not a relaxed assertion: both arms now contend in 256 rounds of 256 with spin totals 0.17% apart.
+**A fourth was found by the check going red rather than by writing this section.** Reading the payload is not a long enough hold on its own, because how long the holder takes to _leave_ is the cost of the ordering being varied: Thread Sanitizer instruments a release store as a full clock publish and a relaxed one as almost nothing, so the weakened arm's holder left before the closer arrived and `contended` came back 0 against the clean arm's 195. The control had stopped closing a gate with a tick inside it. The explicit `hold_spins` is the repair, and it is deliberately not a relaxed assertion: both arms now contend in 256 rounds of 256 with spin totals 0.17% apart.
 
 Counters printed: `rounds`, `contended` (rounds where `close` spun at least once), `spins`. `contended` is the progress field the script judges, standing where `validated` stands for the ring.
 

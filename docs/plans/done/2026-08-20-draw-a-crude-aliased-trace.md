@@ -34,7 +34,7 @@ So full scale draws 5% of the drawable height in from each edge, and the rail si
 
 Three alternatives, each dismissed for a concrete reason rather than a preference:
 
-- **Full scale on the drawable's exact edges, over-scale left to the rasterizer.** A one-pixel line whose centre sits on the framebuffer boundary has half its coverage diamond off-screen and may not rasterize, so a correct loud signal would draw with its tips intermittently missing: a level-dependent artifact on the axis whose entire job is level. Worse, clipping a line strip does not remove the trace, it removes the peaks: the segments crossing the boundary still draw up to it and the segments wholly above it do not, so an over-scale signal reads as a *quieter* signal with gaps. That is a more dangerous misreading than vanishing.
+- **Full scale on the drawable's exact edges, over-scale left to the rasterizer.** A one-pixel line whose centre sits on the framebuffer boundary has half its coverage diamond off-screen and may not rasterize, so a correct loud signal would draw with its tips intermittently missing: a level-dependent artifact on the axis whose entire job is level. Worse, clipping a line strip does not remove the trace, it removes the peaks: the segments crossing the boundary still draw up to it and the segments wholly above it do not, so an over-scale signal reads as a _quieter_ signal with gaps. That is a more dangerous misreading than vanishing.
 - **Full scale on the exact edges, clamped there.** Rails rather than clipping, but rails exactly where a one-pixel line may rasterize to nothing, so "railed" would read as "gone". That is the specific trap the issue's framing worries about.
 - **Full scale inside a margin, over-scale left to the rasterizer.** Keeps the peaks-into-gaps failure above for no benefit.
 
@@ -42,7 +42,7 @@ Three alternatives, each dismissed for a concrete reason rather than a preferenc
 
 **Why 0.9.** The rail is reached at `rail / full_scale`, which is `0.98 / 0.9 = 1.0889`, so the margin is worth **+0.74 dB** of visible headroom above full scale before railing. Typical intersample overshoot on limited material is 0.5 to 1.5 dBTP, so when phase 3 adds the bandlimited reconstruction ADR 0007 asks for, the smaller half of that range draws inside the margin rather than against the rail. That is why the number is not arbitrary; it is not the reason for having a margin at all.
 
-**The tempting figure here is wrong and was believed for a while, so it is worth naming.** `1 / full_scale` is 1.111, or +0.92 dB, and that is *not* the railing threshold: it is where the trace would reach the drawable's edge if nothing clamped it, which cannot happen because the rail clamps first. Measured rather than argued: `s = 1.05` draws at row 14 of 540 and `s = 1.0889`, `1.111`, `2.0` and `8.0` all draw at row 5.
+**The tempting figure here is wrong and was believed for a while, so it is worth naming.** `1 / full_scale` is 1.111, or +0.92 dB, and that is _not_ the railing threshold: it is where the trace would reach the drawable's edge if nothing clamped it, which cannot happen because the rail clamps first. Measured rather than argued: `s = 1.05` draws at row 14 of 540 and `s = 1.0889`, `1.111`, `2.0` and `8.0` all draw at row 5.
 
 **The trace has a floor, and it is arithmetic rather than a defect.** One pixel of excursion needs `s = 1 / (full_scale * H/2)`: about `0.00206`, or **-54 dBFS**, at the default editor on a 2x display, and about **-42 dBFS** at the minimum editor on a 1x display. Below that a sine moves the trace less than a backing pixel and reads as flat. It bounds the bottom of any level sweep.
 
@@ -78,7 +78,7 @@ The issue asks whether `zig build smoke-appkit` can assert more than "a frame wa
 
 **This sharpens ADR 0013's own criterion, which #38 shows is not quite right.** The #5 amendment says a readback becomes worth doing "when there is something in the picture worth comparing: today it is a flat colour, and in phase 3 it will not be." #38 has a picture and a readback is still not worth it. The real criterion is when the picture is expensive enough to justify a golden and stable enough that the golden does not churn, which is after phase 3's look settles rather than at its start.
 
-**What is added instead closes a defect that is already there.** `oneCycle` asserts `windowsTorn() == 0`, and that assertion is satisfied by three different worlds it cannot tell apart: reads happened and none tore; reads happened and none *could* tear, because the harness stops calling `process` before the editor opens and the producer is stationary; and **no read ever happened at all**. `readWindow` returns before the increment when `self.history` is null or `self.window.load(.acquire)` is zero, so a `plugin.init` that dropped its `history` wiring, an `activate` that dropped `setWindow`, or a widened early return all pass it silently. ADR 0013's own Consequences section states the rule this breaks, three sections earlier, about `leaks`: "An absence has to be told apart from an instrument that did not run."
+**What is added instead closes a defect that is already there.** `oneCycle` asserts `windowsTorn() == 0`, and that assertion is satisfied by three different worlds it cannot tell apart: reads happened and none tore; reads happened and none _could_ tear, because the harness stops calling `process` before the editor opens and the producer is stationary; and **no read ever happened at all**. `readWindow` returns before the increment when `self.history` is null or `self.window.load(.acquire)` is zero, so a `plugin.init` that dropped its `history` wiring, an `activate` that dropped `setWindow`, or a widened early return all pass it silently. ADR 0013's own Consequences section states the rule this breaks, three sections earlier, about `leaks`: "An absence has to be told apart from an instrument that did not run."
 
 `Editor.uploaded` is the same move ADR 0013 already made once, on the same object, for the same reason. `framesPresented` exists because "the loop is running" and "the loop is drawing" were one claim and #5 split them. `windowsUploaded` exists because "the loop is drawing" and "the loop is drawing the samples" are one claim, and this is the issue that splits them.
 
@@ -177,7 +177,7 @@ if (traceVertices(self.window_len)) |count| {
 encoder.msgSend(void, "endEncoding", .{});
 ```
 
-**No new early return enters `frame`**, and that is the first thing a reviewer of this function should check. The guard skips only the draw: the clear was encoded and the frame goes on to present it, so `.presented` stays the truthful answer. The inverse rule bites here as hard as the familiar one. AGENTS.md warns that an early return must not report `.presented`; reporting anything else for a frame that *did* reach the screen would be the same lie in the other direction, and `src/smoke.zig`'s `waitForFrames` would time out on it. The state is real rather than theoretical: `window_len` is zero until the first upload, so an editor opened on a plugin the host has not activated sits in it.
+**No new early return enters `frame`**, and that is the first thing a reviewer of this function should check. The guard skips only the draw: the clear was encoded and the frame goes on to present it, so `.presented` stays the truthful answer. The inverse rule bites here as hard as the familiar one. AGENTS.md warns that an early return must not report `.presented`; reporting anything else for a frame that _did_ reach the screen would be the same lie in the other direction, and `src/smoke.zig`'s `waitForFrames` would time out on it. The state is real rather than theoretical: `window_len` is zero until the first upload, so an editor opened on a plugin the host has not activated sits in it.
 
 Three prose rewrites, each because the reason it gave has expired:
 
@@ -301,7 +301,7 @@ Everything below passed. The split matters, because only the first two blocks ar
 
 The plan expected dropping the editor's history wiring to be caught only by the harness. It is also caught by `zig build test`, against the existing test "init points the editor at the instance's history". So that row is a control showing the two levels agree, not evidence of unique coverage, and the plan was wrong to imply otherwise. Dropping `setWindow` from `activate` behaves the same way, which the plan did predict.
 
-The plant for `UploadsStopped` had to be strengthened before it tripped. A `readWindow` that stops once one *frame* has been presented still uploads a second window, because the count is captured after the first wait and the assertion asks only that it advanced; the assertion caught it only once the plant stopped after one *upload*. What `UploadsStopped` catches is a path that stopped, not one that slowed, and that is now stated where the assertion lives.
+The plant for `UploadsStopped` had to be strengthened before it tripped. A `readWindow` that stops once one _frame_ has been presented still uploads a second window, because the count is captured after the first wait and the assertion asks only that it advanced; the assertion caught it only once the plant stopped after one _upload_. What `UploadsStopped` catches is a path that stopped, not one that slowed, and that is now stated where the assertion lives.
 
 ### The level sweep, measured in REAPER
 
@@ -358,16 +358,16 @@ The residual jitter is block quantization and is not reducible from here: the cu
 
 Step 6 was measured the same way, and it is the check that proves the trace is drawing the channel it claims rather than something correlated with it.
 
-| File             | Peak row | Trough row | Read back as | Columns lit    |
-| ---------------- | -------- | ---------- | ------------ | -------------- |
-| `pan-hard-left`  | 297      | 782        | +0.5000      | 1920 of 1920   |
-| `pan-hard-right` | 539      | 539        | +0.0021      | 1920 of 1920   |
+| File             | Peak row | Trough row | Read back as | Columns lit  |
+| ---------------- | -------- | ---------- | ------------ | ------------ |
+| `pan-hard-left`  | 297      | 782        | +0.5000      | 1920 of 1920 |
+| `pan-hard-right` | 539      | 539        | +0.0021      | 1920 of 1920 |
 
 Hard left is pixel-identical to `level-0.500`, which is the tone arriving on output channel 0 at full level. Hard right has peak equal to trough equal to a full-width plateau, which is a flat line: channel 0 is silent, as it must be, since the tap is `out.data32[0]`.
 
 **Silence reads `+0.0021` rather than `+0.0000`, and that is one pixel rather than a residual signal.** A flat trace at `y = 0` lands on row 540.0 of a 1080-tall drawable, an exact pixel boundary, so rows 539 and 540 are equally valid and the rasterizer picks one. It picked 539. One pixel at this geometry is 0.00206 in sample units, which is the -53.7 dBFS floor this plan already documents, so the reading is off by the smallest amount the display can represent.
 
-**The half-pixel bias that would centre it is deliberately not applied.** It would be `+1.0/H` in NDC, and three things argue against it: nothing can see half a pixel; `Renderer` stores no size at all, so `resize` would have to begin keeping one purely to get `H` into `TraceUniforms`; and phase 3's beam-as-geometry replaces this rasterization outright and re-answers the question with different machinery. The failure that would change that verdict is the line *flickering* between rows 539 and 540 during playback, which is the tie-break going unstable and would read as shimmer on silence. That was watched for and did not occur.
+**The half-pixel bias that would centre it is deliberately not applied.** It would be `+1.0/H` in NDC, and three things argue against it: nothing can see half a pixel; `Renderer` stores no size at all, so `resize` would have to begin keeping one purely to get `H` into `TraceUniforms`; and phase 3's beam-as-geometry replaces this rasterization outright and re-answers the question with different machinery. The failure that would change that verdict is the line _flickering_ between rows 539 and 540 during playback, which is the tie-break going unstable and would read as shimmer on silence. That was watched for and did not occur.
 
 ### The mapping was measured offscreen rather than reasoned about
 
@@ -406,9 +406,9 @@ Sines at 0.8 amplitude, counted by peaks across the 20 ms window, came back exac
 
 **Read the trace by measuring pixels, not by looking at it.** The rows below are backing pixels and the difference between a passing and a failing level check is tens of them, which no eye resolves. `screencapture -o -R<x,y,w,h> shot.png` writes backing pixels on a Retina display, which is the unit these tables are in, and Terminal needs Screen Recording permission or the capture comes back empty. A second oscilloscope plugin is not a substitute: it answers a question about the audio, and every step here is a question about this plugin's rendering of the audio, whose reference is arithmetic rather than another instrument.
 
-**Build order is load-bearing here in a way it usually is not.** This verification needs the *Debug* CLAP, because the once-a-second `rendering at N Hz` line is Debug-only and the standstill test below reads the refresh rate from it, and `cmake --build` silently rebuilds and re-signs `zig-out/Fosforo.clap` as ReleaseFast. So: Audio Unit first, then `zig build`, then `zig build install-plugins`, then read both hash pairs and confirm both match before believing anything below.
+**Build order is load-bearing here in a way it usually is not.** This verification needs the _Debug_ CLAP, because the once-a-second `rendering at N Hz` line is Debug-only and the standstill test below reads the refresh rate from it, and `cmake --build` silently rebuilds and re-signs `zig-out/Fosforo.clap` as ReleaseFast. So: Audio Unit first, then `zig build`, then `zig build install-plugins`, then read both hash pairs and confirm both match before believing anything below.
 
-1. **Silence.** A horizontal line on the centre row. Check it by pixel sample rather than by eye: sample `(W/2, H/2)` and confirm the trace colour, sample `(W/2, H/4)` and confirm `RGB(5, 5, 8)`. If the centre row is background, suspect the boundary-rasterization case above before suspecting the signal path. The front zero-padding never appears in a host, which is worth knowing before going looking for it: `activate` calls `history.clear()`, which writes a full capacity of silence *through* `Ring.write`, so the pad is unreachable and silence draws flat because the samples are zero.
+1. **Silence.** A horizontal line on the centre row. Check it by pixel sample rather than by eye: sample `(W/2, H/2)` and confirm the trace colour, sample `(W/2, H/4)` and confirm `RGB(5, 5, 8)`. If the centre row is background, suspect the boundary-rasterization case above before suspecting the signal path. The front zero-padding never appears in a host, which is worth knowing before going looking for it: `activate` calls `history.clear()`, which writes a full capacity of silence _through_ `Ring.write`, so the pad is unreachable and silence draws flat because the samples are zero.
 2. **Liveness, checked on the stop rather than the start.** With a sine playing, stop the transport: the trace must return to flat within about 20 ms plus a refresh period. A frozen window keeps showing the sine indefinitely, so this fails loudly where "it appeared quickly" does not. Toggle half a dozen times.
 3. **Frequency, counted as a ratio.** At 48 kHz the window is 960 samples, so 50 Hz shows 1 period, 100 Hz shows 2, 250 Hz shows 5, 1 kHz shows 20. Count 100 and 250 by eye and 1 kHz from a screenshot. **The decisive form is the ratio:** 100 → 200 → 400 Hz must give 2 → 4 → 8, which is robust to phase, to the `(n-1)` quibble, and to miscounting a partial period at an edge. Then change the device sample rate and repeat: 100 Hz must still show 2 periods at 44.1 kHz and at 96 kHz, which is the first end-to-end check that `window_seconds` is a duration rather than a sample count.
 4. **The stroboscopic standstill.** Between frames the window shifts by `fs/R` samples, so a tone at a whole multiple of the refresh rate advances a whole number of cycles per frame and stands still. Read `R` from the debug line, play a sine at `R` Hz, confirm the standstill, then detune by 1 Hz and confirm a 1 Hz crawl. This proves the window is live, the X axis is linear in time, and the right edge tracks the present, all at once.
@@ -418,9 +418,10 @@ Sines at 0.8 amplitude, counted by peaks across the 20 ms window, came back exac
    **Confirm the harmonic rather than the single frequency.** A standstill at `R` alone could be luck; one at `R` and `2R` together cannot, and the two are distinguishable by period count, since `2R` shows twice as many. That is the form the check should take.
 
    ProMotion is workable rather than disqualifying, which is a correction to an earlier draft of this plan. Pinning the display to a fixed rate in System Settings removes the variable-refresh confound and is worth doing if the result is ambiguous.
+
 5. **Level sweep**, from rendered WAVs at verified peaks rather than a gain knob. The plugin passes audio through, so the host's own meter after it is a free independent readout.
 
-   **Read the peak's position, not its shape.** Railing shows up as the peak *ceasing to climb*, and a visible flat top is a secondary cue that only appears well past the threshold. Rows are for a 1920x1080 drawable, the default editor at 2x:
+   **Read the peak's position, not its shape.** Railing shows up as the peak _ceasing to climb_, and a visible flat top is a secondary cue that only appears well past the threshold. Rows are for a 1920x1080 drawable, the default editor at 2x:
 
    | Peak  | dBFS  | Peak row (top / bottom) | Travel clipped off | What it looks like                      |
    | ----- | ----- | ----------------------- | ------------------ | --------------------------------------- |
@@ -435,14 +436,14 @@ Sines at 0.8 amplitude, counted by peaks across the 20 ms window, came back exac
 
    **The check is that the peak climbs to 1.089 and then stops.** 1.089 and 2.000 must be pixel-identical in height, which is the whole of what ADR 0017 means by refusing to say how far over the signal is.
 
-   **Do not look for a plateau at 1.089.** It is where clamping *begins*, so it removes a tenth of a pixel of travel, and anyone hunting a flat top there will report a defect that is not one. A plateau becomes 1 px deep at 1.091 and 5 px at 1.100; the sine at 2.000 loses 443 px of travel and is unmistakable.
+   **Do not look for a plateau at 1.089.** It is where clamping _begins_, so it removes a tenth of a pixel of travel, and anyone hunting a flat top there will report a defect that is not one. A plateau becomes 1 px deep at 1.091 and 5 px at 1.100; the sine at 2.000 loses 443 px of travel and is unmistakable.
 
    `saw-1.100.wav` is the sharpest small-overshoot case, because a saw crosses the rail on a linear ramp rather than at a turning point: 0.51% of the ramp sits above it, which is about 5 px wide and 5 px deep. A clipped sine's plateau can be mistaken for a rounded peak at low zoom; a clipped saw's flat top with a vertical edge cannot.
 
    Use a sawtooth or square at 0.9 and 1.1 as well as a sine: a clipped sine's plateau can be mistaken for a rounded peak at low zoom, and a clipped saw's flat top with a vertical edge cannot.
 
 6. **The channel trap.** The tap is `out.data32[0]`. Pan a mono sine hard right and the trace must go flat; hard left and it must be full. Someone who skips this and tests with a hard-right-panned tone will file a bug against a working plugin.
-7. **Both hosts.** REAPER, CLAP, Debug, launched from a terminal: close and reopen the FX window on a *playing* track, which is `hide`/`show`, and confirm the trace resumes. Logic, Audio Unit, ReleaseFast, no readable diagnostics: closing and reopening the plugin window is a full `destroy`/`create`/`set_parent` on a still-activated instance, which is the single most valuable manual check here, because it is the defect `Editor.destroy`'s comment names. Confirm the trace comes back live rather than flat. Open two instances on two tracks with different material and confirm each draws its own signal.
+7. **Both hosts.** REAPER, CLAP, Debug, launched from a terminal: close and reopen the FX window on a _playing_ track, which is `hide`/`show`, and confirm the trace resumes. Logic, Audio Unit, ReleaseFast, no readable diagnostics: closing and reopening the plugin window is a full `destroy`/`create`/`set_parent` on a still-activated instance, which is the single most valuable manual check here, because it is the defect `Editor.destroy`'s comment names. Confirm the trace comes back live rather than flat. Open two instances on two tracks with different material and confirm each draws its own signal.
 8. **The slide is expected.** At 60 Hz, 83% of a 20 ms window is new audio every frame, so the trace jumps rather than scrolls and reads as random phase jitter under periodic material. Triggering is phase 4. **Slide moves the phase and preserves the shape and the amplitude**, so a sine of stable amplitude and stable period whose only moving property is phase is a correct signal path; a shape that changes, an amplitude that wanders, or a picture that freezes is not. Step 4 is the version of this that has an answer rather than an impression.
 
 ## Out of scope
