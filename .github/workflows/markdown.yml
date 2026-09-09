@@ -129,3 +129,46 @@ jobs:
             npm run --silent lint:md 2>&1 || true
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
+
+  # A separate job rather than a step in `markdown`, because it shares that
+  # job's reason for being in this workflow and none of its dependencies. It
+  # needs no Node, no lockfile and no npm cache, so bolting it on would make a
+  # 200-millisecond `wc -c` wait on an 86-package install; and a failing
+  # Prettier step would skip it, when the two answer unrelated questions.
+  #
+  # It is here rather than in ci.yml for this workflow's own recorded reason.
+  # That workflow's `paths-ignore` carries `*.md`, `docs/**`, `.claude/**`,
+  # `**/CLAUDE.md` and `**/AGENTS.md` on both triggers, and `paths-ignore` is
+  # workflow-level, so a job added there could never fail on the one file it
+  # exists to measure. This workflow carries no `paths-ignore` at all.
+  budget:
+    runs-on: ubuntu-latest
+    # 3, matching every other Ubuntu static-analysis job here. Unmeasured, and
+    # generous by a wide margin: a checkout plus one `wc -c`. Re-measure from
+    # real runs rather than carrying this number onward.
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      # The script prints the size on the passing path, which is the positive
+      # control: a run that reported nothing would be indistinguishable from one
+      # where the check silently did not measure the file. Its two refusals were
+      # exercised by hand when it landed; see its header and #117.
+      - name: Check the memory file's budget
+        id: budget
+        run: ./scripts/check-doc-budget
+
+      - name: Explain the refusal
+        if: failure() && steps.budget.outcome == 'failure'
+        run: |
+          {
+            echo "### budget"
+            echo
+            echo "AGENTS.md is loaded into every session in full, and the"
+            echo "threshold is 40,000 characters outside a 1M-context session."
+            echo "Move the depth into \`docs/notes/\` and leave a pointer."
+            echo
+            echo '```text'
+            ./scripts/check-doc-budget 2>&1 || true
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
