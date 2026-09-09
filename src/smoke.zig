@@ -1492,18 +1492,20 @@ fn checkPeriods(energy: []f32, picture: []u8, window: []f32) !void {
         measure.sine(window, @floatFromInt(cycles), 0.8);
         try probe.run(window, 1, 1);
 
-        // **The contour matters more here than anywhere, and in the direction
-        // that helps.** Under velocity weighting a crossing column is dim by
-        // construction, so at twenty cycles it falls below the contour and
-        // `topRow` returns nothing for it. That is precisely the column
-        // `periods`' docstring says a crossing counter reads early, so #58 makes
-        // this count *more* robust rather than less; what it would break is a
-        // fixed energy, since at twenty cycles even the turning points peak at
-        // 0.80 and the whole trace would read dark.
-        // The band crossing rather than the turning point, because that is the
-        // brightness this count has to be able to see: `periods` reads *height*
-        // and the trace is moving where it reaches the band, so under #58 it is
-        // dim exactly where it is being looked for.
+        // **The contour is taken at the half-amplitude band, and this is the case
+        // that forced `litLevel` to exist.** `measure.periods` reads *height*: it
+        // counts columns whose topmost lit row reaches above a band halfway
+        // between the centre and the peak. Under #58 the trace is *moving* where
+        // it crosses that band, so it is dim exactly where this count has to see
+        // it, and the contour has to be low enough to keep it lit there. Stating
+        // it at the band rather than at the turning point is what does that, and
+        // it leaves `periods` the pure height test its docstring describes.
+        //
+        // A fraction of the frame's *peak* was tried first and fails here, which
+        // is measured rather than reasoned: at two cycles the band crossing
+        // deposits 0.635 against a peak of 1.544, so half the peak read it as
+        // dark and the two runs fragmented into **eight** as the trace passed in
+        // and out of the contour instead of in and out of the band.
         const at_band = sineSegment(@floatFromInt(cycles), 0.8, window.len, @sqrt(3.0) / 2.0);
         const counted = measure.periods(probe.image(), litLevel(at_band));
         say("  {d: >2} cycles in, {d: >2} periods counted", .{ cycles, counted });
