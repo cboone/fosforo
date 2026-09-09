@@ -29,27 +29,29 @@ The work below does not replace planting. It moves the plants that can be expres
 
 ## Summary
 
-| Issue                                              | Work                                                          | Type        | Needs               | Closes                                                    |
-| -------------------------------------------------- | ------------------------------------------------------------- | ----------- | ------------------- | --------------------------------------------------------- |
-| [#89](https://github.com/cboone/fosforo/issues/89) | Give the trace half's frame wait a deadline                   | `fix:`      | A device, no window | A red `main` on a required check                          |
-| [#90](https://github.com/cboone/fosforo/issues/90) | Canary every ordering-critical declaration                    | `test:`     | Nothing             | ADR 0015 and three unguarded atomics                      |
-| [#91](https://github.com/cboone/fosforo/issues/91) | Race the editor's teardown gate                               | `test:`     | A Linux runner      | ADR 0016 applied to the primitive that guards teardown    |
-| [#92](https://github.com/cboone/fosforo/issues/92) | Make the trace half's judgements pure, and test them          | `refactor:` | A device, no window | `src/smoke.zig`'s 0 tests; makes the plant table regress  |
-| [#93](https://github.com/cboone/fosforo/issues/93) | Make the watcher's bookkeeping reachable from a test build    | `refactor:` | Nothing             | Code no test binary compiles                              |
-| [#94](https://github.com/cboone/fosforo/issues/94) | Run the unit suite in the mode that ships. **Done**           | `ci:`       | Nothing             | Debug-only test coverage of a ReleaseFast product         |
-| [#95](https://github.com/cboone/fosforo/issues/95) | Analyze every public declaration, and settle the uncalled one | `test:`     | Nothing             | The lazy-analysis hole, live in one declaration           |
-| [#96](https://github.com/cboone/fosforo/issues/96) | Assert the transfer function's defining properties            | `test:`     | Nothing             | `tonemap` and `whitePoint`'s stated claims                |
-| [#97](https://github.com/cboone/fosforo/issues/97) | The remaining cheap assertions                                | `test:`     | Nothing             | Eleven small, named holes                                 |
-| [#98](https://github.com/cboone/fosforo/issues/98) | Cover the render thread's read side                           | `test:`     | A seam decision     | `Editor.tick` and `Editor.readWindow`, currently untested |
-| [#99](https://github.com/cboone/fosforo/issues/99) | Lint the workflows                                            | `ci:`       | Nothing             | 46 KB of `ci.yml` that nothing checks                     |
+| Issue                                              | Work                                                                 | Type        | Needs               | Closes                                                    |
+| -------------------------------------------------- | -------------------------------------------------------------------- | ----------- | ------------------- | --------------------------------------------------------- |
+| [#89](https://github.com/cboone/fosforo/issues/89) | Give the trace half's frame wait a deadline                          | `fix:`      | A device, no window | A red `main` on a required check                          |
+| [#90](https://github.com/cboone/fosforo/issues/90) | Canary every ordering-critical declaration                           | `test:`     | Nothing             | ADR 0015 and three unguarded atomics                      |
+| [#91](https://github.com/cboone/fosforo/issues/91) | Race the editor's teardown gate                                      | `test:`     | A Linux runner      | ADR 0016 applied to the primitive that guards teardown    |
+| [#92](https://github.com/cboone/fosforo/issues/92) | Make the trace half's judgements pure, and test them                 | `refactor:` | A device, no window | `src/smoke.zig`'s 0 tests; makes the plant table regress  |
+| [#93](https://github.com/cboone/fosforo/issues/93) | Make the watcher's bookkeeping reachable from a test build. **Done** | `refactor:` | Nothing             | Code no test binary compiles                              |
+| [#94](https://github.com/cboone/fosforo/issues/94) | Run the unit suite in the mode that ships. **Done**                  | `ci:`       | Nothing             | Debug-only test coverage of a ReleaseFast product         |
+| [#95](https://github.com/cboone/fosforo/issues/95) | Analyze every public declaration, and settle the uncalled one        | `test:`     | Nothing             | The lazy-analysis hole, live in one declaration           |
+| [#96](https://github.com/cboone/fosforo/issues/96) | Assert the transfer function's defining properties                   | `test:`     | Nothing             | `tonemap` and `whitePoint`'s stated claims                |
+| [#97](https://github.com/cboone/fosforo/issues/97) | The remaining cheap assertions                                       | `test:`     | Nothing             | Eleven small, named holes                                 |
+| [#98](https://github.com/cboone/fosforo/issues/98) | Cover the render thread's read side                                  | `test:`     | A seam decision     | `Editor.tick` and `Editor.readWindow`, currently untested |
+| [#99](https://github.com/cboone/fosforo/issues/99) | Lint the workflows                                                   | `ci:`       | Nothing             | 46 KB of `ci.yml` that nothing checks                     |
 
 **[#89](https://github.com/cboone/fosforo/issues/89) has landed**, so `main` is no longer red on a required check and the remaining ten are all `test:`, `refactor:` or `ci:` work with nothing currently costing anything. Section 1 below records what it found, including a correction to its own reasoning.
 
-**Eight of the eleven have landed: #89, #91, #92, #94, #95, #96, #97 and #99.** Their sections carry the measured results and, in three cases, a correction to what the section predicted. The pattern across all three is worth stating once here rather than three times below: **an acceptance criterion written against the tree as it was can be falsified by a neighbouring issue landing first.** #96's headroom plant, #97's clock ceiling and #92's `expectClose` defect were each true when filed and each wrong by the time they were run, so every remaining item's acceptance should be re-derived against the tree rather than executed as written.
+**Nine of the eleven have landed: #89, #91, #92, #93, #94, #95, #96, #97 and #99.** Their sections carry the measured results and, in four cases, a correction to what the section predicted. The pattern across all four is worth stating once here rather than four times below: **an acceptance criterion written against the tree as it was can be falsified by a neighbouring issue landing first.** #96's headroom plant, #97's clock ceiling and #92's `expectClose` defect were each true when filed and each wrong by the time they were run, so every remaining item's acceptance should be re-derived against the tree rather than executed as written.
+
+**#93 is the fourth and it failed in the other direction, which is worth separating.** Its acceptance was not falsified by a neighbouring issue; it was wrong when filed, and stayed wrong. It said the defect it names is one "today only a hand-run `smoke-appkit` would catch", and running the plant showed `smoke-appkit` catching nothing. So the rule generalises past staleness: **an acceptance criterion that names the instrument it expects to fail is asserting something, and it has to be run rather than read.**
 
 **#96 and #99 landed close enough together to demonstrate it twice over.** Both corrected the build plan's stale unit-test count and conflicted over that one line, and both arrived at **265** for `main` independently — #99 by counting it, #96 by measuring a baseline before adding to it. That agreement is the durable part; the number itself has moved three times since, through #94, #91 and #96 in turn, which is the anchored-versus-present-tense distinction `.github/docs.instructions.md` describes playing out in one row of one table. **Re-measure it rather than adding to whatever it currently reads.**
 
-The two remaining are [#93](https://github.com/cboone/fosforo/issues/93) and [#98](https://github.com/cboone/fosforo/issues/98).
+The one remaining is [#98](https://github.com/cboone/fosforo/issues/98).
 
 ## 1. Give the trace half's frame wait a deadline rather than a spin count
 
@@ -256,6 +258,14 @@ The decision of what a poll outcome does to the counters, and in what order `see
 
 - Plant a `poll` that advances `seen` only on success and confirm the extracted test fails, which is the defect the docstring at `renderer.zig:842-846` names and which today only a hand-run `smoke-appkit` would catch.
 - Confirm `zig build smoke-appkit`'s hot-reload arms still pass unchanged.
+
+**Landed.** Plan: [`2026-09-09-make-the-shader-watchers-bookkeeping-testable.md`](../done/2026-09-09-make-the-shader-watchers-bookkeeping-testable.md). `src/gpu/metal/reload.zig` holds the poll's state machine and a six-row outcome table, the suite went from 297 tests to 318, and both smoke transcripts are unchanged.
+
+**Every line number in this section was stale by roughly 190 to 270 lines** when the work started: #96, #97 and #114 landed after the last refresh. They are left as written, on the rule that an anchored citation stays as measured; `renderer.zig:957`, `:1090-1152` and `:2603` are where those symbols were on `83ae938`.
+
+**The second acceptance criterion was satisfied and the first was falsified.** The plant was applied to `poll` as it stood, before anything moved, and neither instrument saw it: `zig build test` reported 297 of 297 and `zig build smoke-appkit` reported `ok`, with all five hot-reload arms running. "Today only a hand-run `smoke-appkit` would catch it" was wrong — nothing caught it — so this item closed a gap one instrument wider than it claimed. After the extraction the plant fails three tests in `reload.zig`, and nine further plants were run one at a time, each caught by the test named for it.
+
+**And it widened once more than the section says.** The issue was widened after filing to cover `buildPipelines` and `readShader`; running it added a third site, `noteBindings`, whose counter increment no test binary compiled either, because a private function reached only from gated call sites is never analyzed. See the plan and ADR 0013's #93 amendment, which also records a weakness in `hotReloadPhase`'s fourth arm that the plant exposed and that stays open.
 
 ## 6. Run the unit suite in the mode that ships
 

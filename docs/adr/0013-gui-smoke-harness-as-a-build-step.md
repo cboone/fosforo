@@ -383,3 +383,39 @@ The tests were written as the historical plants, and then the judges were plante
 **The driving halves stay untested, correctly.** `Probe`, `Worker` and `driveFrame` acquire a device, which is the whole reason this document exists. What moved is the deciding, not the driving.
 
 **And this says nothing about a host.** The judges are now checked on a runner with no graphics support, the shader is still checked by `smoke-trace` on one with a device, and whether the drawable looks right in a DAW is still `scripts/measure-trace` and #38's procedure. Three instruments, and the middle one is the only one that changed hands.
+
+## Amended by issue #93: the shader watcher's bookkeeping leaves the harness, and one gate turns out to have had no instrument at all
+
+Every amendment above catalogues a **false negative** — a defect one instrument cannot see, closed by naming a second that can — except the #89 one, which is the first false positive. This is a third kind, and it deserves its own name: **structural uncoverability**. `renderer.zig`'s `Watcher` is `if (shader.live) struct { ... } else struct { ... }`, and `shader.live` is `builtin.mode == .Debug and !builtin.is_test`. A test binary is a Debug build with `is_test` set, so it takes the stub. The real `poll` was not merely untested, it was **not compiled**, and no test written in `zig build test` could have reached it however it was written. The same gate stands over `buildPipelines` and `readShader`, which carried a second copy of the same bookkeeping. `--release=fast` takes the stub too, so #94's `test-safe` and `test-release` closed none of it.
+
+The decisions now live in `src/gpu/metal/reload.zig`, which names no Metal type and imports `std`, the seam and `shader.zig`. It holds `Watch`, which owns the poll's `seen` state machine, and `Counters`, which owns the five atomics and the table mapping an outcome onto them. `renderer.zig` keeps the driving: the thread, the device, the file, and the messages. That is #92's move one layer down, and `shader.choosePath` is the same move one file over, split out of `resolvePath` for the identical reason.
+
+**It prints nothing, which is where it departs from `verdict.zig`.** There the judges' bodies _were_ the printing, so `say` moved with them behind a `!builtin.is_test` gate. Here every message names a path, a `readFile` error, a byte count or a compiler diagnostic, all of them the driver's, so `Counters.note` answers _whether_ to say and `sayShader` stays put.
+
+### What planting established, and it contradicts the issue that asked for it
+
+**Nothing in this repository caught the defect the issue was filed about.** #93 says the acceptance plant — a `poll` that advances `seen` only on success — is one "today only a hand-run `smoke-appkit` would catch". Measured on `f7fba29`, with that plant applied to `poll` as it stood: `zig build test` reported **297 of 297** and `zig build smoke-appkit` reported **`ok`**, with all five of its hot-reload arms running and both rejection diagnostics printed. So the gap was one instrument wider than filed, which is the opposite direction from #92's `expectClose` and the same lesson: a claim about what an instrument sees is worth running.
+
+**The prediction in this issue's own plan was wrong too, in the other direction.** It guessed the arm that would fail was `BrokenShaderWasSwappedIn`, reasoning that `reloads` would climb four times a second between the `before_broken` capture and the assertion. It does not: the plant still advances `seen` on the success path, so a good file compiles once and `reloads` is stable. Only the failure paths repeat, and `rejected` is read only through `>=` comparisons.
+
+**A weakness in arm 4 falls out of that and is worth recording separately.** Under this defect, `hotReloadPhase`'s renamed-function arm can pass **without the renamed shader ever being read**: it captures `before_renamed` while the previous arm's broken file is still being re-rejected four times a second, then waits for `rejected >= before_renamed.rejected + 1`, which that file satisfies on its own. The #61 amendment above calls arm 4 "the one a counter cannot replace ... only the edited file can produce `buildPipeline`'s 'compiled but does not define' diagnostic". That is true of the _diagnostic_ and not of the _counter_ the arm actually asserts on. Not fixed here.
+
+**And the two copies of the bookkeeping did not agree, which nothing stated.** A compile failure under the watcher moves `rejected` alone, because nothing falls back and the shader already running stays; the same failure under `buildPipelines` moves `rejected` _and_ `fallbacks`, because the embedded copy is what the editor opens with. That asymmetry is deliberate and was two pairs of `fetchAdd` calls two thousand lines apart. It is now a six-row table with a test that reads it, and swapping either mapping fails.
+
+**One rule was preserved that nobody had written down.** `readShader` keyed its say-once guard on `fallbacks`, which `open_rejected` also moves, so a rejection earlier in the process **silences** a later unreadable file. Preserved exactly, and now asserted.
+
+**And a private function had five tests for its decision and none for its effect.** `noteBindings` was reached only from the two paths behind `shader.live`, so Zig's lazy analysis left it out of every test binary: `firstBindingMismatch` beneath it had five tests and the pairing "a mismatch found is a mismatch counted" had none. Taking the tally as a parameter is what gave it a test caller.
+
+### One behaviour changed, and it makes two docstrings agree
+
+`Watcher.poll` now stats the file **before** asking whether the mailbox is vacant. Its own comment said the check came "before the stat, so a hidden editor costs nothing"; `Mailbox.vacant`'s said the check came "before the compile" and priced the hidden-editor case at "four `stat` calls a second and no XPC round trips at all". The two disagreed. Paying the stat first is what puts the lossless-skip rule inside a function a test binary compiles, and it costs exactly what `vacant` already claimed.
+
+### What this does not close
+
+**Which outcome happens where is still outside every test binary**, because those call sites are the gated ones. They are counted as text by two canaries, on the `noteBindings` canary's precedent, including a bound that refuses a second instance of the tally and two `statedBefore` orderings. A canary reads source and proves nothing about behaviour (ADR 0016).
+
+**The thread, the file and the device stay with the harness**, correctly. `zig build smoke-gpu` still drives the six fallback arms through `probe`, and `zig build smoke-appkit` still drives the five live-swap arms; both transcripts are unchanged across this move, the first byte-identical and the second identical modulo its fixture's pid and a ±1 render-meter count that the unchanged build shows too.
+
+**And `TraceUniforms` layout drift is still readable from nowhere.** MSL computes its own offsets, so a field added or reordered on one side only leaves text that still describes the struct correctly and draws a plausible trace at the wrong scale.
+
+**A correction to the #61 amendment above, which the ADR convention keeps standing rather than editing.** It says of a moved `[[buffer(N)]]` that "this one was **not** closed, and is #77". #77 landed: `noteBindings` walks the `bindings` table over a source read off disk, `iface.ShaderStats.binding_mismatches` makes it assertable, and `src/smoke.zig` has planted a moved index against it since. The sentence beside it — that the sharper failure is `TraceUniforms` layout drift, which no text scan can see — is still exactly right, and is the paragraph above.
