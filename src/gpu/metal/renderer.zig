@@ -20,6 +20,7 @@ const iface = @import("../iface.zig");
 const platform = @import("../../platform/objc.zig");
 const io = @import("../../platform/io.zig");
 const shader = @import("shader.zig");
+const reload = @import("reload.zig");
 const palette = @import("../palette.zig");
 
 const CGRect = platform.CGRect;
@@ -671,17 +672,18 @@ var live_textures: std.atomic.Value(usize) = .init(0);
 
 /// What has happened to the shader on disk, process-wide.
 ///
-/// Process-wide rather than per-renderer for `live_windows`' reason, and one more
-/// besides: the question a caller wants answered is "did my edit reach the GPU",
-/// and every open editor in the process answers it at once.
+/// The one instance of `reload.Counters`, which is where the five atomics and the
+/// rule mapping an outcome onto them now live. They moved because every writer of
+/// them sits inside a `shader.live` branch, and `shader.live` folds in
+/// `!builtin.is_test`, so nothing a test binary compiles could reach the
+/// bookkeeping however a test was written (#93). What is left here is the driving:
+/// which outcome happens when, on which thread, against which file.
 ///
-/// Zero and immovable in a release build, where nothing reads a file. A caller
-/// telling that apart from a watcher that never fired reads `path_resolved`.
-var shader_reloads: std.atomic.Value(u64) = .init(0);
-var shader_rejected: std.atomic.Value(u64) = .init(0);
-var shader_fallbacks: std.atomic.Value(u64) = .init(0);
-var shader_path_resolved: std.atomic.Value(bool) = .init(false);
-var shader_binding_mismatches: std.atomic.Value(u64) = .init(0);
+/// Zero and immovable in a release build, where nothing reads a file, and zero in
+/// a test binary, where no call site below is compiled. `gpu/iface.zig` asserts
+/// the second of those; `reload.zig`'s own tests use their own instances, so
+/// neither can perturb the other.
+var shader_counters: reload.Counters = .{};
 
 /// Say something once about the shader on disk, on the watcher's own thread.
 ///
@@ -806,11 +808,19 @@ fn firstBindingMismatch(source: []const u8) ?Mismatch {
 /// embedded copy and nothing reloads during a trace run. Closing it needs a
 /// readback of a *reloaded* shader, which ADR 0013 puts out of scope.
 ///
-/// Reached only from the two paths that compile a source off disk, both already
-/// inside `shader.live`, so a release build never analyses this at all.
-fn noteBindings(source: []const u8) void {
+/// Reached from the two paths that compile a source off disk, both already inside
+/// `shader.live`, so a release build never analyses this at all.
+///
+/// **The tally is a parameter rather than the file-scope instance, and that is
+/// what gives this function a test caller** (#93). Both real call sites are behind
+/// `shader.live`, so Zig's lazy analysis left the increment below out of every test
+/// binary: `firstBindingMismatch` above had five tests and the pairing "a mismatch
+/// found is a mismatch counted" had none. A test at the foot of this file now hands
+/// it a local `reload.Counters` and a planted index, with the shipped shader as the
+/// negative control.
+fn noteBindings(source: []const u8, counters: *reload.Counters) void {
     const mismatch = firstBindingMismatch(source) orelse return;
-    _ = shader_binding_mismatches.fetchAdd(1, .release);
+    counters.noteMismatch();
 
     if (mismatch.found) |index| {
         sayShader("`{s}` reads {s}({d}) where this build binds {d}; the picture will be wrong", .{
@@ -973,10 +983,16 @@ const Watcher = if (shader.live) struct {
     /// 64 KiB is worth allocating once per editor rather than once per poll.
     buf: shader.Buffer = .{},
 
-    /// What the file looked like last time this looked. Null until the first
-    /// successful stat, so the file as it stands when an editor opens is not
-    /// treated as an edit: `init` already compiled it.
-    seen: ?shader.Stamp = null,
+    /// What the file looked like last time this looked, and every decision made
+    /// about it.
+    ///
+    /// A `reload.Watch` rather than a bare `?shader.Stamp`, because the rule that
+    /// `seen` advances before the compile and on every outcome is the one thing
+    /// here a test binary could never reach: this type is gated on `shader.live`
+    /// in its entirety (#93). The state and the decision moved together, since a
+    /// decision tested apart from the state it writes would assert nothing about
+    /// the ordering that matters.
+    watch: reload.Watch = .{},
 
     const running: u32 = 0;
     const halting: u32 = 1;
@@ -1067,9 +1083,8 @@ const Watcher = if (shader.live) struct {
         // moments ago, so what is wanted is "changed since then", and taking the
         // stamp now rather than 250 ms from now is what makes that true.
         var path_buf: shader.PathBuffer = undefined;
-        if (shader.resolvePath(&path_buf)) |path| {
-            self.seen = shader.stamp(path) catch null;
-        }
+        const path = shader.resolvePath(&path_buf);
+        self.watch.baseline(if (path) |p| shader.stamp(p) catch null else null);
 
         while (true) {
             self.park();
@@ -1087,42 +1102,42 @@ const Watcher = if (shader.live) struct {
     }
 
     /// [watcher-thread] One look at the file.
+    ///
+    /// **The driving only. Every decision is `reload.Watch.look`**, which is what
+    /// puts them somewhere `zig build test` compiles (#93): the lossless skip on a
+    /// full mailbox, the two ways of having learned nothing, the null baseline, the
+    /// unchanged stamp, and the rule that `seen` advances before the compile and on
+    /// every outcome including failure.
+    ///
+    /// **The stat is paid before the vacancy question rather than after it**, which
+    /// is the one behaviour this change moved. `Mailbox.vacant` already prices the
+    /// hidden-editor case that way in its own docstring — "an editor hidden for an
+    /// hour costs four `stat` calls a second and no XPC round trips at all" — so
+    /// this makes the two agree, and it is what lets one total function hold the
+    /// skip rule instead of a guard no test binary compiles.
     fn poll(self: *Watcher, device: objc.Object) void {
-        // Before the stat, so a hidden editor costs nothing. Skipping without
-        // advancing `seen` is what makes it lossless: the change is still
-        // outstanding and the next poll picks it up.
-        if (!self.mailbox.vacant()) return;
-
         var path_buf: shader.PathBuffer = undefined;
         const path = shader.resolvePath(&path_buf) orelse return;
-        const now = shader.stamp(path) catch return;
 
-        // Null only when the baseline stat in `run` failed, which means the file
-        // was unreadable when this editor opened. Recording rather than reloading
-        // is right there too: `buildPipelines` already fell back and said so, and
-        // a file that has since appeared is a change this will see next time.
-        const previous = self.seen orelse {
-            self.seen = now;
-            return;
-        };
-        if (!previous.differs(now)) return;
+        // `catch null` rather than `catch return`, so a failed stat reaches `look`
+        // as the "learned nothing" case it shares with an unresolvable path,
+        // instead of short-circuiting into a branch nothing can test.
+        const now: ?shader.Stamp = shader.stamp(path) catch null;
 
-        // **Advanced before the compile, and on every outcome including failure.**
-        // Without that a broken file prints the same diagnostic four times a
-        // second forever; with it, it prints once per save and recovers when the
-        // file is fixed.
-        self.seen = now;
+        if (self.watch.look(self.mailbox.vacant(), now) == .idle) return;
 
         shader.read(&self.buf, path) catch |err| {
-            _ = shader_fallbacks.fetchAdd(1, .release);
-            sayShader("cannot read {s} ({t}); keeping the shader now running", .{ path, err });
+            if (shader_counters.note(.watch_unreadable)) {
+                sayShader("cannot read {s} ({t}); keeping the shader now running", .{ path, err });
+            }
             return;
         };
 
         var diags: iface.Diagnostics = .{};
         const pipelines = buildPipelinesFromSource(device, self.buf.source(), &diags) catch {
-            _ = shader_rejected.fetchAdd(1, .release);
-            sayShader("{s}; keeping the shader now running", .{diags.message()});
+            if (shader_counters.note(.watch_rejected)) {
+                sayShader("{s}; keeping the shader now running", .{diags.message()});
+            }
             return;
         };
 
@@ -1130,8 +1145,9 @@ const Watcher = if (shader.live) struct {
         // change that may legitimately be invisible. An edit to a constant nobody
         // can see by eye is exactly the kind this is for, and "did that take?" is
         // otherwise unanswerable without another edit that does show.
-        _ = shader_reloads.fetchAdd(1, .release);
-        sayShader("recompiled {d} bytes from {s}", .{ self.buf.len, path });
+        if (shader_counters.note(.watch_reloaded)) {
+            sayShader("recompiled {d} bytes from {s}", .{ self.buf.len, path });
+        }
 
         // **After the compile rather than before it, and after the line above.** A
         // source that does not compile is never swapped in, so its bindings are
@@ -1146,7 +1162,7 @@ const Watcher = if (shader.live) struct {
         // and while that is survivable it aborts under the `MTL_DEBUG_LAYER=1`
         // invocation the gotchas prescribe by hand. So the foot of this file counts
         // the two call sites as text instead.
-        noteBindings(self.buf.source());
+        noteBindings(self.buf.source(), &shader_counters);
 
         self.mailbox.publish(pipelines);
     }
@@ -2277,13 +2293,7 @@ pub const Renderer = struct {
     /// recompiled the old ones**, which is why `src/smoke.zig` pairs them with a
     /// fixture only the new bytes could produce a diagnostic for.
     pub fn shaderStats() iface.ShaderStats {
-        return .{
-            .path_resolved = shader_path_resolved.load(.acquire),
-            .reloads = shader_reloads.load(.acquire),
-            .rejected = shader_rejected.load(.acquire),
-            .fallbacks = shader_fallbacks.load(.acquire),
-            .binding_mismatches = shader_binding_mismatches.load(.acquire),
-        };
+        return shader_counters.stats();
     }
 
     /// [render-thread] Copy staging into this frame's buffer.
@@ -2619,21 +2629,31 @@ fn buildPipelines(device: objc.Object, diags: *iface.Diagnostics) iface.Error!Pi
 
         if (readShader(&buf)) |source| {
             if (buildPipelinesFromSource(device, source, diags)) |pipelines| {
-                _ = shader_reloads.fetchAdd(1, .release);
+                // Silent, which is `open_reloaded`'s row in the table: a debug
+                // build compiles the disk copy every time an editor opens, so a
+                // message here would announce the ordinary case on every open.
+                _ = shader_counters.note(.open_reloaded);
+
                 // **The opening path as well as the watcher's**, which is not
                 // over-reach: this reads the same file the watcher does, so a
                 // moved index that was loud on every save and silent on every
                 // editor opening would be the more confusing half of the two.
-                noteBindings(source);
+                noteBindings(source, &shader_counters);
                 return pipelines;
             } else |_| {
                 // Counted separately from the read failure above, because they
                 // are different mistakes: one is a path that is wrong, the other
                 // is a shader that is. `diags` already carries the compiler's own
                 // text, naming a line and the error.
-                _ = shader_rejected.fetchAdd(1, .release);
-                sayShader("{s}; using the copy built into this binary", .{diags.message()});
-                _ = shader_fallbacks.fetchAdd(1, .release);
+                //
+                // **`open_rejected` moves `fallbacks` as well as `rejected`, and
+                // the watcher's `watch_rejected` does not.** That asymmetry is the
+                // whole reason `reload.Outcome` carries the site in its key: here
+                // the embedded copy is what the editor opens with, and there the
+                // shader already running stays.
+                if (shader_counters.note(.open_rejected)) {
+                    sayShader("{s}; using the copy built into this binary", .{diags.message()});
+                }
             }
         }
     }
@@ -2650,10 +2670,10 @@ fn buildPipelines(device: objc.Object, diags: *iface.Diagnostics) iface.Error!Pi
 fn readShader(buf: *shader.Buffer) ?[:0]const u8 {
     var path_buf: shader.PathBuffer = undefined;
     const path = shader.resolvePath(&path_buf) orelse return null;
-    shader_path_resolved.store(true, .release);
+    shader_counters.notePathResolved();
 
     shader.read(buf, path) catch |err| {
-        if (shader_fallbacks.fetchAdd(1, .release) == 0) {
+        if (shader_counters.note(.open_unreadable)) {
             sayShader("cannot read {s} ({t}); using the copy built into this binary", .{ path, err });
         }
         return null;
@@ -4062,8 +4082,8 @@ test "both paths that compile a source off disk check its bindings" {
     // So this counts them as text, which is what `src/canary.zig` is for. A
     // reloaded shader that stopped being read would otherwise fail nothing at all,
     // and the whole of #77 is that its symptom is a confident wrong picture.
-    try testing.expectEqual(1, canary.stated(code, "noteBindings(source);"));
-    try testing.expectEqual(1, canary.stated(code, "noteBindings(self.buf.source());"));
+    try testing.expectEqual(1, canary.stated(code, "noteBindings(source, &shader_counters);"));
+    try testing.expectEqual(1, canary.stated(code, "noteBindings(self.buf.source(), &shader_counters);"));
 
     // Three rather than two: the two calls above and the declaration itself. This
     // is the half `stated` cannot do, and it is the half that matters here — a
