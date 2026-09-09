@@ -626,13 +626,21 @@ test "setting a diagnostic twice replaces it rather than appending" {
 }
 
 // The invariant the struct's docstring states, which until now was documented
-// and asserted nowhere. Every writer of the five atomics behind `shaderStats`
-// sits inside a `shader.live` branch, and `shader.live` folds in
-// `!builtin.is_test`, so in a test binary they are comptime-unreachable rather
-// than merely unreached. Zig runs a test binary single-threaded and in order
-// and nothing here constructs a `Renderer`, so this cannot be perturbed by
-// whatever ran before it. A future test that started a watcher would break this
-// one, and that is the right outcome rather than a fragility.
+// and asserted nowhere. Every *call site* that credits the five counters behind
+// `shaderStats` sits inside a `shader.live` branch, and `shader.live` folds in
+// `!builtin.is_test`, so in a test binary none of them is compiled. Zig runs a
+// test binary single-threaded and in order and nothing here constructs a
+// `Renderer`, so this cannot be perturbed by whatever ran before it. A future
+// test that started a watcher would break this one, and that is the right
+// outcome rather than a fragility.
+//
+// **The claim narrowed at #93 and the narrower one is the honest one.** This used
+// to say the writers were "comptime-unreachable rather than merely unreached",
+// which stopped being true when the bookkeeping moved into
+// `gpu/metal/reload.zig`: `Counters.note` is compiled in a test binary now, and
+// covered there. What still holds, and is what this asserts, is that nothing
+// reaches the *shared* instance. `reload.zig`'s own tests each construct their
+// own `Counters`, which is what keeps the two from perturbing each other.
 //
 // The two halves catch different things and neither subsumes the other: the
 // equality catches a field default that stopped agreeing with the atomic behind

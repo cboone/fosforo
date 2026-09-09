@@ -120,6 +120,14 @@ test {
     // needs a GPU.
     _ = @import("gpu/verdict.zig");
 
+    // The same argument again, and this one is not about a GPU at all. Its callers
+    // are all inside `shader.live`, which folds in `!builtin.is_test`, so a test
+    // build compiles none of them and no import chain reaches this file: without
+    // this line its tests would not be collected and the bookkeeping they cover
+    // would be checked only by `zig build smoke-appkit`, which #93 measured
+    // catching none of it.
+    _ = @import("gpu/metal/reload.zig");
+
     // Not reached from the plugin at all: these are the roots of the two race
     // harnesses, which `zig build ring-race` and `zig build gate-race` build as
     // their own executables. Named here so their pure parts are still checked by
@@ -163,6 +171,7 @@ test "every module a test build compiles carries a declaration sweep" {
         .{ "gpu/measure.zig", @embedFile("gpu/measure.zig") },
         .{ "gpu/palette.zig", @embedFile("gpu/palette.zig") },
         .{ "gpu/verdict.zig", @embedFile("gpu/verdict.zig") },
+        .{ "gpu/metal/reload.zig", @embedFile("gpu/metal/reload.zig") },
         .{ "gpu/metal/renderer.zig", @embedFile("gpu/metal/renderer.zig") },
         .{ "gpu/metal/shader.zig", @embedFile("gpu/metal/shader.zig") },
         .{ "platform/displaylink.zig", @embedFile("platform/displaylink.zig") },
