@@ -103,8 +103,8 @@ function assert_within_budget() {
   fi
 
   if ((size > WARNING)); then
-    warn "${MEMORY_FILE} is ${size} characters, within $((MAXIMUM - size)) of the"
-    warn "${MAXIMUM} budget. The next few additions belong in docs/notes/."
+    warn "${MEMORY_FILE} is ${size} characters, leaving $((MAXIMUM - size)) before the"
+    warn "${MAXIMUM} budget refuses. The next few additions belong in docs/notes/."
   fi
 
   echo "${MEMORY_FILE}: ${size} characters, budget ${MAXIMUM}"
