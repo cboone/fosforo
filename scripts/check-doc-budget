@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# check-doc-budget — refuse an AGENTS.md that has grown past what fits in context
+# Author: Christopher Boone
+# Date: 2026-09-09
+#
+# CLAUDE.md is a symlink to AGENTS.md, and Claude Code loads a memory file into every
+# session in full before any work starts. It warns above
+# `max(40000, contextWindow * 0.05 * charsPerToken)`, which is 150,000 in a 1M-context
+# session and 40,000 in every other configuration, subagents with a model override
+# included. 40,000 is therefore the floor to design against, not the 150,000 a
+# generous session happens to report.
+#
+# That floor was crossed by four times over before #117, and not by one bad commit:
+# 139 commits had touched the file, nearly every issue closing with a `docs: record …`
+# commit appending to a flat gotchas list that reached 143,429 characters. The depth
+# now lives in docs/notes/, which is read on demand and costs no context. Nothing but
+# this check stops the same accumulation happening again, and a written rule was
+# considered and refused: a check that is configured, believed to be running, and
+# silently is not is the shape this repository has already been caught by four times
+# (#28, #85, #99, and mlugg/setup-zig's inert version-file).
+#
+# The two bounds are anchored rather than chosen. MAXIMUM refuses at 30,000, which is
+# 25% under the 40,000 floor, so neither a miscount here nor a change to Claude Code's
+# formula can cross the real threshold before this fires. WARNING is 10% before the
+# refusal, which is the point at which the remaining headroom is worth acting on
+# rather than absorbing.
+#
+# The symlink assertion is not decoration. If CLAUDE.md is ever replaced by a copy the
+# two drift silently, Claude Code reads the stale one, and nothing else in this
+# repository would notice: both files would lint, both would pass every other check,
+# and the only symptom is an agent acting on instructions that were edited away.
+#
+# Usage:
+#   check-doc-budget
+#
+# Exit codes:
+#   0  - AGENTS.md is within budget and CLAUDE.md still points at it
+#  65  - AGENTS.md is over MAXIMUM, or CLAUDE.md is not a symlink to it
+#  66  - AGENTS.md or CLAUDE.md is missing
+
+set -euo pipefail
+
+if [[ -n "${TRACE:-}" ]]; then
+  set -x
+fi
+
+readonly E_DATAERR=65
+readonly E_NOINPUT=66
+
+# Characters. See the header for why these two numbers and not others.
+readonly MAXIMUM=30000
+readonly WARNING=27000
+
+readonly MEMORY_FILE="AGENTS.md"
+readonly SYMLINK="CLAUDE.md"
+
+readonly PROGRAM_NAME="${0##*/}"
+
+# Write a message to stderr, prefixed with the program name.
+# Arguments:
+#   $@ - message parts
+function warn() {
+  echo "${PROGRAM_NAME}: ${*}" >&2
+}
+
+# Assert that CLAUDE.md is still a symlink pointing at AGENTS.md.
+#
+# Compared by target rather than by content: two files with identical bytes today
+# would still be two files, and the next edit to one of them is the failure this
+# exists to catch.
+# Returns:
+#   0 when the symlink is intact, E_DATAERR otherwise
+function assert_symlink() {
+  if [[ ! -L "${SYMLINK}" ]]; then
+    warn "${SYMLINK} is not a symlink. It must point at ${MEMORY_FILE}, or the two"
+    warn "drift and Claude Code reads whichever one nobody edited."
+    return "${E_DATAERR}"
+  fi
+
+  local target
+  target="$(readlink "${SYMLINK}")"
+
+  if [[ "${target}" != "${MEMORY_FILE}" ]]; then
+    warn "${SYMLINK} points at '${target}', expected '${MEMORY_FILE}'."
+    return "${E_DATAERR}"
+  fi
+}
+
+# Report the size of the memory file against the two bounds.
+# Outputs:
+#   One line on stdout always, plus an explanation on stderr when over budget
+# Returns:
+#   0 when within MAXIMUM, E_DATAERR when over it
+function assert_within_budget() {
+  local size
+  size="$(wc -c < "${MEMORY_FILE}" | tr -d ' ')"
+
+  if ((size > MAXIMUM)); then
+    warn "${MEMORY_FILE} is ${size} characters, over the ${MAXIMUM} budget."
+    warn "Move the depth into docs/notes/ and leave a pointer, rather than raising"
+    warn "this bound: the 40,000 floor it sits under is not ours to move."
+    return "${E_DATAERR}"
+  fi
+
+  if ((size > WARNING)); then
+    warn "${MEMORY_FILE} is ${size} characters, within $((MAXIMUM - size)) of the"
+    warn "${MAXIMUM} budget. The next few additions belong in docs/notes/."
+  fi
+
+  echo "${MEMORY_FILE}: ${size} characters, budget ${MAXIMUM}"
+}
+
+function main() {
+  local path
+  for path in "${MEMORY_FILE}" "${SYMLINK}"; do
+    if [[ ! -e "${path}" ]]; then
+      warn "${path} does not exist. Run this from the repository root."
+      exit "${E_NOINPUT}"
+    fi
+  done
+
+  assert_symlink
+  assert_within_budget
+}
+
+main
