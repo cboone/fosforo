@@ -1,7 +1,7 @@
 //! What one look at the shader on disk decides, and what each outcome does to the
 //! tally. Nothing about reading a file, and nothing about a device.
 //!
-//! Everything here is arithmetic over a stamp, an enum and five atomics. No Metal,
+//! Everything here is arithmetic over a stamp, an enum and six atomics. No Metal,
 //! no GPU, no allocator, no I/O, and nothing above this file's own imports, which
 //! is what lets `zig build test` cover all of it on a runner with no graphics
 //! support at all (ADR 0009). `src/gpu/metal/renderer.zig` owns the device, the
@@ -66,6 +66,12 @@ pub const Step = enum { idle, reload };
 /// embedded copy is what the editor then opens with. That was two pairs of
 /// `fetchAdd` calls two thousand lines apart with nothing tying them together;
 /// here it is a table with six rows and a test that reads them.
+///
+/// **A read failure splits the same way, which is what #118 fixed.** It moves
+/// `unreadable` at both sites and `fallbacks` at the opening one only, exactly as
+/// a compile failure moves `rejected` at both and `fallbacks` at one. So the two
+/// failure kinds are parallel rather than special-cased, and the site decides one
+/// thing rather than two: whether the embedded copy is what ran next.
 pub const Outcome = enum {
     /// The watcher saw a change and could not read the file.
     watch_unreadable,
@@ -87,11 +93,12 @@ pub const Outcome = enum {
 pub const Deltas = struct {
     reloads: u64 = 0,
     rejected: u64 = 0,
+    unreadable: u64 = 0,
     fallbacks: u64 = 0,
 
     /// Whether the caller should put this outcome on stderr.
     ///
-    /// `.always` for five of the six. `.once` belongs to `open_unreadable` alone
+    /// `.always` for four of the six. `.once` belongs to `open_unreadable` alone
     /// and is answered by the tally rather than by this value, for the reason
     /// `note` gives. `.never` is `open_reloaded`, which is silent on purpose: a
     /// debug build compiles the disk copy every time an editor opens, so a message
@@ -104,25 +111,31 @@ pub const Deltas = struct {
 /// A `switch` over a total enum rather than a lookup table, so adding a seventh
 /// outcome is a compile error here rather than a silently-zero row.
 ///
-/// **One row is inherited rather than endorsed, and it is
-/// [#118](https://github.com/cboone/fosforo/issues/118).** `watch_unreadable`
-/// credits `fallbacks`, which `iface.ShaderStats` documents as "times the embedded
-/// copy was used" — and the watcher never uses it, which is what its own message
-/// says when it keeps the shader now running. That is `renderer.zig`'s behaviour
-/// as it stood and it is preserved here exactly, because #93 was a refactor whose
-/// evidence is that nothing observable moved. Collecting the six rows into one
-/// table is what made it legible. **Do not "fix" it by counting the read failure
-/// as `rejected`**, which was the first suggestion and trades one wrong claim for
-/// another: that counter means a source that was read and refused, and an
-/// unreadable file never reached the compiler. The issue carries the three options
-/// and why none is obviously right. Nothing currently misreports, because every
-/// reader of `fallbacks` in `src/smoke.zig` drives the opening path.
+/// **Read it as two columns, which is what
+/// [#118](https://github.com/cboone/fosforo/issues/118) left behind.** The first
+/// says what happened to the source off disk — it could not be read, it was read
+/// and refused, it was read and taken — and the second says whether the embedded
+/// copy was what ran next, which is true on the two opening-path failures and on
+/// nothing else. Every row is one cell from each.
+///
+/// Until #118 the first row credited `fallbacks`, claiming the embedded copy was
+/// used on a path where `Watcher.poll` says out loud that it is keeping the shader
+/// now running. #93 preserved that arithmetic exactly, because a refactor whose
+/// evidence is that nothing observable moved cannot also change behaviour;
+/// collecting the six rows into one table is what made the claim legible.
+///
+/// **Counting a read failure as `rejected` was refused, and so was widening
+/// `fallbacks`.** `rejected` means a source that was read and refused, and an
+/// unreadable file never reached the compiler. And "the disk copy was not used"
+/// would be true of `watch_rejected` as well, which deliberately leaves
+/// `fallbacks` alone — so that widening makes the same sentence false one row
+/// further down instead of fixing it.
 pub fn deltas(outcome: Outcome) Deltas {
     return switch (outcome) {
-        .watch_unreadable => .{ .fallbacks = 1 },
+        .watch_unreadable => .{ .unreadable = 1 },
         .watch_rejected => .{ .rejected = 1 },
         .watch_reloaded => .{ .reloads = 1 },
-        .open_unreadable => .{ .fallbacks = 1, .say = .once },
+        .open_unreadable => .{ .unreadable = 1, .fallbacks = 1, .say = .once },
         .open_rejected => .{ .rejected = 1, .fallbacks = 1 },
         .open_reloaded => .{ .reloads = 1, .say = .never },
     };
@@ -146,6 +159,7 @@ pub const Counters = struct {
     path_resolved: std.atomic.Value(bool) = .init(false),
     reloads: std.atomic.Value(u64) = .init(0),
     rejected: std.atomic.Value(u64) = .init(0),
+    unreadable: std.atomic.Value(u64) = .init(0),
     fallbacks: std.atomic.Value(u64) = .init(0),
     binding_mismatches: std.atomic.Value(u64) = .init(0),
 
@@ -161,7 +175,12 @@ pub const Counters = struct {
     ///
     /// The fallbacks bump therefore has to happen first, because it is its *own
     /// previous value* the rule reads and re-loading afterwards would race every
-    /// other thread doing the same.
+    /// other thread doing the same. **It stays keyed on `fallbacks` rather than on
+    /// `unreadable`, which #118 had to decide rather than inherit.** The two now
+    /// differ: `unreadable` is what `open_unreadable` is, and `fallbacks` is what
+    /// it shares with `open_rejected`. Keying on `unreadable` would silence a
+    /// second unreadable file and nothing else, which is a different rule from the
+    /// one that has always been here.
     pub fn note(self: *Counters, outcome: Outcome) bool {
         const d = deltas(outcome);
 
@@ -172,6 +191,7 @@ pub const Counters = struct {
 
         if (d.reloads != 0) _ = self.reloads.fetchAdd(d.reloads, .release);
         if (d.rejected != 0) _ = self.rejected.fetchAdd(d.rejected, .release);
+        if (d.unreadable != 0) _ = self.unreadable.fetchAdd(d.unreadable, .release);
 
         return switch (d.say) {
             .always => true,
@@ -205,6 +225,7 @@ pub const Counters = struct {
             .path_resolved = self.path_resolved.load(.acquire),
             .reloads = self.reloads.load(.acquire),
             .rejected = self.rejected.load(.acquire),
+            .unreadable = self.unreadable.load(.acquire),
             .fallbacks = self.fallbacks.load(.acquire),
             .binding_mismatches = self.binding_mismatches.load(.acquire),
         };
@@ -402,22 +423,27 @@ test "the outcome table, cell by cell" {
     // Six rows, because the two sites map the same three results differently and
     // the mapping is the whole content. Read as a table so that a row swapped for
     // its neighbour fails here rather than misreporting a smoke arm.
-    // Inherited rather than endorsed: this row claims the embedded copy was used
-    // and the watcher never uses it. Pinned as it stands, because #93 preserved
-    // `renderer.zig`'s arithmetic exactly; see `deltas` and #118.
-    try testing.expectEqual(Deltas{ .fallbacks = 1 }, deltas(.watch_unreadable));
+    try testing.expectEqual(Deltas{ .unreadable = 1 }, deltas(.watch_unreadable));
     try testing.expectEqual(Deltas{ .rejected = 1 }, deltas(.watch_rejected));
     try testing.expectEqual(Deltas{ .reloads = 1 }, deltas(.watch_reloaded));
-    try testing.expectEqual(Deltas{ .fallbacks = 1, .say = .once }, deltas(.open_unreadable));
+    try testing.expectEqual(Deltas{ .unreadable = 1, .fallbacks = 1, .say = .once }, deltas(.open_unreadable));
     try testing.expectEqual(Deltas{ .rejected = 1, .fallbacks = 1 }, deltas(.open_rejected));
     try testing.expectEqual(Deltas{ .reloads = 1, .say = .never }, deltas(.open_reloaded));
 
-    // No outcome moves two of the three counters except `open_rejected`, and none
-    // moves none. The second half is the vacuity guard: a row that credited
-    // nothing would satisfy every "did not move" assertion elsewhere.
+    // The shape, asserted rather than left to be read off the rows above: the two
+    // opening-path failures move `fallbacks` and the four other rows do not, which
+    // is #118's whole claim about what that counter means.
     inline for (std.meta.fields(Outcome)) |field| {
-        const d = deltas(@field(Outcome, field.name));
-        try testing.expect(d.reloads + d.rejected + d.fallbacks > 0);
+        const outcome = @field(Outcome, field.name);
+        const d = deltas(outcome);
+        const fell_back = outcome == .open_unreadable or outcome == .open_rejected;
+        try testing.expectEqual(@as(u64, if (fell_back) 1 else 0), d.fallbacks);
+
+        // The vacuity guard: a row that credited nothing would satisfy every "did
+        // not move" assertion elsewhere. **`unreadable` belongs in this sum**, and
+        // the two rows that credit it credit nothing else in the first column, so
+        // leaving it out turns the guard into a check that passes vacuously.
+        try testing.expect(d.reloads + d.rejected + d.unreadable > 0);
     }
 }
 
@@ -435,6 +461,28 @@ test "a rejection falls back only where there is something to fall back to" {
     try testing.expectEqual(@as(u64, 1), deltas(.open_rejected).rejected);
 }
 
+test "an unreadable file falls back only where there is something to fall back to" {
+    // **The defect #118 was filed for, as the test that would have caught it.** It
+    // is the same claim as the rejection above one row up, and that it was not
+    // stated for this row is exactly why the row could read as endorsed for as
+    // long as it did. The watcher keeps the shader already running — it says so on
+    // stderr — so nothing falls back; an editor opening uses the embedded copy, so
+    // something does.
+    try testing.expectEqual(@as(u64, 0), deltas(.watch_unreadable).fallbacks);
+    try testing.expectEqual(@as(u64, 1), deltas(.open_unreadable).fallbacks);
+
+    // And both count the read failure itself, which is the half they agree on and
+    // the counter that did not exist before #118. Restoring `.{ .fallbacks = 1 }`
+    // to the watcher's row fails the first assertion here and the second of these.
+    try testing.expectEqual(@as(u64, 1), deltas(.watch_unreadable).unreadable);
+    try testing.expectEqual(@as(u64, 1), deltas(.open_unreadable).unreadable);
+
+    // Neither is a rejection, which is the fix that was proposed and refused: a
+    // file that could not be read never reached the compiler.
+    try testing.expectEqual(@as(u64, 0), deltas(.watch_unreadable).rejected);
+    try testing.expectEqual(@as(u64, 0), deltas(.open_unreadable).rejected);
+}
+
 test "noting an outcome moves what its row says and nothing else" {
     inline for (std.meta.fields(Outcome)) |field| {
         const outcome = @field(Outcome, field.name);
@@ -446,6 +494,7 @@ test "noting an outcome moves what its row says and nothing else" {
         const seen = counters.stats();
         try testing.expectEqual(d.reloads, seen.reloads);
         try testing.expectEqual(d.rejected, seen.rejected);
+        try testing.expectEqual(d.unreadable, seen.unreadable);
         try testing.expectEqual(d.fallbacks, seen.fallbacks);
 
         // Neither of the two that no outcome touches.
@@ -462,9 +511,15 @@ test "a counter accumulates rather than latching" {
 
     for (0..3) |_| _ = counters.note(.watch_reloaded);
     for (0..2) |_| _ = counters.note(.watch_rejected);
+    for (0..4) |_| _ = counters.note(.watch_unreadable);
 
     try testing.expectEqual(@as(u64, 3), counters.stats().reloads);
     try testing.expectEqual(@as(u64, 2), counters.stats().rejected);
+    try testing.expectEqual(@as(u64, 4), counters.stats().unreadable);
+
+    // Still zero after nine looks at a file the watcher could not use, which is
+    // #118 stated against the tally rather than against the table: none of the
+    // three watcher outcomes has anything to fall back to.
     try testing.expectEqual(@as(u64, 0), counters.stats().fallbacks);
 }
 
@@ -479,6 +534,7 @@ test "an unreadable file on the opening path says so once, and the coupling is t
     // with no explanation is the kind of thing that gets blamed on the GPU, and
     // saying it once is the answer to that rather than counting it once.
     try testing.expectEqual(@as(u64, 3), counters.stats().fallbacks);
+    try testing.expectEqual(@as(u64, 3), counters.stats().unreadable);
 
     // **The coupling, which is the surprising half.** `open_rejected` moves
     // `fallbacks` too, so a rejection earlier in the process silences the first
@@ -487,6 +543,16 @@ test "an unreadable file on the opening path says so once, and the coupling is t
     var after_rejection: Counters = .{};
     _ = after_rejection.note(.open_rejected);
     try testing.expect(!after_rejection.note(.open_unreadable));
+
+    // **And it is still `fallbacks` the guard reads, not `unreadable`**, which is
+    // the one thing #118 could have changed here by accident. A *watcher* read
+    // failure moves `unreadable` and not `fallbacks`, so it must not silence a
+    // later unreadable file at an editor opening the way `open_rejected` does.
+    // Keying the guard on `unreadable` instead passes every assertion above and
+    // fails this one.
+    var after_watch: Counters = .{};
+    _ = after_watch.note(.watch_unreadable);
+    try testing.expect(after_watch.note(.open_unreadable));
 }
 
 test "every other outcome says every time, and the successful open says nothing" {
@@ -525,6 +591,7 @@ test "a mismatch moves alongside a reload, never instead of it" {
     try testing.expectEqual(@as(u64, 1), seen.reloads);
     try testing.expectEqual(@as(u64, 1), seen.binding_mismatches);
     try testing.expectEqual(@as(u64, 0), seen.rejected);
+    try testing.expectEqual(@as(u64, 0), seen.unreadable);
     try testing.expectEqual(@as(u64, 0), seen.fallbacks);
 }
 
@@ -540,11 +607,19 @@ test "every field of the published tally reads the counter behind it" {
     for (0..4) |_| counters.noteMismatch();
     counters.notePathResolved();
 
+    // Four distinct values across five counters would let `unreadable` and
+    // `fallbacks` be transposed unnoticed, since both would read zero. So
+    // `open_rejected` supplies the fifth: it is the one outcome that moves
+    // `fallbacks` without moving `unreadable`, which is the pair this test has to
+    // separate after #118.
+    for (0..5) |_| _ = counters.note(.open_rejected);
+
     try testing.expectEqual(iface.ShaderStats{
         .path_resolved = true,
         .reloads = 1,
-        .rejected = 2,
-        .fallbacks = 3,
+        .rejected = 7,
+        .unreadable = 3,
+        .fallbacks = 5,
         .binding_mismatches = 4,
     }, counters.stats());
 }
