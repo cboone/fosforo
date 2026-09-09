@@ -12,11 +12,7 @@ Phase 3 of [the build plan](docs/plans/todo/2026-07-25-repo-foundation-and-phase
 
 The plugin loads in REAPER and Logic, passes stereo audio through, saves state, and taps one channel into `src/dsp/ring.zig`, which the render thread reads as a trailing 20 ms window. The trace is real geometry: each inter-sample segment is an instanced quad **3.0 points** wide, shaded by distance from the segment, so caps are round and joints have no gaps ([#57](https://github.com/cboone/fosforo/issues/57)). It deposits a scalar additively into a persistent `RGBA16F` ping-pong pair ([#55](https://github.com/cboone/fosforo/issues/55)) that fades in real elapsed time with a **158.19 ms** constant ([#56](https://github.com/cboone/fosforo/issues/56)), and a resolve pass compresses that energy through extended Reinhard into one of four gradients running to white ([#60](https://github.com/cboone/fosforo/issues/60), [ADR 0019](docs/adr/0019-brightness-is-a-fixed-transfer-function.md)). The hot core ADR 0007 predicted is emergent rather than drawn. There is no colour anywhere in `shaders/scope.metal`.
 
-**What the pixels became is checked automatically**, by `zig build smoke-trace`, which renders the shipping pipeline into a texture the backend owns and reads the result back as rows, periods and implied samples ([#51](https://github.com/cboone/fosforo/issues/51)); the judgements are pure and unit-tested in `src/gpu/verdict.zig` ([#92](https://github.com/cboone/fosforo/issues/92)). A debug build hot-reloads the shader without restarting the host ([#61](https://github.com/cboone/fosforo/issues/61)), and checks a reloaded shader's binding indices against the Zig constants ([#77](https://github.com/cboone/fosforo/issues/77)). Every build stamps the worktree and commit it came from ([#22](https://github.com/cboone/fosforo/issues/22), [ADR 0018](docs/adr/0018-stamp-provenance-without-namespacing-identity.md)).
-
-[#93](https://github.com/cboone/fosforo/issues/93) has landed, which is item 5 of the same program and the same move one layer down. `renderer.zig`'s `Watcher` is `if (shader.live) struct { ... } else struct { ... }` and `shader.live` folds in `!builtin.is_test`, so a test binary took the stub: the real `poll` was not merely untested but **not compiled**, and no test written in `zig build test` could have reached it. The same gate stood over `buildPipelines` and `readShader`, which carried a second copy of the bookkeeping, and the two copies **disagreed** — a compile failure under the watcher moves `rejected` alone, because nothing falls back, while the same failure when an editor opens moves `rejected` _and_ `fallbacks`. That was two pairs of `fetchAdd` calls two thousand lines apart; it is now `src/gpu/metal/reload.zig`, a six-row table with a test that reads it, beside the poll's `seen` state machine. The suite went from 297 tests to 318 and both smoke transcripts are unchanged.
-
-**The finding is that the issue named an instrument that does not work.** #93 says its acceptance plant, a `poll` advancing `seen` only on success, is one "today only a hand-run `smoke-appkit` would catch". Run against `poll` as it stood, before anything moved: `zig build test` reported 297 of 297 and `zig build smoke-appkit` reported `ok`, with all five hot-reload arms running. **Nothing caught it.** Two more things planting produced. A third site the issue did not name, `noteBindings`, whose counter increment no test binary compiled either, because a private function reached only from gated call sites is never analyzed — `firstBindingMismatch` beneath it had five tests and the pairing had none. And a weakness in `hotReloadPhase`'s fourth arm, which under that defect can pass without the renamed shader ever being read, since it waits on `rejected >= n + 1` while the previous arm's broken file is still being re-rejected four times a second. That one stays open.
+**What the pixels became is checked automatically**, by `zig build smoke-trace`, which renders the shipping pipeline into a texture the backend owns and reads the result back as rows, periods and implied samples ([#51](https://github.com/cboone/fosforo/issues/51)); the judgements are pure and unit-tested in `src/gpu/verdict.zig` ([#92](https://github.com/cboone/fosforo/issues/92)). A debug build hot-reloads the shader without restarting the host ([#61](https://github.com/cboone/fosforo/issues/61)), and checks a reloaded shader's binding indices against the Zig constants ([#77](https://github.com/cboone/fosforo/issues/77)); the watcher's own bookkeeping is reachable from a test build since [#93](https://github.com/cboone/fosforo/issues/93). Every build stamps the worktree and commit it came from ([#22](https://github.com/cboone/fosforo/issues/22), [ADR 0018](docs/adr/0018-stamp-provenance-without-namespacing-identity.md)).
 
 **What is left of the phosphor look is filed:** velocity weighting ([#58](https://github.com/cboone/fosforo/issues/58)) and bandlimited reconstruction ([#59](https://github.com/cboone/fosforo/issues/59)). **The next issue in the plan's order is [#58](https://github.com/cboone/fosforo/issues/58)**, with #59 behind it.
 
@@ -117,7 +113,7 @@ zig fmt --check build.zig src/
 scripts/read-provenance zig-out/Fosforo.clap  # which branch and commit a built bundle came from
 zig build install-clap && /Applications/REAPER.app/Contents/MacOS/REAPER 2>&1 \
   | grep --line-buffered fosforo   # the whole host loop; hot reload needs no env var
-zig build validate-shaders # needs the Metal toolchain; see below
+zig build validate-shaders # needs the Metal toolchain; see docs/notes/build-system.md
 zig build smoke            # runs Metal and AppKit for real; needs a GPU and a window server
 zig build smoke-gpu        # the half that needs no window: device, shader, pipeline
 zig build smoke-trace      # the other half that needs no window: what the shader actually drew
@@ -131,7 +127,7 @@ codesign --verify --strict --verbose zig-out/Fosforo.clap  # the bundle signatur
 git ls-files -z | xargs -0 shfmt -f | xargs shfmt -d      # no parser/printer options: they discard .editorconfig
 git ls-files -z | xargs -0 shfmt -f | xargs shellcheck
 typos                      # spell-checks the whole tree; allowlist and ignore patterns in typos.toml
-npm ci                     # the two Markdown tools, at the versions package-lock.json pins. NOT optional, see below
+npm ci                     # the two Markdown tools, at the versions package-lock.json pins. NOT optional
 npm run format             # THE fixer: tables, emphasis, fences. Run this before the linter
 npm run lint:md            # every .md; config in .markdownlint-cli2.jsonc. NEVER markdownlint-cli2 --fix, see below
 ruff format --check . && ruff check .  # the one Python file; ruff.toml is what makes it visible
@@ -149,7 +145,7 @@ CMake is needed only for the Audio Unit that Logic requires, and it is much slow
 
 ```bash
 cmake -B build cmake/                       # what the script does once per worktree
-cmake --build build --target fosforo_all    # and every time; not fosforo_auv2, see below
+cmake --build build --target fosforo_all    # and every time; not fosforo_auv2, see the build-system note
 ```
 
 Validate with `clap-validator validate zig-out/Fosforo.clap`. CI runs it on every push against **both** `.clap` bundles, the Zig-built one and the clap-wrapper-built `build/assets/Fosforo.clap`, so neither is only a local step, and it asserts every bundle's signature alongside them. The Audio Unit has no equivalent: `auval` cannot see this component at all, for the reason in [host verification](docs/notes/host-verification.md), so loading it in Logic is the only check there is.
