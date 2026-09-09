@@ -77,10 +77,10 @@ That is correct rather than a regression: it is `scripts/smoke-leak-check`'s own
 The decision is one deleted line at `:195`:
 
 ```yaml
-- name: Smoke-test the AppKit path
-  id: appkit
-  timeout-minutes: 2
-  run: zig build smoke-appkit
+      - name: Smoke-test the AppKit path
+        id: appkit
+        timeout-minutes: 2
+        run: zig build smoke-appkit
 ```
 
 The notice at `:228-238` gains the runner image. `ImageOS` and `ImageVersion` are set by the runner images rather than by Actions and are **undocumented**, so both carry defaults: an unset variable must not take down the step that reports the leak figures, and a notice reading `unknown` is itself a finding.

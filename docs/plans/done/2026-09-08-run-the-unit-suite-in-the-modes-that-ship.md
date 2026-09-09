@@ -162,16 +162,16 @@ install are paid once for all of its halves, and two named steps inside it so a 
 attributable to a mode:
 
 ```yaml
-test-modes:
-  runs-on: macos-latest
-  timeout-minutes: 8
-  steps:
-    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-    - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-    - name: Run unit tests at ReleaseSafe
-      run: zig build test-safe
-    - name: Run unit tests in the mode that ships
-      run: zig build test-release
+  test-modes:
+    runs-on: macos-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      - name: Run unit tests at ReleaseSafe
+        run: zig build test-safe
+      - name: Run unit tests in the mode that ships
+        run: zig build test-release
 ```
 
 Both pins copied verbatim from the `shaders` job, which is the nearest neighbour: macOS,

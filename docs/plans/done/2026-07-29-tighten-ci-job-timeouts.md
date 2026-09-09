@@ -62,25 +62,25 @@ Five edits, one per job. Each new value gets a comment recording the measured ma
 The `shaders` job is the only one whose shape changes:
 
 ```yaml
-shaders:
-  runs-on: macos-latest
-  # 90s max over 28 runs. This does not budget for the Metal download below,
-  # which has been skipped in every run sampled and is unmeasured. If a future
-  # runner image ever ships without the toolchain, this job fails here rather
-  # than paying for insurance against a step that has never fired, and the
-  # ceiling gets raised once with a real measurement behind it.
-  timeout-minutes: 8
-  steps:
-    # ...
-    - name: Download the Metal toolchain
-      if: steps.metal.outputs.available == 'false'
-      # A label, not a budget. A step timeout cannot exceed its job's; the
-      # ceiling above is the outer bound either way. This only makes a wedged
-      # multi-gigabyte download read as one instead of as a cancelled job.
-      timeout-minutes: 5
-      run: |
-        xcodebuild -downloadComponent MetalToolchain
-        xcrun --kill-cache
+  shaders:
+    runs-on: macos-latest
+    # 90s max over 28 runs. This does not budget for the Metal download below,
+    # which has been skipped in every run sampled and is unmeasured. If a future
+    # runner image ever ships without the toolchain, this job fails here rather
+    # than paying for insurance against a step that has never fired, and the
+    # ceiling gets raised once with a real measurement behind it.
+    timeout-minutes: 8
+    steps:
+      # ...
+      - name: Download the Metal toolchain
+        if: steps.metal.outputs.available == 'false'
+        # A label, not a budget. A step timeout cannot exceed its job's; the
+        # ceiling above is the outer bound either way. This only makes a wedged
+        # multi-gigabyte download read as one instead of as a cancelled job.
+        timeout-minutes: 5
+        run: |
+          xcodebuild -downloadComponent MetalToolchain
+          xcrun --kill-cache
 ```
 
 ### 2. `.github/workflows/gitleaks.yml` and `.github/workflows/trufflehog.yml`
@@ -88,10 +88,10 @@ shaders:
 One line each, into the existing `with:` block next to `tool:`, plus a brief comment giving the measured maximum. Both call `scan-for-secrets.yml` at the same pinned `91f9abd`.
 
 ```yaml
-with:
-  tool: gitleaks
-  # 24s max over 29 runs; the reusable workflow's own default is 15.
-  timeout-minutes: 3
+    with:
+      tool: gitleaks
+      # 24s max over 29 runs; the reusable workflow's own default is 15.
+      timeout-minutes: 3
 ```
 
 ### 3. Documentation
