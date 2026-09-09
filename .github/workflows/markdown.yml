@@ -111,9 +111,10 @@ jobs:
           {
             echo "### markdown"
             echo
-            echo "Run \`npx prettier --write \"**/*.md\"\` to fix formatting."
-            echo "Fix markdownlint findings by hand; never pass \`--fix\`, which"
-            echo "ignores its file arguments and rewrites every matching file."
+            echo "Run \`npm ci\` then \`npm run format\` to fix formatting."
+            echo "Fix markdownlint findings by hand; never run"
+            echo "\`markdownlint-cli2 --fix\`, which ignores its file arguments"
+            echo "and rewrites every file matching its globs."
             echo
             echo '```text'
             npx prettier --check "**/*.md" 2>&1 || true
