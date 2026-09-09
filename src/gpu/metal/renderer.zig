@@ -416,6 +416,8 @@ const TraceUniforms = extern struct {
     /// extra coverage a narrower window produces. Left alone deliberately: it is a
     /// second relationship, it needs a reference geometry to fix absolute
     /// brightness against, and it reopens a correction #57 measured and settled.
+    /// Filed as #125, where the resize session's finding that none of this is
+    /// visible in a host is also recorded.
     ///
     /// It also retires an assumption behind `iface.max_window_samples`, which was
     /// sized on the reasoning that extra samples are free. Under additive quads

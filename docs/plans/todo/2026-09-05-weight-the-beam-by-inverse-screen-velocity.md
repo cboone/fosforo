@@ -197,12 +197,12 @@ That last row is the point of the 3840-sample arms existing, and it is the gap #
 
 ## Follow-ups
 
-| What                                            | Where it goes                                                                                          |
-| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `density`'s width dependence versus the physics | New issue, with arm 4's measurement                                                                    |
-| #79 closes as covered                           | Comment with arm 3's measurement, then close                                                           |
-| #83's toe measurement                           | Unblocked: it wanted the energy distribution this produces before measuring the banding that will ship |
-| The build plan's phase 3 table and issue order  | `docs/plans/todo/2026-07-25-repo-foundation-and-phased-build-plan.md`                                  |
+| What                                            | Where it goes                                                                                                                 |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `density`'s width dependence versus the physics | [#125](https://github.com/cboone/fosforo/issues/125), filed, with the measurement and the host finding that it is not visible |
+| #79 closes as covered                           | Commented with the measurement; closes on this PR's merge                                                                     |
+| #83's toe measurement                           | Unblocked: it wanted the energy distribution this produces before measuring the banding that will ship                        |
+| The build plan's phase 3 table and issue order  | `docs/plans/todo/2026-07-25-repo-foundation-and-phased-build-plan.md`                                                         |
 
 ## Commits
 
