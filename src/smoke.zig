@@ -642,7 +642,9 @@ const trace_height: u32 = 540;
 ///
 /// Read it through `litLevel`, which each check hands the length its own signal
 /// produces. Absolute energy is `checkHotCore`'s, `checkResolve`'s,
-/// `checkDecay`'s and `checkVelocityWeighting`'s, and not one of them reads this.
+/// `checkDecay`'s and `checkVelocityWeighting`'s, and none of them concludes
+/// anything about brightness from this. `checkResolve` does read it, for the lit
+/// *count* it reports and for nothing it asserts.
 const trace_threshold: f32 = 0.5;
 
 /// The peak energy below which a frame is held to have drawn nothing at all.
@@ -652,17 +654,21 @@ const trace_threshold: f32 = 0.5;
 /// pipeline rather than about the beam, and the contour now varies over two
 /// orders of magnitude with the signal.
 ///
-/// Far below anything a real case produces and far above the format's noise. The
-/// dimmest peak in this half is `checkHorizontalMapping`'s 0.0028, which leaves
-/// 28x of margin, and `RGBA16Float`'s smallest subnormal is 6e-8, which leaves
-/// three orders the other way. It says "the draw was skipped or the pipeline drew
+/// Far below anything a real case produces and far above the format's noise.
+/// Sized against the checks that actually consult it, which are
+/// `checkDepositIsScalar` and both arms of `checkVelocityWeighting`: the dimmest
+/// peak among them is the full-scale zigzag at four samples per point, near
+/// 0.005, which leaves 50x of margin. `RGBA16Float`'s smallest subnormal is 6e-8,
+/// three orders the other way. `checkHorizontalMapping` is dimmer still at 0.0028
+/// but guards through `litSpan` rather than through this, so it does not set the
+/// bound. It says "the draw was skipped or the pipeline drew
 /// nothing", not "the trace is dim", and it must never be tightened into the
 /// second claim.
 const trace_drawn: f32 = 1e-4;
 
 /// `trace_threshold` resolved for a segment of a given screen length.
 ///
-/// One function rather than the expression at nine call sites, because a call
+/// One function rather than the expression at its six call sites, because a call
 /// site that reverted to the bare `trace_threshold` would still compile and would
 /// still pass on every flat case, which is where the constant is nearest its old
 /// value.
@@ -1124,8 +1130,7 @@ fn checkBeamProfile(energy: []f32, picture: []u8, window: []f32) !void {
     // falls with it. The length comes from the constants that place the step
     // rather than from the picture, so this still compares two derivations.
     const travel = measure.expectedRow(-0.9, trace_height) - measure.expectedRow(0.9, trace_height);
-    const pitch = @as(f32, @floatFromInt(trace_width)) / @as(f32, @floatFromInt(window.len - 1));
-    const rod = std.math.hypot(pitch, travel);
+    const rod = segmentLength(travel, window.len);
 
     const want = beam_half_width_px * 16.0 / 15.0 * measure.beamWeight(rod, beam_half_width_px);
     const centre = moment / total;
@@ -1175,10 +1180,14 @@ fn checkVelocityWeighting(energy: []f32, picture: []u8, window: []f32) !void {
     // A window that steps from +a to -a at its midpoint draws one segment across
     // the centre row and puts its two flat runs far above and below, so
     // `rowEnergy` at that row is that segment's cross-section and nothing else's.
-    // Three amplitudes span a factor of eighteen in length, which the weight has
-    // to track; `checkBeamProfile` is the same measurement at the longest of them
-    // and asserts the biweight's own constant beside it.
-    for ([_]f32{ 0.05, 0.2, 0.9 }) |a| {
+    // Three amplitudes span a factor of ten in length, which the weight has to
+    // track. **None of them is 0.9**, deliberately: `checkBeamProfile` already
+    // drives exactly that step and reads exactly this row, so including it here
+    // would spend a second renderer, shader compile and readback to reprint a
+    // number byte for byte and would present one measurement as two. What that
+    // check contributes instead is the biweight's own constant, `(16/15) * h`,
+    // asserted at a length this loop does not reach.
+    for ([_]f32{ 0.05, 0.2, 0.5 }) |a| {
         var probe = try Probe.init(energy, picture);
         defer probe.deinit();
 
@@ -1707,9 +1716,9 @@ fn checkResolve(energy: []f32, picture: []u8, window: []f32) !void {
 /// **"Once" stopped meaning "an energy of one" at #57, and the ratio is what
 /// survived.** A line strip's x was monotone in `vertex_id`, so one frame could
 /// not cover a pixel twice and a moving trace sat at exactly 1.0. Oriented quads
-/// overlap at every joint, so a moving trace now measures about 2.6; the dwell
-/// asymptote scales with it and the ten-to-one range this check is named for is
-/// unchanged. That is why both arms below are read against `whitePoint` and
+/// overlap at every joint, which took it to about 2.6, and #58's velocity
+/// weighting brought it back to about **1.57**; the dwell asymptote scales with
+/// it either way and the ten-to-one range this check is named for is unchanged. That is why both arms below are read against `whitePoint` and
 /// against each other rather than against the beam's literal. #55 measured both ways of getting that wrong: a unit gain
 /// clips a dwelt trace to white and loses the colour, and a gain of `1 - decay`
 /// renders a moving one at green 53 of 255, which reads as a black display.
@@ -1737,9 +1746,11 @@ fn checkHotCore(energy: []f32, picture: []u8, window: []f32) !void {
         say("  hot core: one deposit reads RGB({d}, {d}, {d})", .{ got[0], got[1], got[2] });
 
         // Half of full range, as a bound rather than a tune: the shipped curve
-        // gives 189 here, and stating 128 is what lets the curve be retuned
+        // gives **207** here, and stating 128 is what lets the curve be retuned
         // without rewriting the assertion. It names #55's measured 53, which is
-        // the number this refuses to ship again.
+        // the number this refuses to ship again. The 189 this comment used to
+        // quote was the reading at a deposit of exactly 1.0 and was stale from
+        // #57 onward; a bound judged against it would sit two issues out of date.
         if (got[lead] < 128) return error.MovingTraceTooDim;
 
         // And tinted rather than white, which is the other half of the claim: at
@@ -1817,7 +1828,7 @@ fn checkDecay(energy: []f32, picture: []u8, window: []f32) !void {
             //
             // **#57 replaced the primitive that question was about, and the
             // answer with it.** Quads overlap at every joint by construction, so
-            // this is now about 2.61 at one sample per point, and that is the
+            // this is now about 1.57 at one sample per point, and that is the
             // design rather than a suspicion: a pixel the beam sweeps over more
             // than once in a frame receives more than one deposit. It stays a
             // finding rather than an assertion because the value tracks the

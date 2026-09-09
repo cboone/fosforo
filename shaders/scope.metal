@@ -405,8 +405,11 @@ vertex TraceOut trace_vertex(uint vertex_id [[vertex_id]],
 // moved to the palette, which is what this comment used to say #60 would do.
 //
 // **The profile is the biweight, `(1 - u²)²`.** It peaks at exactly 1.0 on the
-// centreline, so a single segment still deposits an energy of one at its core and
-// `whitePoint`'s derivation from the dwell asymptote is untouched, and it reaches
+// centreline, so the profile contributes a factor of exactly one there and the
+// two terms below are the whole of what a segment's core deposit is: about 0.60
+// at one sample per point and 0.0034 on a full-height rod, not the flat 1.0 this
+// sentence claimed before #58. `whitePoint`'s derivation is unchanged in form and
+// its input is not; see `white_headroom` above. It reaches
 // zero *with zero slope* at the quad's edge, so there is no seam where the
 // geometry ends. Compact support is worth more than it looks: an unlit pixel holds
 // exactly 0.0, which is what lets `checkResolve` keep its background assertions

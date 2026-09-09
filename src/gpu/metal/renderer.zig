@@ -411,7 +411,28 @@ const TraceUniforms = extern struct {
     /// fifth, and halving both axes holds a slow trace and brightens a fast one by
     /// 1.61: the *contrast* moves with the window in both cases, by up to 1.6x,
     /// where the physics says a beam covering half the distance in the same time
-    /// should simply be twice as bright everywhere. #58's own brief asked for that
+    /// should simply be twice as bright everywhere.
+    ///
+    /// **Those three geometries are all at or below one sample per point, and the
+    /// clamp below makes the other regime behave quite differently.** Above one
+    /// sample per point this term is pinned at 1 and stops compensating for
+    /// anything, while the velocity weight keeps dividing by a segment length that
+    /// is now the pitch. A flat trace's peak, measured across editor widths at 960
+    /// samples:
+    ///
+    /// | editor  | pitch | before #58 | after #58 |
+    /// | ------- | ----- | ---------- | --------- |
+    /// | 480 pt  | 0.50  | 1.59       | 1.19      |
+    /// | 960 pt  | 1.00  | 2.00       | 1.20      |
+    /// | 1920 pt | 2.00  | 1.58       | 0.68      |
+    /// | 3840 pt | 4.00  | 1.58       | 0.43      |
+    ///
+    /// The post-to-pre ratios are 0.750, 0.599, 0.428 and 0.272, which is
+    /// `h / (h + pitch)` to three figures, so this is the weight doing exactly what
+    /// it says rather than anything unexpected. What it means is that the
+    /// editor-width dependence of a *slow* trace went from 1.27x across that range
+    /// to **2.79x**: pre-existing, deepened here, and reachable by dragging a
+    /// 48 kHz session's editor wide on a large display. #58's own brief asked for that
     /// brightening and does not get it, because this term cancels exactly the
     /// extra coverage a narrower window produces. Left alone deliberately: it is a
     /// second relationship, it needs a reference geometry to fix absolute

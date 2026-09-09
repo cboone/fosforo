@@ -586,7 +586,9 @@ pub fn sine(out: []f32, cycles: f32, amplitude: f32) void {
 /// so a measurement over the whole image mixes the entire range and cannot state
 /// a relationship between energy and length. Here the length is one number the
 /// caller chose, `hypot(pitch, 2 * amplitude * full_scale * height / 2)`, and the
-/// image's total energy is the segment count times `segmentEnergy` of it.
+/// image's total energy is the segment count times `segmentEnergy` of that length
+/// times `TraceUniforms.density`. That last factor is not optional: at four
+/// samples per logical point it is 0.25, so leaving it out over-predicts by four.
 ///
 /// It is the Nyquist signal, which is not a coincidence: the fastest thing the
 /// window can hold is what draws the longest segments, and the longest segments
@@ -1056,12 +1058,18 @@ test "a segment's total deposit does not depend on its length" {
     // reasonably ask of a GPU.
     try testing.expectApproxEqRel(@as(f32, 0.982), at_rest / at_infinity, 1e-3);
 
-    // And unweighted it is nothing of the kind. This is the margin the offscreen
-    // check discriminates by: the same eight lengths span a factor of 197 with the
-    // velocity term removed.
-    const bare_short = 16.0 / 15.0 * h * 1.001 + at_rest;
-    const bare_long = 16.0 / 15.0 * h * 486.0 + at_rest;
-    try testing.expect(bare_long / bare_short > 190.0);
+    // And unweighted it is nothing of the kind, which is the margin
+    // `checkVelocityWeighting` discriminates by. Stated through the two functions
+    // rather than through literals, deliberately: `segmentEnergy / beamWeight` is
+    // the bare capsule integral, so this exercises both, where the same lines
+    // written out as constants would hold whatever the code under test did. The
+    // two lengths are that check's own flat and full-scale arms at 960 samples,
+    // not the eight in the loop above.
+    const flat = 1.001;
+    const steep = 486.0;
+    const bare_flat = segmentEnergy(flat, h) / beamWeight(flat, h);
+    const bare_steep = segmentEnergy(steep, h) / beamWeight(steep, h);
+    try testing.expect(bare_steep / bare_flat > 190.0);
 }
 
 test "an alternating window gives every segment the same length" {

@@ -46,7 +46,7 @@ The lookup is indexed with `access::read` and interpolated by hand rather than s
 
 ## Consequences
 
-**The hot core is emergent and is now executed rather than claimed.** `zig build smoke-trace` drives one deposit and thirty, and reads `RGB(75, 189, 96)` and `RGB(255, 255, 255)` off the picture. Nothing draws a core.
+**The hot core is emergent and is now executed rather than claimed.** `zig build smoke-trace` drives one deposit and thirty, and reads `RGB(102, 207, 119)` and `RGB(255, 255, 255)` off the picture. Nothing draws a core.
 
 **The model and the picture agree exactly.** `checkResolve` predicts all three channels of every pixel from one number and reports the worst channel off by **zero** across 518,400 pixels, through the curve, the interpolation and the hardware's encode. That is stronger than the per-channel comparison it replaces, because it asserts the picture's chroma follows from the intensity, which is the palette's whole claim.
 
@@ -65,7 +65,7 @@ Two things fell out of measuring it. The 2.2-against-3.0 swing between successiv
 > | 100 Hz | 2                    | 1.36   | 1.84  |
 > | 1 kHz  | 20                   | 1.34   | 7.50  |
 >
-> A 100 Hz sine at 0.5 has a fastest crossing only **1.88 times** the speed of its turning point, because the sweep runs at 96,000 px/s over 1920 px in 20 ms while the trace reaches 152,681 px/s. No weighting can widen that, and the 1.84 measured is the beam being honest about the signal rather than the term underperforming. Anyone re-deriving this figure from a single test tone will reach the same wrong conclusion; use two tones an octave decade apart.
+> A 100 Hz sine at 0.5 has a fastest crossing only **1.88 times** the speed of its turning point, because the sweep runs at 96,000 px/s over 1920 px in 20 ms while the trace reaches 152,681 px/s. No weighting can widen that, and the 1.84 measured is the beam being honest about the signal rather than the term underperforming. Anyone re-deriving this figure from a single test tone will reach the same wrong conclusion; use two tones a decade apart.
 >
 > **What changed is that the range now discriminates between signals.** Before, 100 Hz and 1 kHz both read about 1.35, so the transfer function mapped the same narrow band whatever was playing. That is gone.
 >
