@@ -5,7 +5,7 @@
   "description": "Pins the two Node tools that format and verify this repository's Markdown. Not a package, not published, and not part of any build: `zig build` never reads this file.",
   "license": "MPL-2.0",
   "devDependencies": {
-    "markdownlint-cli2": "0.21.0",
+    "markdownlint-cli2": "0.23.2",
     "prettier": "3.8.1"
   },
   "scripts": {
