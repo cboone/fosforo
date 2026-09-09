@@ -103,6 +103,20 @@ pub const Deltas = struct {
 ///
 /// A `switch` over a total enum rather than a lookup table, so adding a seventh
 /// outcome is a compile error here rather than a silently-zero row.
+///
+/// **One row is inherited rather than endorsed, and it is
+/// [#118](https://github.com/cboone/fosforo/issues/118).** `watch_unreadable`
+/// credits `fallbacks`, which `iface.ShaderStats` documents as "times the embedded
+/// copy was used" — and the watcher never uses it, which is what its own message
+/// says when it keeps the shader now running. That is `renderer.zig`'s behaviour
+/// as it stood and it is preserved here exactly, because #93 was a refactor whose
+/// evidence is that nothing observable moved. Collecting the six rows into one
+/// table is what made it legible. **Do not "fix" it by counting the read failure
+/// as `rejected`**, which was the first suggestion and trades one wrong claim for
+/// another: that counter means a source that was read and refused, and an
+/// unreadable file never reached the compiler. The issue carries the three options
+/// and why none is obviously right. Nothing currently misreports, because every
+/// reader of `fallbacks` in `src/smoke.zig` drives the opening path.
 pub fn deltas(outcome: Outcome) Deltas {
     return switch (outcome) {
         .watch_unreadable => .{ .fallbacks = 1 },
@@ -388,6 +402,9 @@ test "the outcome table, cell by cell" {
     // Six rows, because the two sites map the same three results differently and
     // the mapping is the whole content. Read as a table so that a row swapped for
     // its neighbour fails here rather than misreporting a smoke arm.
+    // Inherited rather than endorsed: this row claims the embedded copy was used
+    // and the watcher never uses it. Pinned as it stands, because #93 preserved
+    // `renderer.zig`'s arithmetic exactly; see `deltas` and #118.
     try testing.expectEqual(Deltas{ .fallbacks = 1 }, deltas(.watch_unreadable));
     try testing.expectEqual(Deltas{ .rejected = 1 }, deltas(.watch_rejected));
     try testing.expectEqual(Deltas{ .reloads = 1 }, deltas(.watch_reloaded));
