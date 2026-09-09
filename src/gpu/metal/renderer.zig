@@ -4125,3 +4125,74 @@ test "both paths that compile a source off disk check its bindings" {
     // as a lost one, and every `stated` check above still passes with one.
     try testing.expectEqual(3, canary.mentions(code, "noteBindings("));
 }
+
+test "every outcome is credited at the one site that can produce it" {
+    const code = canary.implementation(@embedFile("renderer.zig"));
+
+    // **The residue #93 leaves, stated rather than left to be discovered.**
+    // `reload.zig` holds what an outcome *does* and has tests for all six rows;
+    // which outcome happens *where* is this file's, and this file's reload paths
+    // are gated on `shader.live`, so no test binary compiles a line of them. A
+    // site that started crediting its neighbour's outcome would draw the right
+    // picture, print the right message, and misreport every smoke arm that reads
+    // the tally. So the six are counted as text, on `noteBindings`' precedent
+    // three tests up.
+    try testing.expectEqual(1, canary.stated(code, "if (shader_counters.note(.watch_unreadable)) {"));
+    try testing.expectEqual(1, canary.stated(code, "if (shader_counters.note(.watch_rejected)) {"));
+    try testing.expectEqual(1, canary.stated(code, "if (shader_counters.note(.watch_reloaded)) {"));
+    try testing.expectEqual(1, canary.stated(code, "_ = shader_counters.note(.open_reloaded);"));
+    try testing.expectEqual(1, canary.stated(code, "if (shader_counters.note(.open_rejected)) {"));
+    try testing.expectEqual(1, canary.stated(code, "if (shader_counters.note(.open_unreadable)) {"));
+
+    // The two that are not outcomes, kept in the same count so the bound below
+    // covers every reader of the tally rather than most of them.
+    try testing.expectEqual(1, canary.stated(code, "shader_counters.notePathResolved();"));
+    try testing.expectEqual(1, canary.stated(code, "return shader_counters.stats();"));
+
+    // Eight, which is the half `stated` cannot do: a *ninth* site crediting an
+    // outcome somewhere else passes every assertion above. Eleven counts the two
+    // `&shader_counters` arguments and the declaration as well, so a second
+    // instance of the tally fails here too — and a second instance is the way this
+    // design breaks silently, since each would answer `shaderStats` for half the
+    // process.
+    try testing.expectEqual(8, canary.mentions(code, "shader_counters."));
+    try testing.expectEqual(11, canary.mentions(code, "shader_counters"));
+}
+
+test "the watcher decides through one call, and the read waits on its answer" {
+    const code = canary.implementation(@embedFile("renderer.zig"));
+
+    // `reload.Watch` is the only writer of `seen`, which is what makes the rule
+    // that it advances before the compile a property of a tested function rather
+    // than of a statement order here. Two mentions and no more: a `self.seen`
+    // reappearing in this file would put the state back where nothing can reach
+    // it.
+    try testing.expectEqual(1, canary.stated(
+        code,
+        "self.watch.baseline(if (path) |p| shader.stamp(p) catch null else null);",
+    ));
+    try testing.expectEqual(1, canary.stated(
+        code,
+        "if (self.watch.look(self.mailbox.vacant(), now) == .idle) return;",
+    ));
+    try testing.expectEqual(2, canary.mentions(code, "self.watch."));
+    try testing.expectEqual(0, canary.mentions(code, "self.seen"));
+
+    // **The order, which no count can see**, and both halves of it. The decision
+    // gates the read, so a read hoisted above it would compile and would reload a
+    // file nothing had decided was worth reloading.
+    try testing.expect(canary.statedBefore(
+        code,
+        "if (self.watch.look(self.mailbox.vacant(), now) == .idle) return;",
+        "shader.read(&self.buf, path) catch |err| {",
+    ));
+
+    // And the bindings are read *after* the reload is credited, which `poll`'s own
+    // comment argues for: a warning printed before "recompiled" would read as the
+    // reason the reload did not happen, when the reload is exactly what did.
+    try testing.expect(canary.statedBefore(
+        code,
+        "if (shader_counters.note(.watch_reloaded)) {",
+        "noteBindings(self.buf.source(), &shader_counters);",
+    ));
+}
