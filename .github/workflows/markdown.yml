@@ -38,7 +38,12 @@ permissions:
 # `actionlint`: this is platform-independent static analysis and the macOS
 # runner bills at ten times the rate.
 jobs:
-  check:
+  # Named for what it checks rather than `check`, which is what typos.yml calls
+  # its job. A status check is identified by its job name, so two workflows both
+  # using `check` produce two indistinguishable rows in a pull request's rollup
+  # and an ambiguous target for any branch protection rule. Observed on #115
+  # before this rename. Every job in ci.yml is already named this way.
+  markdown:
     runs-on: ubuntu-latest
     # 3 on the floor that `shell`, `python`, `typos` and `actionlint` share, and
     # unmeasured for the same reason theirs were when they landed: this is
