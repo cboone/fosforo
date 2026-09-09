@@ -517,9 +517,9 @@ test "a counter accumulates rather than latching" {
     try testing.expectEqual(@as(u64, 2), counters.stats().rejected);
     try testing.expectEqual(@as(u64, 4), counters.stats().unreadable);
 
-    // Still zero after nine looks at a file the watcher could not use, which is
-    // #118 stated against the tally rather than against the table: none of the
-    // three watcher outcomes has anything to fall back to.
+    // Still zero after nine looks under the watcher, which is #118 stated against
+    // the tally rather than against the table: not one of the three watcher
+    // outcomes has anything to fall back to.
     try testing.expectEqual(@as(u64, 0), counters.stats().fallbacks);
 }
 
@@ -607,11 +607,13 @@ test "every field of the published tally reads the counter behind it" {
     for (0..4) |_| counters.noteMismatch();
     counters.notePathResolved();
 
-    // Four distinct values across five counters would let `unreadable` and
-    // `fallbacks` be transposed unnoticed, since both would read zero. So
-    // `open_rejected` supplies the fifth: it is the one outcome that moves
-    // `fallbacks` without moving `unreadable`, which is the pair this test has to
-    // separate after #118.
+    // **Every counter has to be non-zero, not merely distinct.** The watcher rows
+    // above leave `fallbacks` at zero, and a zero cannot tell `stats` reading the
+    // right atomic from `stats` reading nothing at all: a field wired to a
+    // constant, or to a sixth atomic nobody moves, satisfies an expectation of
+    // zero. Planted as `.fallbacks = 0`, that passed this test before the line
+    // below and fails it after. `open_rejected` is what supplies the value, being
+    // the one outcome that moves `fallbacks` without moving `unreadable`.
     for (0..5) |_| _ = counters.note(.open_rejected);
 
     try testing.expectEqual(iface.ShaderStats{
