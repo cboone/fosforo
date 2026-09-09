@@ -48,8 +48,11 @@ jobs:
     # 3 on the floor that `shell`, `python`, `typos` and `actionlint` share, and
     # unmeasured for the same reason theirs were when they landed: this is
     # structurally the same thing, an Ubuntu checkout plus a dependency install
-    # plus a tree walk over 79 files. Re-measure from real runs rather than
-    # copying this number onward, which is how the old ceilings propagated.
+    # plus a tree walk over every tracked Markdown file. Deliberately not a
+    # count. The last one here said 79 and went stale the moment #120 split
+    # AGENTS.md into docs/notes/, and a figure that only justifies a ceiling
+    # earns nothing by being exact. Re-measure from real runs rather than
+    # copying this ceiling onward, which is how the old ones propagated.
     timeout-minutes: 3
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
