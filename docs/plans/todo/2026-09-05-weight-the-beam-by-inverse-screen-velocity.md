@@ -284,9 +284,37 @@ The last row was planted expecting a catch and is a correction to the plan. A va
 
 ### Outstanding
 
-The host session, which nothing offscreen can substitute for. `smoke-trace` renders a window it supplied itself and says nothing about the audio path, the ring, the display link or the compositor.
+`white_headroom` is **settled**: judged in REAPER at 0.4 and 1.2 with no visible difference, which is arithmetic rather than eyesight, and the re-judgement moved to phase 4. See the commit and ADR 0019.
 
-1. **`white_headroom`, on `sine-1000hz-0.5.wav` and `click-2hz.wav`**, not the 100 Hz sine, for the reason above. The prediction is that 0.8 survives unchanged.
-2. **[#79](https://github.com/cboone/fosforo/issues/79)**: stop the transport and look. A full-height segment now deposits 0.0034 against 1.57, so it should be dim by construction; if it is, close #79 as covered.
-3. **Resize during playback**, to see the contrast change above with eyes on it.
-4. The level sweep and the 48/96/192 kHz arm, which exercise the ring and `windowSamples` rather than the weight.
+What remains is one host session. `smoke-trace` renders a window it supplied itself and says nothing about the audio path, the ring, the display link or the compositor.
+
+```bash
+zig build install-clap    # prints the hash and provenance of what landed, and of what it replaced
+/Applications/REAPER.app/Contents/MacOS/REAPER 2>&1 | grep --line-buffered fosforo
+```
+
+Both `2>&1` and `--line-buffered` are required and each fails differently; see AGENTS.md. Verify at **48 kHz**, since above it the display aliases until [#62](https://github.com/cboone/fosforo/issues/62). Capture with `screencapture -o -x -t png -W verification/shot.png` and click the editor window, which is titled `CLAP: Fósforo (Catamount) - Track N` at about 960x593, not the project window. Read every capture with `scripts/measure-trace --explain --refresh 120`.
+
+| #   | Arm                                                                    | Signal                                     | Pass criterion                                                                                                                                                         |
+| --- | ---------------------------------------------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | **[#79](https://github.com/cboone/fosforo/issues/79), transport stop** | any tone, then stop                        | The bright vertical line is gone. Predicted green **15 to 30** against a background of 5 and a trace at 190. If so, close #79 as covered rather than fixed             |
+| 2   | **The characteristic look**                                            | `sine-1000hz-0.5.wav`                      | A visible gradient along the trace: turning points at green **190**, crossings at **99**. This is what #58 was for and it is the one arm that should be obvious by eye |
+| 3   | Resize during playback                                                 | any tone                                   | Brightness holds on slow parts and the fast parts change; the contrast moves by up to 1.6x. Subtle, and already measured offscreen, so confirmation only               |
+| 4   | Level sweep                                                            | 1.000, 1.050, 1.089, 2.000                 | The implied sample tracks the level and then **stops**: +1.0000, +1.0500, +1.0889, +1.0889. Watching for a flat top is the wrong test (ADR 0017)                       |
+| 5   | Sample rate                                                            | `sine-100hz-0.5.wav` at 48, 96 and 192 kHz | Peak still inverts to +0.5000 at every rate. Change REAPER's **device** rate, not the files. Exercises the ring and `windowSamples`, not the weight                    |
+
+Arms 1 and 2 are the ones worth the session. Arms 3 to 5 are confirmation and regression.
+
+Then the pre-PR sweep, all currently green:
+
+```bash
+zig build test && zig build validate-shaders && zig build smoke-gpu && zig build smoke-trace
+zig build smoke-appkit && zig build smoke-leaks -Dleak-cycles=40
+clap-validator validate zig-out/Fosforo.clap
+zig fmt --check build.zig src/ && typos && markdownlint-cli2
+uvx ruff format --check . && uvx ruff check .          # the log must read 1 file
+git ls-files -z | xargs -0 shfmt -f | xargs shfmt -d
+git ls-files -z | xargs -0 shfmt -f | xargs shellcheck
+```
+
+**Before quoting any number, put `white_headroom` and `palette_row` back to 0.8 and 0** and re-run `zig build test`. Each is tied to `src/gpu/palette.zig` by the constants test, so an experiment left in place fails CI, and a capture taken against an edited shader was measured against a mapping the model has never seen.
