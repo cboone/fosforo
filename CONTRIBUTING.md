@@ -35,6 +35,11 @@ Two things are worth knowing before you start. First, the project is deliberatel
 git clone https://github.com/cboone/fosforo.git
 cd fosforo
 
+# Teach git blame to skip the tree-wide formatting commits. GitHub applies
+# .git-blame-ignore-revs to its own blame view automatically; locally this is
+# what makes `git blame` name the author of a line rather than the formatter.
+git config blame.ignoreRevsFile .git-blame-ignore-revs
+
 # Build. Dependencies are fetched and pinned by content hash automatically.
 zig build
 

@@ -1,0 +1,38 @@
+# Revisions git blame should skip, newest last. One full 40-character SHA per
+# line; short SHAs are not accepted and fail loudly.
+#
+# GitHub reads this file by name and applies it to the blame view with no
+# configuration. Locally it takes one command, once per clone:
+#
+#     git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# Without that, `git blame` here attributes 423 lines of the Markdown corpus to
+# a formatter rather than to whoever wrote them, and 54 of AGENTS.md's 462.
+#
+# Two rules for adding to this file, both learned rather than assumed.
+#
+# Only list a commit that changed formatting and NOTHING else. A listed commit
+# becomes invisible to blame, so a substantive change buried in one would be
+# attributed to whoever last touched the line for real, which is worse than the
+# noise this file exists to remove. Verify before adding: normalise the diff for
+# whatever the formatter is allowed to change and confirm nothing survives. That
+# check is what caught #106's fence damage, and the entry below was not added
+# until its repair was written.
+#
+# These SHAs survive because this repository merges pull requests rather than
+# squashing them. A squash rewrites the commit, and an entry pointing at a SHA
+# that no longer exists is skipped in silence rather than reported, so a squash
+# merge of a formatting branch means the entry has to be re-derived from the
+# commit that actually landed.
+
+# style: format every Markdown file with prettier (#106)
+# Tree-wide Prettier adoption: table alignment and `*emphasis*` to `_emphasis_`
+# across 54 files, 455 insertions and 454 deletions.
+668a02942d38ca9f1de62c5fc607148d38289fc1
+
+# fix: stop prettier reformatting code inside Markdown fences (#106)
+# Restores six YAML fences the commit above dedented, and turns off embedded
+# formatting so it cannot recur. Listed here too, because it puts the fences
+# back to their original text: skipping both is what makes blame land on the
+# author who wrote them rather than on either half of the round trip.
+068c86b767cbe8bd9903d04a96de0e18ad50d447
