@@ -39,9 +39,9 @@ These are settled decisions recorded in [`docs/adr/`](docs/adr/). Do not relitig
 ## Structure
 
 ```text
-build.zig                   three artifacts from one core: static lib, .clap bundle, smoke harness
+build.zig                   five artifacts from one core: two libs, the .clap bundle, smoke, two race harnesses
 build.zig.zon               pins Zig 0.16.0, CLAP 1.2.10, zig-objc by content hash
-cmake/                      clap-wrapper integration, used only for the AUv2 build
+cmake/                      clap-wrapper integration: the AUv2, and a second .clap CI validates
   CMakeLists.txt
   entry.cpp                 the only C++ in the project; builds the clap_entry symbol
   entry.h                   declares the three extern "C" functions entry.cpp calls
@@ -89,10 +89,16 @@ src/
   platform/displaylink.zig  CVDisplayLink, and the monotonic clock it is measured by
   platform/view.zig         the NSView the host embeds, and nothing about Metal
 docs/
-  adr/                      settled architecture decisions
+  adr/                      settled architecture decisions; superseded, never edited
   design/                   the source brainstorm this project came from
+  notes/                    how each area behaves; living, corrected in place
   plans/todo/               active plans
   plans/done/               completed plans, kept as historical records
+verification/               host captures land here; gitignored but for .gitkeep
+.github/
+  copilot-instructions.md   repo-wide PR review rules
+  *.instructions.md         four more, fired by an applyTo glob: cmake, docs, shell, zig
+  workflows/                ci, markdown, typos, gitleaks, trufflehog
 ```
 
 ## Development
