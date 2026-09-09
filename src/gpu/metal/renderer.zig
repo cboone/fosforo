@@ -39,8 +39,13 @@ const CGSize = platform.CGSize;
 /// that can change between a build and a frame. What they pin is the agreement
 /// between this file's constants and the shader the build shipped: the whole of
 /// the shipping path in a release, and the starting point in a debug build.
-/// **Nothing anywhere validates a hot-reloaded shader's binding indices**, which
-/// gets `buildPipeline`'s missing-function check and nothing else.
+///
+/// **This used to end "nothing anywhere validates a hot-reloaded shader's binding
+/// indices", and #77 falsified that without updating it.** `noteBindings` walks
+/// the same `bindings` table over a source read off disk, so the indices are now
+/// checked in both copies by one implementation. What survives of the original
+/// claim is the sharper half: a `TraceUniforms` field added or reordered on one
+/// side only is readable from nowhere, because MSL computes its own offsets.
 const shader_source = shader.embedded;
 
 /// Metal's own enum values, restated because its headers are Objective-C and
@@ -2665,8 +2670,19 @@ fn buildPipelines(device: objc.Object, diags: *iface.Diagnostics) iface.Error!Pi
 ///
 /// **Says so once rather than every time.** Silently would be defensible and is
 /// worse: an editor that opens showing yesterday's shader with no explanation is
-/// the kind of thing that gets blamed on the GPU. Once, because the watcher asks
-/// this four times a second and a missing file is a state that persists.
+/// the kind of thing that gets blamed on the GPU. Once, because a missing file is
+/// a state that persists and every editor opened in the process would otherwise
+/// say the same thing again.
+///
+/// **This used to say "because the watcher asks this four times a second", and the
+/// watcher has never asked it.** `Watcher.poll` resolves its own path and calls
+/// `shader.read` directly; nothing on that thread reaches here. So the repetition
+/// the guard suppresses is across `init` and `probe` within one process, not
+/// across polls, and the two paths are counted apart for that reason.
+///
+/// The rule itself now lives in `reload.Deltas.say`, where the coupling it carries
+/// is asserted: it is keyed on `fallbacks`, which `open_rejected` also moves, so a
+/// rejection earlier in the process silences the first unreadable file (#93).
 fn readShader(buf: *shader.Buffer) ?[:0]const u8 {
     var path_buf: shader.PathBuffer = undefined;
     const path = shader.resolvePath(&path_buf) orelse return null;
