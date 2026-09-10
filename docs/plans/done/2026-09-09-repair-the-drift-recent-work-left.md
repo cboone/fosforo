@@ -268,3 +268,27 @@ Without step 2 the widened check is indistinguishable from one that reads the ne
 **Per-figure discipline (B):** for each corrected value, `rg '<old value>'` across the tree and record every live occurrence in the commit message. Occurrences under `docs/plans/done/` are not live.
 
 **Not run here:** anything needing a host, a window server or a certificate. Nothing in this plan touches the render path, the audio path, the editor's lifecycle or the signing identity, so REAPER, Logic and `assert-distributable-signature`'s positive direction are all unnecessary. The four issues in section H are where host verification will be needed.
+
+---
+
+## Results
+
+**Landed**, in seventeen commits. Every mechanical check was green before this branch and is green after: `zig fmt`, all three test modes, `shfmt`, `shellcheck`, `actionlint`, `typos`, `ruff`, Prettier, `markdownlint-cli2` and `scripts/check-doc-budget`. Both smoke transcripts are byte-identical to `main`'s below the provenance line, which is the evidence that a branch touching `src/` in nine places moved no measurement.
+
+**Two things went differently from the plan as approved**, and both are recorded above rather than absorbed: the changelog gap the plan missed entirely, and E5, which was the one finding in three audits that was wrong.
+
+### What the two behaviour changes cost to verify
+
+| Change                             | Plant                                                                                             | Result                                                                                                                            |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `resolve_version` reads CMake (D1) | CMake bumped alone, then the real release shape with the other three bumped and CMake left behind | The real script refuses each against real bundles, naming the disagreeing value, and passes on the tree as it stands              |
+| `-e` to `-d` (E1)                  | A plain file passed to both signature scripts                                                     | Both now refuse at 66; a real bundle still reaches the signature checks                                                           |
+| `.github/actions/shellcheck` (E3)  | A bogus `with:` input on the new local action                                                     | `actionlint` reports it, naming the two inputs the action declares — the case #99 measured a SHA-pinned action being invisible in |
+
+### The finding that was wrong
+
+E5 proposed deleting `zig-pkg/` from five ignore lists as dead configuration. **A plain `zig build` creates it**, verified in a scratch copy, and unpacks CLAP and `zig-objc` into it. The audit's evidence was that `rg` found no reference to the path anywhere — and `rg` found none because `.gitignore` was hiding the directory from `rg`. The entry under audit was what made the null result look conclusive. Removing the five entries made Prettier walk vendored CLAP Markdown, `markdownlint` report `MD041` on upstream READMEs, and `typos` report twenty-odd findings in third-party headers, all within seconds. Reverted, and written up as its own bullet in [linters](../../notes/linters.md), because the general form — **an ignore entry hides its own evidence from every tool you would search with** — is worth more than the finding would have been.
+
+### Not done here, and filed instead
+
+[#128](https://github.com/cboone/fosforo/issues/128), [#129](https://github.com/cboone/fosforo/issues/129), [#130](https://github.com/cboone/fosforo/issues/130) and [#131](https://github.com/cboone/fosforo/issues/131), per section H. The first two belong together: the vacuity guard needs a test to plant against, and #92's own results section records that its acceptance was satisfied by arms that did not discriminate.
