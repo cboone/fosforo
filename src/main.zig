@@ -97,10 +97,11 @@ test {
     _ = @import("platform/objc.zig");
     _ = @import("platform/view.zig");
 
-    // Reached only from the `test` blocks of the eight files it guards, so no
-    // import chain from `plugin` runs through it and its own tests would
-    // otherwise not be collected. It is what every one of those canaries rests
-    // on, which makes a bug in it that many checks silently passing.
+    // Reached only from the `test` blocks of the eight other files it guards and
+    // from this file's own sweep test below, so no import chain from `plugin`
+    // runs through it and its own tests would otherwise not be collected. It is
+    // what every one of those canaries rests on, which makes a bug in it that
+    // many checks silently passing.
     _ = @import("canary.zig");
 
     // Not reached from the plugin at all: it reads a rendered trace back as
@@ -115,9 +116,9 @@ test {
     // issues. `measure.zig` holds the extraction and this holds the
     // *expectations*, which is where the tolerances, the loops and the guards
     // against going vacuous live. Its one caller is `src/smoke.zig` too, so
-    // without this line the hardest claims this project makes about
-    // what the pixels became would again be checked only by the build step that
-    // needs a GPU.
+    // without this line the hardest claims this project makes about what the
+    // pixels became would again be checked only by the build step that needs a
+    // GPU.
     _ = @import("gpu/verdict.zig");
 
     // The same argument again, and this one is not about a GPU at all. Its callers

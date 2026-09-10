@@ -606,11 +606,9 @@ jobs:
 
       # Neither project publishes a checksum manifest with its releases, so the
       # sums are committed here rather than fetched. Fetching them from the same
-      # host that serves the asset would verify transport, not provenance.
-      #
-      # shellcheck is downloaded to a file rather than piped straight into tar,
-      # because a pipe would have tar consuming bytes before anything could
-      # verify them.
+      # host that serves the asset would verify transport, not provenance. That
+      # applies to shellcheck below too, where the same reasoning plus the
+      # download-before-extract one now lives in the action rather than here.
       - name: Install shfmt
         run: |
           curl -sSfL -o shfmt \
@@ -726,11 +724,12 @@ jobs:
       - name: Lint Python
         run: ruff check .
 
-  # This file is tens of kilobytes and nothing checked it. `actionlint` sits in the build
-  # plan's phase 0 exit criteria and in no workflow, so it was a local step at
-  # best -- the fourth instance of a check that is configured, is believed to be
-  # running, and silently is not (#28, #85, #87). Workflow files are the one
-  # place whose errors surface only as a failed run on someone else's branch.
+  # This file was 46 KB when nothing checked it, and has only grown since.
+  # `actionlint` sits in the build plan's phase 0 exit criteria and in no
+  # workflow, so it was a local step at best -- the fourth instance of a check
+  # that is configured, is believed to be running, and silently is not (#28,
+  # #85, #87). Workflow files are the one place whose errors surface only as a
+  # failed run on someone else's branch.
   #
   # In ci.yml rather than its own workflow, and that is confirmed rather than
   # assumed. `typos` is separate because this workflow's `paths-ignore` lists

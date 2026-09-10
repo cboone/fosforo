@@ -409,10 +409,10 @@ fn expectClose(a: f32, b: f32, tolerance: f32, fault: Fault) Fault!void {
 /// test, which is what changed.** `traceHalf` allocates one pair of buffers at
 /// exactly `trace_width * trace_height * 4` and `Probe` declares that same
 /// geometry, so the shipping caller cannot produce a short readback. What #92
-/// changed is that these are public functions a test can hand any
-/// `Image` to, and the tests do exactly that. A Debug build would panic on the
-/// bounds rather than corrupt anything, but `Fault.ReadbackTruncated` is in the
-/// error set to be returned, and an error two of fifteen entrypoints could
+/// changed is that these are public functions a test can hand any `Image` to,
+/// and the tests do exactly that. A Debug build would panic on the bounds rather
+/// than corrupt anything, but `Fault.ReadbackTruncated` is in the error set to be
+/// returned, and an error two of the fifteen entrypoints there were then could
 /// return was nearly dead.
 ///
 /// Longer than the geometry stays fine and the tail stays ignored, which is
