@@ -8,7 +8,9 @@ Early development, and not yet worth installing unless you are working on it. No
 
 What works: the plugin loads in REAPER and in Logic Pro, through the Audio Unit that [clap-wrapper](https://github.com/free-audio/clap-wrapper) projects it into. It passes stereo audio through unchanged, saves and restores its state, and taps one channel into a lock-free history buffer the render thread reads a trailing window from. It opens a resizable editor backed by a `CAMetalLayer` and renders into it at vsync, driven by a `CVDisplayLink`. **It draws the signal**, as a beam depositing energy into a persistent floating-point accumulation texture that decays between frames, so the trace glows and fades rather than being redrawn from nothing. The fade is exponential in real elapsed time against a time constant, so it looks the same at 60 Hz, at 120, and on a display that drifts between the two. The beam is real geometry: each inter-sample segment is a quad shaded by its distance from the beam's path, three points wide, with an intensity profile and antialiasing that come from the profile rather than from multisampling.
 
-What does not work yet: the beam's brightness does not vary with how fast it sweeps, and the trace follows the samples rather than the continuous waveform between them, so intersample peaks are invisible. Those are the rest of [phase 3](https://github.com/cboone/fosforo/milestone/3), and each is an issue.
+The beam is also velocity weighted, which is the relationship the whole characteristic look comes from: energy per unit length falls as a segment's screen length grows, so a slow sweep glows solid where a fast one smears dim.
+
+What does not work yet: the trace follows the samples rather than the continuous waveform between them, so intersample peaks are invisible. That is the rest of [phase 3](https://github.com/cboone/fosforo/milestone/3), and it is one issue.
 
 ## Roadmap
 

@@ -65,17 +65,20 @@ install steps print and `scripts/read-provenance` reads back out of any built
 file. That is the check to reach for when there is nothing here to compare a
 hash against, such as a component another branch installed.
 
-A CLAP needs no install at all. REAPER honours `CLAP_PATH`, so a bundle can be
-loaded straight out of a worktree, which sidesteps the shared folder entirely.
-Move any installed copy aside first, because the variable adds to the standard
-locations rather than replacing them:
+**One host stream at a time**, which is the working rule rather than a
+constraint to route around: install, launch, read. Only one worktree verifies
+against a host at any moment. No `CLAP_PATH`, no moving bundles aside, no second
+copy of anything claiming `com.catamount.fosforo`.
 
-```bash
-CLAP_PATH="$PWD/zig-out" /Applications/REAPER.app/Contents/MacOS/REAPER
-```
+`CLAP_PATH` does work — REAPER honours it and a bundle loads straight out of a
+worktree — and it is deliberately not used. It is additive rather than
+replacing, so both copies claim the same plugin id, and what it buys is
+concurrency this project does not want. The measurement is recorded in
+[host verification](docs/notes/host-verification.md) so it is not repeated, not
+so the route is taken.
 
-There is no equivalent for the Audio Unit, and a symlinked component is not
-registered by macOS at all, so that half really does have to be copied.
+There is no equivalent for the Audio Unit in any case, and a symlinked component
+is not registered by macOS at all, so that half always has to be copied.
 
 ### Building the Audio Unit
 
