@@ -13,8 +13,9 @@
 //! **`CVDisplayLink` is deprecated as of macOS 15.** It is kept anyway. The
 //! replacements, `CAMetalDisplayLink` and `-[NSView displayLinkWithTarget:
 //! selector:]`, are macOS 14 and later, and this project's deployment target is
-//! 11.0 in three places (ADR 0001, `build.zig`, `cmake/CMakeLists.txt`, and
-//! `macos/Info.plist`). Raising that is a deliberate decision that wants an ADR,
+//! 11.0 in four places (`build.zig`, `cmake/CMakeLists.txt`, `macos/Info.plist`
+//! and `packaging/distribution.xml`), under ADR 0001, which is the decision
+//! rather than a fifth site. Raising that is a deliberate decision that wants an ADR,
 //! not a side effect of picking a clock. Nothing warns in the meantime: the
 //! declarations below are Zig's, so no deprecated header attribute is ever read.
 

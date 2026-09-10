@@ -1065,6 +1065,17 @@ jobs:
       # `/usr/bin/grep -a` rather than `strings`, which is `scripts/read-provenance`'s
       # reasoning and not a style choice: /usr/bin/strings is an xcrun shim that fails
       # without the Command Line Tools, while /usr/bin/grep is a base-OS binary.
+      #
+      # **All three needles below are restatements of Zig declarations and nothing
+      # links them**, which the positive control does not cover: it proves the file
+      # is readable, not that the needle is still the right one. `fosforo-build: `
+      # is `build_info.marker_prefix`, whose docstring says changing it changes an
+      # interface and which `src/build_info.zig` ties to `scripts/read-provenance`
+      # by reading that script as text -- this is a third spelling that test cannot
+      # see. `shaders/scope.metal` is `build.zig`'s `shader_source_path`. And
+      # `FOSFORO_SHADER_PATH` is `shader.path_env`; rename its *value* and this
+      # assertion greps forever for a string that can no longer appear, passes, and
+      # says nothing. Grep these three before renaming any of them.
       - name: Assert the release artifacts carry no source path
         run: |
           for bundle in build/assets/Fosforo.component build/assets/Fosforo.clap; do
