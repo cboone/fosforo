@@ -611,18 +611,17 @@ jobs:
       # shellcheck is downloaded to a file rather than piped straight into tar,
       # because a pipe would have tar consuming bytes before anything could
       # verify them.
-      - name: Install shfmt and shellcheck
+      - name: Install shfmt
         run: |
           curl -sSfL -o shfmt \
             "https://github.com/mvdan/sh/releases/download/v${SHFMT_VERSION}/shfmt_v${SHFMT_VERSION}_linux_amd64"
           echo "${SHFMT_SHA256}  shfmt" | sha256sum --check --strict -
           sudo install shfmt /usr/local/bin/shfmt
 
-          curl -sSfL -o shellcheck.tar.xz \
-            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
-          echo "${SHELLCHECK_SHA256}  shellcheck.tar.xz" | sha256sum --check --strict -
-          tar -xJf shellcheck.tar.xz
-          sudo install "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+      - uses: ./.github/actions/shellcheck
+        with:
+          version: ${{ env.SHELLCHECK_VERSION }}
+          sha256: ${{ env.SHELLCHECK_SHA256 }}
 
       # Confirms the pins resolved to the intended versions, so a sum bumped
       # without its version (or the reverse) fails here rather than silently
@@ -742,11 +741,13 @@ jobs:
   # to that and is fixed: `pull_request` no longer carries `branches: [main]`, so
   # a stacked pull request runs this exactly as it runs the rest.
   #
-  # Placed below `python` so the three Ubuntu jobs stay contiguous. The rationale
-  # this comment carried when #99 landed, that the placement keeps `ring-race`'s
+  # Placed below `python` so the Ubuntu jobs stay contiguous. The rationale this
+  # comment carried when #99 landed, that the placement keeps the `race` job's
   # "the two Ubuntu jobs below" true, was wrong in a way position cannot fix:
-  # this job is a pinned Ubuntu download wherever it sits below `ring-race`, so
-  # it made that count three. The count there has been corrected instead.
+  # this job is a pinned Ubuntu download wherever it sits below `race`, so it made
+  # that count three. The count there has been corrected instead. (That job was
+  # named `ring-race` until #91 gave it a second harness; the step inside it still
+  # is, which is why a grep for the old name finds one and not the other.)
   #
   # **What this catches is narrower than it reads, and the gap is this
   # repository's own pinning policy.** Measured against 1.7.12 with a positive
@@ -797,7 +798,7 @@ jobs:
       # passing -- so relying on the runner image would be a vacuous pass of the
       # kind `python`'s comment names, and relying on its *version* would let the
       # image lint this file with a different tool than `shell` uses.
-      - name: Install actionlint and shellcheck
+      - name: Install actionlint
         run: |
           cd "${RUNNER_TEMP}"
           curl -sSfL -o actionlint.tar.gz \
@@ -806,11 +807,10 @@ jobs:
           tar -xzf actionlint.tar.gz actionlint
           sudo install actionlint /usr/local/bin/actionlint
 
-          curl -sSfL -o shellcheck.tar.xz \
-            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
-          echo "${SHELLCHECK_SHA256}  shellcheck.tar.xz" | sha256sum --check --strict -
-          tar -xJf shellcheck.tar.xz
-          sudo install "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+      - uses: ./.github/actions/shellcheck
+        with:
+          version: ${{ env.SHELLCHECK_VERSION }}
+          sha256: ${{ env.SHELLCHECK_SHA256 }}
 
       # Confirms both pins resolved, on the established reasoning, plus one that
       # belongs to this job alone: the shellcheck line is the only evidence in the
