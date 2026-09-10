@@ -48,20 +48,62 @@ using namespace metal;
 //
 // Below one deliberately. Reinhard reaches its white point exactly at e = w while
 // the steady state is only approached, so a white point set at the asymptote
-// itself would never arrive and the core would stay pale green. At 0.8 a dwelt
-// pixel goes white after sixteen frames.
+// itself would never arrive and the core would stay pale green. **At 0.8 a
+// cleared, dwelling pixel reaches white in 113 ms**, which is about seven frames
+// at 60 Hz and fourteen at 120: the same wall time either way, because the
+// asymptote and the white point carry the same 1 / (1 - decay) and it cancels.
+// The closed form is `-tau * ln(1 - white_headroom / d)`, where d is the
+// per-frame deposit on a stationary trace.
 //
-// **Provisional at 0.8, and #58 is what settles it.** Measured in REAPER against
-// a 100 Hz sine: the picture peaked at 2.2 and 3.0 deposits on two successive
-// frames, against roughly 1 for a fast crossing. **No white point can carve a
-// visible core out of a 2:1 range** — set it high and nothing reaches white, set
-// it low and everything does. Dropping this to 0.2 put white at 2.0 deposits and
-// moved fifty pixels of thirty-two thousand, which is invisible, so the knob has
-// almost no useful travel today. Velocity weighting divides the deposit by
-// segment screen length and widens that ratio by an order of magnitude, at which
-// point a core appears at a sensible white point because there is a range to map.
-// Re-judge this when #58 lands rather than tuning it now; 0.8 is the value the
-// paragraph above argues for on its own terms.
+// **The upper bound is d itself, measured at 1.5674.** At or above it the white
+// point sits at or past the asymptote and the core never arrives at all, however
+// long the beam holds still; 1.5 already takes 498 ms. The figure this comment
+// used to give, sixteen frames, was computed when d was exactly 1.0 under a line
+// strip. #57 took it to 2.6133 and #58 to 1.5674, and it was stale through both.
+//
+// **The range this was waiting for exists (#58), and it is not the one that was
+// promised.** ADR 0019 held the value provisional on the grounds that no white
+// point can carve a visible core out of a 2:1 dwell range, and predicted that
+// velocity weighting would widen that range by an order of magnitude. Measured
+// offscreen, turning point against zero crossing, at 0.5:
+//
+//   100 Hz (2 cycles in the window)   1.36 before   1.84 after
+//   1 kHz  (20 cycles)                1.34 before   7.50 after
+//
+// So the order of magnitude is real at 1 kHz and is **not** real at 100 Hz, which
+// matters because every figure the prediction was made from came from a 100 Hz
+// sine. That signal's fastest crossing is only 1.88 times the speed of its
+// turning point — at 1920 px in 20 ms the sweep runs at 96,000 px/s and a 0.5
+// sine at 100 Hz reaches 152,681 px/s vertically — so no weighting can widen it
+// further, and the 1.84 measured is the beam telling the truth about it.
+//
+// **What actually changed is that the range now discriminates between signals.**
+// Before, 100 Hz and 1 kHz both read about 1.35 and the display said the same
+// thing about a slow tone and a fast one. That is what a plot does. Now they read
+// 1.84 and 7.50, and the difference between them is information.
+//
+// **And the knob still has no visible travel, for a reason that is not the one
+// ADR 0019 gave.** Judged in REAPER at 0.4 and at 1.2: no visible difference.
+// That is the arithmetic rather than the eye. A moving trace deposits d once and
+// slides on, so it reaches 1.57; white sits at 0.8 / (1 - decay), which is 15.6 at
+// 120 Hz, or **ten times further**. Nothing between "moving" and "stationary"
+// exists on a free-running sweep, so across 0.4 to 1.2 a 1 kHz turning point goes
+// green 191 to 190, its crossing does not move at all, and a stationary line is
+// 255 at both. The only thing that changes is how long a cleared, dwelling pixel
+// takes to whiten, 47 ms against 229 ms, which is over before you can look at it.
+//
+// So the 2:1 range ADR 0019 blamed was real and is fixed, and it was not the
+// binding constraint. The binding one is that the dwell asymptote is 19.5 times a
+// single deposit at 120 Hz, which is a property of anchoring white to the
+// asymptote at all. **A white core on moving material is a property of a
+// *triggered* display**, which is phase 4: until the sweep stops wandering,
+// nothing periodic dwells long enough to climb. That is the right answer rather
+// than a disappointing one, and lowering the headroom is not a workaround for it
+// — at 0.2 a 100 Hz turning point still only reaches green 214, and the value
+// that would whiten it is the value that whitens everything.
+//
+// 0.8 stays, still on the derivation above, and the re-judgement moves to phase 4
+// rather than staying open here.
 //
 // The 2.2-against-3.0 swing between frames is worth carrying too: the sweep is
 // free-running, so how hard the beam dwells depends on where the phase happens to
@@ -154,13 +196,16 @@ fragment float4 decay_fragment(VertexOut in [[stage_in]],
 // attainable domain is (0, d / (1 - decay)], where d is the energy one frame
 // deposits on the pixel the beam dwells hardest on. Until #57 that was exactly
 // one, because a line strip's x is monotone in `vertex_id` so one frame could not
-// deposit twice on a pixel; oriented quads overlap at every joint, so it is now
-// about 2.6 and the domain is correspondingly wider. The conclusion survives the
-// premise and is strengthened by it. Plain Reinhard returns 0.909 at ten
-// and needs an energy of 167 to reach byte 255, seventeen times anything this
-// display can produce, so a palette running to white never arrives and the core
-// stays pale green. `1 - exp(-e)` fails from the other side, saturating by five
-// and resolving nothing above it, which #58 makes worse by widening the domain.
+// deposit twice on a pixel; oriented quads overlap at every joint, which took it
+// to about 2.6; and #58's velocity weighting brought the top back to about 1.56
+// while dropping the *bottom* by two orders of magnitude, since a full-height
+// segment now deposits about 0.003 where it used to deposit the same 1.0 a
+// dwelling one did. The conclusion has survived all three premises and the third
+// is the one that needed it. Plain Reinhard returns 0.909 at ten and needs an
+// energy of 167 to reach byte 255, seventeen times anything this display can
+// produce, so a palette running to white never arrives and the core stays pale
+// green. `1 - exp(-e)` fails from the other side, saturating by five and resolving
+// nothing above it, which a range this wide makes worse rather than better.
 //
 // **The clamp on `dwell` is what a hot-reloaded shader needs**, not what this
 // arithmetic needs. A fragment buffer no reloaded source declares reads zero, so
@@ -254,14 +299,21 @@ struct TraceUniforms {
 // arrives in.
 //
 // **`flat` rather than interpolated, and it is only correct because all four
-// corners compute the same pair.** A triangle strip's two triangles have
+// corners compute the same values.** A triangle strip's two triangles have
 // different provoking vertices, so a `trace_vertex` that derived *this corner's*
 // own endpoint instead would hand the two halves of one quad different segments
 // and draw a discontinuity along its diagonal, with nothing here to fail.
+//
+// `segment_length` is `distance(p0, p1)` and is carried rather than recomputed
+// because `trace_vertex` already has it: the quad's expansion needs it, so the
+// alternative is a square root per fragment for a number that is constant across
+// the whole quad. #58 is what reads it. Named in full rather than `length`, which
+// is a function in this scope and would read as one.
 struct TraceOut {
     float4 position [[position]];
     float2 p0 [[flat]];
     float2 p1 [[flat]];
+    float segment_length [[flat]];
 };
 
 // Clip space to the window space a fragment's `[[position]]` arrives in.
@@ -363,6 +415,7 @@ vertex TraceOut trace_vertex(uint vertex_id [[vertex_id]],
     out.position = float4(to_clip(at, viewport), 0.0, 1.0);
     out.p0 = a;
     out.p1 = b;
+    out.segment_length = len;
     return out;
 }
 
@@ -370,8 +423,11 @@ vertex TraceOut trace_vertex(uint vertex_id [[vertex_id]],
 // moved to the palette, which is what this comment used to say #60 would do.
 //
 // **The profile is the biweight, `(1 - u²)²`.** It peaks at exactly 1.0 on the
-// centreline, so a single segment still deposits an energy of one at its core and
-// `whitePoint`'s derivation from the dwell asymptote is untouched, and it reaches
+// centreline, so the profile contributes a factor of exactly one there and the
+// two terms below are the whole of what a segment's core deposit is: about 0.60
+// at one sample per point and 0.0034 on a full-height rod, not the flat 1.0 this
+// sentence claimed before #58. `whitePoint`'s derivation is unchanged in form and
+// its input is not; see `white_headroom` above. It reaches
 // zero *with zero slope* at the quad's edge, so there is no seam where the
 // geometry ends. Compact support is worth more than it looks: an unlit pixel holds
 // exactly 0.0, which is what lets `checkResolve` keep its background assertions
@@ -390,7 +446,38 @@ vertex TraceOut trace_vertex(uint vertex_id [[vertex_id]],
 // one. The line strip was idempotent in overdraw and had no such term. This factor
 // is identical for every segment in a frame and depends only on the window length
 // and the drawable width, never on the signal, which is exactly what distinguishes
-// it from #58's per-segment term.
+// it from the velocity term below.
+//
+// **The velocity term is `h / (h + len)`, and it is the whole of ADR 0007's
+// "single relationship" (#58).** The beam sweeps at a constant *time* rate and
+// covers a varying *screen* distance, so where the trace moves slowly it dwells
+// and deposits a lot per pixel, and where it moves fast the same energy smears
+// over hundreds of pixels. `density` is the time one segment stands for; this is
+// one over the distance it covers. Two divisions with different domains, and
+// collapsing them would make brightness track the sample rate again.
+//
+// **The constant is derived rather than chosen, which is why there is no epsilon
+// here.** A capsule's integral of the profile is `(16/15) * h * len` along its
+// length plus `(pi/3) * h * h` for the two caps, so the weight that makes a
+// segment's *total* deposit exactly independent of its length is
+// `1 / (1 + 1.019 * len / h)`.
+//
+// **What ships is `h / (h + len)`, which is that with the 1.019 dropped, and the
+// rounding is deliberate.** The exact form's constant is `48 / (15 * pi)`, whose
+// only effect is to scale the whole picture by 1.9% at the long end; carrying it
+// would put a magic decimal in the one line of this shader that is supposed to be
+// readable, in exchange for a difference no display can show. That 1.9% *is* the
+// 2% the tolerance below refers to, and `measure.segmentEnergy` is the same
+// statement in Zig, asserted without a GPU rather than taken on trust here.
+// Two things follow. The denominator is `h + len >= h > 0`, so the floor the
+// issue asked for against a stationary beam is answered by construction rather
+// than by a guard. And the floor's real job is physical: below the beam's own
+// width, moving stops reducing a pixel's dwell, and this rolls off smoothly there
+// instead of meeting a `max` at a kink.
+//
+// It also sharpens what `density` alone leaves ragged. Per-pixel energy on a flat
+// trace reads 1.56 at 48 kHz against 1.58 at 192 kHz, where before it was 2.6
+// against 1.85.
 //
 // **All four channels carry the same number**, so whichever one anything reads
 // means the same thing: `resolve_fragment` reads green, `measure.Image.green`
@@ -416,5 +503,7 @@ fragment float4 trace_fragment(TraceOut in [[stage_in]],
     const float u = min(d / beam.half_width_px, 1.0);
     const float falloff = 1.0 - u * u;
 
-    return float4(falloff * falloff * beam.density);
+    const float velocity = beam.half_width_px / (beam.half_width_px + in.segment_length);
+
+    return float4(falloff * falloff * beam.density * velocity);
 }

@@ -316,8 +316,10 @@ MAX_OFF_RAY = 0.005
 # white point where a one-pixel line did not.
 #
 # So the note that used to sit here — that this was a fact about `white_headroom`
-# being provisional, and that #58 would make it matter again — was right about the
-# direction and wrong about which issue. #58 will widen it further.
+# being provisional, and that #58 would make it matter again — was wrong twice
+# over. #58 has landed and moves this the *other* way: velocity weighting makes a
+# fast segment one to two orders of magnitude dimmer, so strictly fewer pixels
+# reach the white point and the exclusion shrinks rather than grows.
 SATURATED = 250
 
 # The energy at which a pixel counts as lit, and the reason `--threshold` is
@@ -330,6 +332,23 @@ SATURATED = 250
 # twenty-eight frames: the same number, a different measurement, and nothing in
 # the output would have marked the change. Stating the energy and computing the
 # byte is what keeps a capture comparable with #38's tables.
+#
+# **#58 invalidated this for one of its two jobs, and the fix is #126 rather than
+# a new number here.** A segment's core deposit now depends on its screen length,
+# from about 0.60 where the beam dwells to about 0.0034 on a full-height rod, so
+# the fast parts of a trace fall under this and read as dark. That breaks
+# `columns lit`, `--periods`, `plateauWidth` and the trail note; it does **not**
+# break the peak and trough centroids, which sit at turning points where the beam
+# is slowest and brightest, so #38's tables and #58's own host verification stand.
+#
+# `src/smoke.zig` fixed the same defect by deriving its contour from the segment
+# length, and that route is not available here: a screenshot carries no segment
+# lengths, and persistence means a pixel holds one deposit plus the fade of
+# earlier frames rather than one segment's contribution. Note also that 0.231 is
+# `1.0 * 0.9 ** 13` — thirteen frames of decay from a deposit of exactly 1.0,
+# which is another line-strip-era figure, stale since #57. Re-deriving it from
+# today's 1.5674 gives 0.398 and makes the dim-trace problem worse, which is
+# itself evidence that this constant is doing two jobs that used to coincide.
 LIT_ENERGY = 0.231
 
 

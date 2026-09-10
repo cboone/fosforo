@@ -732,6 +732,18 @@ fn waitForReload(
 const trace_width: u32 = 960;
 const trace_height: u32 = 540;
 
+/// A window four times the drawable's width, for the one case that needs two
+/// sample densities rather than one.
+///
+/// Every other case here runs at one sample per point, which is where every
+/// number this half prints is stated and where `TraceUniforms.density` is exactly
+/// 1.0. `checkVelocityWeighting` needs it to be something else, because the
+/// question #58 settles is whether the density term and the velocity term stay
+/// independent, and at one sample per point the first of them is not doing
+/// anything. Four is where `beamDensity` reads a quarter, which is the geometry
+/// #57 named as the one where a moving trace would otherwise saturate.
+const dense_samples: usize = 4 * trace_width;
+
 /// The interval between frames on this half's synthetic clock.
 ///
 /// **Offscreen there is no display link, so a frame's elapsed time is supplied
@@ -1023,6 +1035,7 @@ fn traceHalf() !void {
     try checkHorizontalMapping(energy, picture);
     try checkEdgeColumns(energy, picture, window);
     try checkBeamProfile(energy, picture, window);
+    try checkVelocityWeighting(energy, picture, window);
     try checkPeriods(energy, picture, window);
     try checkDepositIsScalar(energy, picture, window);
     try checkResolve(energy, picture, window);
@@ -1065,7 +1078,91 @@ fn checkBeamProfile(energy: []f32, picture: []u8, window: []f32) !void {
     for (window, 0..) |*slot, i| slot.* = if (i < window.len / 2) 0.9 else -0.9;
     try probe.run(window, 1, 1);
 
-    _ = try verdict.beamProfile(probe.image(), trace_height / 2);
+    // The one segment crossing the centre row, from the constants that place it:
+    // the step runs +0.9 to -0.9 at the window's midpoint, so its vertical travel
+    // is the distance between the rows those samples map to and its horizontal
+    // travel is one segment pitch.
+    const travel = measure.expectedRow(-0.9, trace_height) - measure.expectedRow(0.9, trace_height);
+    const rod = verdict.segmentLength(trace_width, travel, window.len);
+    _ = try verdict.beamProfile(
+        probe.image(),
+        trace_height / 2,
+        measure.beamWeight(rod, verdict.beam_half_width_px),
+    );
+}
+
+/// Deposited brightness per unit length is inversely proportional to a segment's
+/// screen length, and a segment's total deposit is therefore constant.
+///
+/// **ADR 0007's "single relationship" (#58), and the case that issue was held
+/// open for.** It is a claim about a *relationship*, and by-eye verification of a
+/// relationship is how plausible-looking wrong code survives: "it looks like a
+/// scope" cannot tell `1/length` from `1/sqrt(length)` from a constant with a
+/// lucky palette.
+///
+/// Two arms, and the pairing is the point. `velocityPerLength` reads the form the
+/// issue is written in and `velocityTotal` reads what the beam conserves; a
+/// defect that got the exponent wrong would have to satisfy both, and `h / len`
+/// with the floor term removed satisfies only the first.
+fn checkVelocityWeighting(energy: []f32, picture: []u8, window: []f32) !void {
+    // Arm 1, per unit length, on isolated rods.
+    //
+    // Three amplitudes span a factor of ten in length. **None of them is 0.9**,
+    // deliberately: `checkBeamProfile` already drives exactly that step and reads
+    // exactly this row, so including it would spend a second renderer, shader
+    // compile and readback to reprint a number byte for byte and would present
+    // one measurement as two.
+    for ([_]f32{ 0.05, 0.2, 0.5 }) |a| {
+        var probe = try Probe.init(energy, picture);
+        defer probe.deinit();
+
+        for (window, 0..) |*slot, i| slot.* = if (i < window.len / 2) a else -a;
+        try probe.run(window, 1, 1);
+
+        const travel = measure.expectedRow(-a, trace_height) - measure.expectedRow(a, trace_height);
+        const len = verdict.segmentLength(trace_width, travel, window.len);
+        _ = try verdict.velocityPerLength(probe.image(), trace_height / 2, len);
+    }
+
+    // Arm 2, the total, across four slopes and two sample densities.
+    //
+    // **Eight probes and one assertion, and the second axis is what nothing else
+    // here reaches.** An alternating window gives every segment the same length,
+    // so a frame's total is the segment count times one segment's worth rather
+    // than a mixture over a sine's whole range of speeds. The four slopes drive
+    // the velocity term over a factor of 486 in length; the two window lengths
+    // drive `TraceUniforms.density` to a quarter underneath them. Both terms are
+    // in play at once and the total does not move, which is the executable form
+    // of "these are two divisions with different domains".
+    var dense: [dense_samples]f32 = undefined;
+    var totals: [8]f32 = undefined;
+    var seen: usize = 0;
+
+    for ([_][]f32{ window, &dense }) |samples| {
+        // `beamDensity`'s counterpart, restated here rather than reached, on
+        // `measure.expectedRow`'s terms: the backend's copy is private and an
+        // assertion is worth more when the two derivations are independent. The
+        // scale cancels because `initOffscreen` runs at 1.0, so a pitch in points
+        // and a pitch in backing pixels are the same number here.
+        const density = @min(1.0, verdict.segmentPitch(trace_width, samples.len));
+        const instances: f32 = @floatFromInt(samples.len - 1);
+
+        for ([_]f32{ 0.0, 0.05, 0.45, 1.0 }) |a| {
+            var probe = try Probe.init(energy, picture);
+            defer probe.deinit();
+
+            measure.alternating(samples, a);
+            try probe.run(samples, 1, 1);
+
+            const travel = measure.expectedRow(-a, trace_height) - measure.expectedRow(a, trace_height);
+            const len = verdict.segmentLength(trace_width, travel, samples.len);
+
+            totals[seen] = try verdict.velocityTotal(probe.image(), len, instances, density);
+            seen += 1;
+        }
+    }
+
+    try verdict.velocityInvariance(totals[0..seen]);
 }
 
 /// A window of zeros draws one flat line through the centre.
@@ -1184,7 +1281,10 @@ fn checkDepositIsScalar(energy: []f32, picture: []u8, window: []f32) !void {
     measure.sine(window, 4.0, 0.8);
     try probe.run(window, 1, 1);
 
-    _ = try verdict.depositIsScalar(probe.image());
+    // The zero crossing, which is the dimmest this trace gets, so the scan covers
+    // as much of it as the contour admits rather than only its turning points.
+    const contour = verdict.sineSegment(trace_width, trace_height, 4.0, 0.8, window.len, 1.0);
+    _ = try verdict.depositIsScalar(probe.image(), verdict.litLevel(contour));
 }
 
 /// The resolve is the curve and the palette, and nothing else.
@@ -1195,7 +1295,8 @@ fn checkResolve(energy: []f32, picture: []u8, window: []f32) !void {
     measure.sine(window, 3.0, 0.8);
     try probe.run(window, 1, 1);
 
-    _ = try verdict.resolve(probe.image(), probe.resolved());
+    const contour = verdict.sineSegment(trace_width, trace_height, 3.0, 0.8, window.len, 1.0);
+    _ = try verdict.resolve(probe.image(), probe.resolved(), verdict.litLevel(contour));
 }
 
 /// Both ends of the ten-to-one range the accumulation produces are legible.

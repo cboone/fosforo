@@ -110,6 +110,7 @@ pub const Fault = error{
     CoreNotWhite,
     DecayWrong,
     DecayNotInRealTime,
+    DepositNotVelocityWeighted,
 };
 
 /// The resolved picture, as `measure.Image` is the accumulation.
@@ -149,22 +150,58 @@ pub const Picture = struct {
 // The constants the judgements are stated in
 // ---------------------------------------------------------------------------
 
-/// Energy above which a pixel counts as lit.
+/// The fraction of one segment's core deposit above which a pixel counts as lit.
 ///
-/// One segment deposits 1.0 at its core, the accumulation is linear and
-/// unclipped, and this is half of that. This is not `measure-trace`'s 64-of-255:
-/// that tool reads an 8-bit picture through a display's colour space, and this
-/// reads the float the shader wrote.
+/// An iso-intensity contour of the beam's falloff: the biweight reaches half its
+/// peak at `u = 0.5412`, so the lit band is 54% of the half-width either side of
+/// the centreline. Every geometric measurement below is stated at that contour
+/// rather than at the beam's full width, which makes this the constant that sets
+/// the effective beam width for the whole file. It is not `measure-trace`'s
+/// 64-of-255: that tool reads an 8-bit picture through a display's colour space,
+/// and this reads the float the shader wrote.
 ///
-/// **What it means changed with #57 and the number did not.** It used to be a
-/// floor between "a deposit landed here" and "nothing did", because a one-pixel
-/// line deposited 1.0 or nothing at all. A beam has a falloff, so this is now an
-/// iso-intensity contour of that falloff: the biweight reaches 0.5 at
-/// `u = 0.5412`, so the lit band is 54% of the half-width either side of the
-/// centreline. Every geometric measurement below is therefore stated at that
-/// contour rather than at the beam's full width, which is what makes this the
-/// constant that sets the effective beam width for the whole file.
+/// **A fraction rather than an energy since #58, and the number did not change.**
+/// It was an absolute 0.5 for two issues, which was the same contour only because
+/// a segment deposited 1.0 at its core whatever it was doing. Velocity weighting
+/// ended that: what one segment lays down is now `beamWeight` of its screen
+/// length, from about 0.60 where the beam dwells to 0.0034 on a full-height rod,
+/// so a fixed energy stops being a contour and becomes an absolute brightness
+/// assertion smuggled into every geometric judgement. `horizontalMapping` is
+/// where that bit first and hardest: three samples make every segment 538 px
+/// long, so *nothing in it* cleared 0.5 and it failed `TraceNotDrawn` with a
+/// correctly drawn ramp in front of it.
+///
+/// **A fraction of the frame's *peak* was tried first and is wrong**, which is
+/// worth recording because it is the obvious form and it fails subtly. Under
+/// velocity weighting brightness and height are correlated: `period` counts
+/// columns reaching above a half-amplitude band, and the trace is *moving* where
+/// it crosses that band, so it is dim there. At two cycles the crossing deposits
+/// 0.635 against a frame peak of 1.544, so a contour at half the peak read it as
+/// dark and the two runs fragmented into **eight**. A fraction of one segment's
+/// own deposit has no such coupling, because it is the same fraction of whatever
+/// that segment was going to deposit.
+///
+/// Read it through `litLevel`, which each judgement hands the length its own
+/// signal produces. Absolute energy is `movingCore`'s, `resolve`'s, `decay`'s and
+/// `velocityWeighting`'s, and none of them concludes anything about brightness
+/// from this.
 pub const trace_threshold: f32 = 0.5;
+
+/// The peak energy below which a frame is held to have drawn nothing at all.
+///
+/// Separate from the contour above and not derivable from it. A `TraceNotDrawn`
+/// judgement asks whether the draw happened, which is a question about the
+/// pipeline rather than about the beam, and the contour now varies over two
+/// orders of magnitude with the signal.
+///
+/// Far below anything a real case produces and far above the format's noise.
+/// Sized against the judgements that consult it, `depositIsScalar` and both arms
+/// of `velocityWeighting`: the dimmest peak among them is the full-scale zigzag
+/// at four samples per point, near 0.005, which leaves 50x of margin.
+/// `RGBA16Float`'s smallest subnormal is 6e-8, three orders the other way. It
+/// says "the draw was skipped or the pipeline drew nothing", not "the trace is
+/// dim", and it must never be tightened into the second claim.
+pub const trace_drawn: f32 = 1e-4;
 
 /// Half the beam's width, in backing pixels, at the harness's geometry.
 ///
@@ -174,6 +211,85 @@ pub const trace_threshold: f32 = 0.5;
 /// the 3.0 a 2x host draws, and the rail clearance and the row spans are both
 /// tightest at 2x. `src/gpu/iface.zig` carries the same warning at the constant.
 pub const beam_half_width_px: f32 = iface.beam_width_points / 2.0;
+
+/// The segment pitch a window of `samples` gives across a drawable `width` wide.
+///
+/// **The window convention this file judges against**, stated once here rather
+/// than assumed at six call sites: every case but `horizontalMapping` drives a
+/// window of exactly `image.width` samples, so the pitch is one backing pixel and
+/// a flat trace's segments are the shortest the geometry can produce. A judgement
+/// that needs the length passes the sample count it knows.
+pub fn segmentPitch(width: usize, samples: usize) f32 {
+    // **Fewer than two samples is not a short window, it is no segment at all**,
+    // which is what `traceGeometry` refuses to produce for the same reason. The
+    // guard is unreachable from this file's callers, which pass `image.width` or
+    // the literal 3, and it is kept on `beamDensity`'s precedent: a reader should
+    // not have to work out what the arithmetic does at the edge to see that a
+    // degenerate call is answered.
+    //
+    // What it answers is worse than a crash, which is why it is a guard rather
+    // than an assertion. At one sample `samples - 1` is zero, the float division
+    // yields `inf` rather than trapping, `beamWeight` turns `inf` into a weight of
+    // **zero**, and `litLevel` then returns a contour of zero — under which every
+    // pixel holding any energy counts as lit and every count this file reports is
+    // silently wrong. At zero samples the subtraction underflows a `usize`, which
+    // traps in Debug and wraps in `--release=fast`.
+    //
+    // Returning the full width is the continuous answer rather than a sentinel:
+    // two samples give one segment spanning the drawable, and that is exactly
+    // `width`, so the degenerate case reads as the limit of the real one.
+    if (samples < 2) return @floatFromInt(width);
+
+    return @as(f32, @floatFromInt(width)) / @as(f32, @floatFromInt(samples - 1));
+}
+
+/// The screen length of a segment whose two samples are `travel_px` apart.
+///
+/// Both legs, because a segment always advances one pitch horizontally however
+/// flat it is. That is why a stationary beam's segments are the pitch long rather
+/// than zero long, and why `measure.beamWeight`'s floor is never actually reached.
+pub fn segmentLength(width: usize, travel_px: f32, samples: usize) f32 {
+    return std.math.hypot(segmentPitch(width, samples), travel_px);
+}
+
+/// `trace_threshold` resolved for a segment of a given screen length.
+///
+/// One function rather than the expression at its call sites, because a call site
+/// that reverted to the bare `trace_threshold` would still compile and would
+/// still pass on every flat case, which is where the constant is nearest its old
+/// value.
+pub fn litLevel(segment_len_px: f32) f32 {
+    return trace_threshold * measure.beamWeight(segment_len_px, beam_half_width_px);
+}
+
+/// The screen length of a sine's segments at a chosen point on its cycle.
+///
+/// `cosine` selects the point, as the cosine of the phase: 1.0 is the zero
+/// crossing, where the beam is fastest and dimmest, and `sqrt(3)/2` is the
+/// half-amplitude band `period` counts against. A sine has no single segment
+/// length, so a judgement that thresholds one has to say which part of it the
+/// threshold is for.
+pub fn sineSegment(
+    width: usize,
+    height: usize,
+    cycles: f32,
+    amplitude: f32,
+    samples: usize,
+    cosine: f32,
+) f32 {
+    // The same degenerate case as `segmentPitch`, and it has to be caught here
+    // too because this computes its own `span` rather than going through it. With
+    // no segment there is no travel either, so the flat length is the answer.
+    if (samples < 2) return segmentPitch(width, samples);
+
+    const rows: f32 = @floatFromInt(height);
+    const span: f32 = @floatFromInt(samples - 1);
+
+    const amplitude_px = amplitude * iface.trace_full_scale * rows / 2.0;
+    const travel = amplitude_px * 2.0 * std.math.pi * cycles / span * cosine;
+
+    return segmentLength(width, travel, samples);
+}
 
 /// The interval between frames on the harness's synthetic clock.
 ///
@@ -338,13 +454,14 @@ pub const Silence = struct { lit: usize, centroid: f32, implied: f32 };
 pub fn silence(image: measure.Image) Fault!Silence {
     try requireComplete(image, null);
 
-    const lit = measure.litColumns(image, trace_threshold);
+    const contour = litLevel(segmentLength(image.width, 0.0, image.width));
+    const lit = measure.litColumns(image, contour);
     if (lit != image.width) {
         say("  silence lit {d} of {d} columns", .{ lit, image.width });
         return Fault.TraceNotDrawn;
     }
 
-    const seen = measure.extremes(image, trace_threshold) orelse return Fault.TraceNotDrawn;
+    const seen = measure.extremes(image, contour) orelse return Fault.TraceNotDrawn;
 
     // **The bound is the beam's own depth, and it is parity-dependent.** Before
     // #57 this was one row of slack for the centre line falling on a pixel
@@ -464,7 +581,15 @@ pub fn symmetry(rows: [2]f32, height: usize) Fault!void {
 /// The first and last samples land on the drawable's edges.
 pub fn horizontalMapping(image: measure.Image) Fault!measure.Span {
     try requireComplete(image, null);
-    const span = measure.litSpan(image, trace_threshold) orelse return Fault.TraceNotDrawn;
+    // **The contour, not an absolute energy, and this case is why that changed.**
+    // Three samples put the segment pitch at a third of the drawable, so both
+    // segments are about 538 px long and #58's weighting takes their peak to
+    // 0.0028. Read against the old fixed 0.5 this failed `TraceNotDrawn` with a
+    // perfectly drawn ramp in front of it; the geometry it is about was never in
+    // question.
+    const travel = measure.expectedRow(0.0, image.height) - measure.expectedRow(1.0, image.height);
+    const contour = litLevel(segmentLength(image.width, travel, 3));
+    const span = measure.litSpan(image, contour) orelse return Fault.TraceNotDrawn;
     say("  three samples span columns {d} to {d} of {d}", .{ span.first, span.last, image.width - 1 });
 
     // **Exactly the edge columns, with no slack, and #57 is what removed it.**
@@ -478,8 +603,8 @@ pub fn horizontalMapping(image: measure.Image) Fault!measure.Span {
 
     // And the vertical, which the same window checks for free: the ramp runs from
     // -1 at the left to +1 at the right, so the corners are the extremes.
-    const left = measure.topRow(image, span.first, trace_threshold) orelse return Fault.TraceNotDrawn;
-    const right = measure.topRow(image, span.last, trace_threshold) orelse return Fault.TraceNotDrawn;
+    const left = measure.topRow(image, span.first, contour) orelse return Fault.TraceNotDrawn;
+    const right = measure.topRow(image, span.last, contour) orelse return Fault.TraceNotDrawn;
     if (right >= left) {
         say("  the ramp does not rise: column {d} is row {d}, column {d} is row {d}", .{
             span.first,
@@ -522,8 +647,9 @@ pub const Lit = struct { lit: usize, span: measure.Span };
 /// actually failed.
 pub fn edgeColumns(image: measure.Image) Fault!Lit {
     try requireComplete(image, null);
-    const lit = measure.litColumns(image, trace_threshold);
-    const span = measure.litSpan(image, trace_threshold) orelse return Fault.TraceNotDrawn;
+    const contour = litLevel(segmentLength(image.width, 0.0, image.width));
+    const lit = measure.litColumns(image, contour);
+    const span = measure.litSpan(image, contour) orelse return Fault.TraceNotDrawn;
 
     say("  railed: {d} of {d} columns lit, spanning {d} to {d}", .{
         lit,
@@ -557,7 +683,7 @@ pub const Beam = struct { integral: f32, expected: f32, centre: f32 };
 ///
 /// `row` is the driver's choice of cross-section, and the driver's docstring
 /// says why it must be one a single steep segment crosses alone.
-pub fn beamProfile(image: measure.Image, row: usize) Fault!Beam {
+pub fn beamProfile(image: measure.Image, row: usize, weight: f32) Fault!Beam {
     try requireComplete(image, null);
     // A cross-section outside the drawable is the same class of caller mistake
     // as two readbacks disagreeing: the parameters and the declared geometry do
@@ -578,11 +704,26 @@ pub fn beamProfile(image: measure.Image, row: usize) Fault!Beam {
     // `16/15` is the integral of the biweight over its support, which is what
     // makes this a statement about that profile rather than about any curve of
     // roughly the right size.
-    const want = beam_half_width_px * 16.0 / 15.0;
+    //
+    // **Times the rod's own velocity weight since #58**, which is the whole of
+    // what that issue does here and is what makes this a second instrument for
+    // it. A cross-section is energy *per unit length*, and that is exactly the
+    // quantity velocity weighting divides: the driver's rod is 437 px long, so it
+    // deposits about 0.0034 of what a dwelling beam does and the integral falls
+    // with it.
+    //
+    // **The weight is the caller's rather than derived here**, because this
+    // judgement is also fed by `measure.rasterize`, whose model deposits an
+    // unweighted profile. A test passes 1.0 and says so; the driver passes
+    // `measure.beamWeight` of the rod its own window produced, computed from the
+    // constants that place the step rather than from the picture, so the
+    // comparison is still between two derivations.
+    const want = beam_half_width_px * 16.0 / 15.0 * weight;
     const centre = moment / total;
-    say("  beam: cross-section integrates to {d:.4}, expected {d:.4}, centred on column {d:.2}", .{
+    say("  beam: cross-section integrates to {d:.6}, expected {d:.6}, at a weight of {d:.6}, centred on column {d:.2}", .{
         total,
         want,
+        weight,
         centre,
     });
 
@@ -614,10 +755,96 @@ pub fn beamProfile(image: measure.Image, row: usize) Fault!Beam {
 /// one" was written about.
 pub fn period(image: measure.Image, cycles: usize) Fault!usize {
     try requireComplete(image, null);
-    const counted = measure.periods(image, trace_threshold);
+    // The band crossing rather than the turning point, because that is the
+    // brightness this count has to be able to see: `measure.periods` reads
+    // *height*, and under #58 the trace is dim exactly where it reaches the band.
+    const at_band = sineSegment(image.width, image.height, @floatFromInt(cycles), 0.8, image.width, @sqrt(3.0) / 2.0);
+    const counted = measure.periods(image, litLevel(at_band));
     say("  {d: >2} cycles in, {d: >2} periods counted", .{ cycles, counted });
     if (counted != cycles) return Fault.PeriodMiscounted;
     return counted;
+}
+
+/// Energy per unit length falls as one over a segment's screen length.
+///
+/// **ADR 0007's "single relationship" (#58), read at a cross-section.** A window
+/// that steps from `+a` to `-a` at its midpoint draws one segment across the
+/// centre row and puts its two flat runs far above and below, so `rowEnergy` at
+/// that row is that segment's cross-section and nothing else's. That is energy
+/// *per unit length*, which is the form the issue and the ADR are written in and
+/// the quantity velocity weighting divides.
+///
+/// The expectation is `(16/15) * h * beamWeight(len)`: the biweight's own
+/// integral times the weight the driver's geometry implies, both computed from
+/// constants rather than from the picture.
+pub fn velocityPerLength(image: measure.Image, row: usize, len: f32) Fault!f32 {
+    try requireComplete(image, null);
+    if (row >= image.height) return Fault.ReadbackGeometryMismatch;
+    if (measure.maxChannel(image, 1) <= trace_drawn) return Fault.TraceNotDrawn;
+
+    const total = measure.rowEnergy(image, row);
+    const want = beam_half_width_px * 16.0 / 15.0 * measure.beamWeight(len, beam_half_width_px);
+
+    say("  velocity: a {d: >6.1} px segment deposits {d:.6} per unit length, expected {d:.6}", .{
+        len,
+        total,
+        want,
+    });
+
+    if (@abs(total - want) > want * 0.05) return Fault.DepositNotVelocityWeighted;
+    return total;
+}
+
+/// A segment's *total* deposit does not depend on its screen length at all.
+///
+/// The other end of the same physics, and the pairing is the point. One arm reads
+/// energy per unit length, which falls as `1 / len`; this reads the total, which
+/// does not move. A defect that got the exponent wrong would have to satisfy both,
+/// and `h / len` with the floor term removed satisfies only the first.
+///
+/// `instances` and `density` are the driver's, because they are what the frame
+/// actually drew: `measure.segmentEnergy` is one segment's worth, and a frame is
+/// that times the segment count times `TraceUniforms.density`. Ten percent,
+/// because this is a claim about the profile's two-dimensional integral as well
+/// as about the weight, and it absorbs the half-cap each end of the window loses
+/// off the drawable.
+pub fn velocityTotal(image: measure.Image, len: f32, instances: f32, density: f32) Fault!f32 {
+    try requireComplete(image, null);
+    if (measure.maxChannel(image, 1) <= trace_drawn) return Fault.TraceNotDrawn;
+
+    const total = measure.totalEnergy(image);
+    const want = instances * density * measure.segmentEnergy(len, beam_half_width_px);
+
+    say("  velocity: {d: >4.0} segments at a {d: >6.1} px slope deposit {d: >7.1} in total, expected {d: >7.1}", .{
+        instances,
+        len,
+        total,
+        want,
+    });
+
+    if (@abs(total - want) > want * 0.10) return Fault.DepositNotVelocityWeighted;
+    return total;
+}
+
+/// And the totals agree with each other, which needs no model at all.
+///
+/// The assertion the issue actually asks for. `segmentEnergy`'s own spread is
+/// 1.8%, from its two limits, so five percent is that plus half-float. Unweighted
+/// the same arms span a factor of 197.
+pub fn velocityInvariance(totals: []const f32) Fault!void {
+    if (totals.len < 2) return Fault.DepositNotVelocityWeighted;
+
+    var low: f32 = std.math.floatMax(f32);
+    var high: f32 = 0;
+    for (totals) |t| {
+        low = @min(low, t);
+        high = @max(high, t);
+    }
+
+    const spread = high / low;
+    say("  velocity: the {d} totals span {d:.4}, against 197 unweighted", .{ totals.len, spread });
+
+    if (spread > 1.05) return Fault.DepositNotVelocityWeighted;
 }
 
 /// The ratio form, which is robust to phase, to the `n - 1` quibble, and to
@@ -649,10 +876,10 @@ pub fn periodRatio(counted: []const usize) Fault!void {
 /// It replaces `checkBeamIsOneColour`, which asserted a *ray* through colour
 /// space and was right until the deposit stopped being a colour. The loop is the
 /// same loop; what it compares is not.
-pub fn depositIsScalar(image: measure.Image) Fault!f32 {
+pub fn depositIsScalar(image: measure.Image, contour: f32) Fault!f32 {
     try requireComplete(image, null);
     const peak_green = measure.maxChannel(image, 1);
-    if (peak_green <= trace_threshold) return Fault.TraceNotDrawn;
+    if (peak_green <= trace_drawn) return Fault.TraceNotDrawn;
 
     var worst: f32 = 0;
     var y: usize = 0;
@@ -660,7 +887,7 @@ pub fn depositIsScalar(image: measure.Image) Fault!f32 {
         var x: usize = 0;
         while (x < image.width) : (x += 1) {
             const g = image.channel(x, y, 1);
-            if (g <= trace_threshold) continue;
+            if (g <= contour) continue;
 
             // Alpha included. It accumulates and decays exactly like the other
             // three, which is what `mtl.blend_factor_one`'s docstring left open
@@ -682,7 +909,7 @@ pub fn depositIsScalar(image: measure.Image) Fault!f32 {
 pub const Resolve = struct { lit: usize, worst: i32, background: [4]u8 };
 
 /// The resolve is the curve and the palette, and nothing else.
-pub fn resolve(image: measure.Image, picture: Picture) Fault!Resolve {
+pub fn resolve(image: measure.Image, picture: Picture, contour: f32) Fault!Resolve {
     try requireComplete(image, picture);
 
     // The same table the shader is reading, built by the same function that
@@ -734,7 +961,7 @@ pub fn resolve(image: measure.Image, picture: Picture) Fault!Resolve {
         var x: usize = 0;
         while (x < image.width) : (x += 1) {
             const got = picture.pixel(x, y);
-            if (image.channel(x, y, 1) > trace_threshold) lit += 1;
+            if (image.channel(x, y, 1) > contour) lit += 1;
 
             // **Every channel predicted from one number**, which is stronger
             // than comparing each against its own energy: it asserts the
@@ -1176,9 +1403,9 @@ test "every judge that indexes a readback refuses a short one" {
     try testing.expectError(Fault.ReadbackTruncated, level(short, 0.0));
     try testing.expectError(Fault.ReadbackTruncated, horizontalMapping(short));
     try testing.expectError(Fault.ReadbackTruncated, edgeColumns(short));
-    try testing.expectError(Fault.ReadbackTruncated, beamProfile(short, 4));
+    try testing.expectError(Fault.ReadbackTruncated, beamProfile(short, 4, 1.0));
     try testing.expectError(Fault.ReadbackTruncated, period(short, 1));
-    try testing.expectError(Fault.ReadbackTruncated, depositIsScalar(short));
+    try testing.expectError(Fault.ReadbackTruncated, depositIsScalar(short, trace_threshold));
 
     // The three that read the picture too are refused on either half, which is
     // what `Picture.complete()` was written for and what nothing called until
@@ -1191,8 +1418,8 @@ test "every judge that indexes a readback refuses a short one" {
         .bytes = painted.bytes[0 .. painted.bytes.len - 4],
     };
 
-    try testing.expectError(Fault.ReadbackTruncated, resolve(short, painted));
-    try testing.expectError(Fault.ReadbackTruncated, resolve(whole, clipped));
+    try testing.expectError(Fault.ReadbackTruncated, resolve(short, painted, trace_threshold));
+    try testing.expectError(Fault.ReadbackTruncated, resolve(whole, clipped, trace_threshold));
     try testing.expectError(Fault.ReadbackTruncated, movingCore(short, painted));
     try testing.expectError(Fault.ReadbackTruncated, movingCore(whole, clipped));
     try testing.expectError(Fault.ReadbackTruncated, dwellCore(short, painted));
@@ -1200,7 +1427,7 @@ test "every judge that indexes a readback refuses a short one" {
 
     // A cross-section outside the drawable is the same class of mistake, and
     // the only one of these a complete readback can still carry.
-    try testing.expectError(Fault.ReadbackGeometryMismatch, beamProfile(whole, whole.height));
+    try testing.expectError(Fault.ReadbackGeometryMismatch, beamProfile(whole, whole.height, 1.0));
 
     // **Two readbacks that are each complete and disagree with each other.**
     // Length alone does not close this: the judges that read both loop over the
@@ -1218,7 +1445,7 @@ test "every judge that indexes a readback refuses a short one" {
         .bytes = painted.bytes[0 .. (whole.width / 2) * whole.height * 4],
     };
     try testing.expect(narrow.complete());
-    try testing.expectError(Fault.ReadbackGeometryMismatch, resolve(whole, narrow));
+    try testing.expectError(Fault.ReadbackGeometryMismatch, resolve(whole, narrow, trace_threshold));
     try testing.expectError(Fault.ReadbackGeometryMismatch, movingCore(whole, narrow));
     try testing.expectError(Fault.ReadbackGeometryMismatch, dwellCore(whole, narrow));
 
@@ -1232,7 +1459,7 @@ test "every judge that indexes a readback refuses a short one" {
     defer testing.allocator.free(roomy);
     @memset(roomy, 0);
     @memcpy(roomy[0..whole.pixels.len], whole.pixels);
-    _ = try depositIsScalar(.{ .width = whole.width, .height = whole.height, .pixels = roomy });
+    _ = try depositIsScalar(.{ .width = whole.width, .height = whole.height, .pixels = roomy }, trace_threshold);
 }
 
 test "every level plant in the table is refused, and the level itself is not" {
@@ -1345,6 +1572,33 @@ test "a railed trace lights every column, and a dropped one is not an edge fault
     try testing.expectError(Fault.TraceNotDrawn, edgeColumns(canvas.dark()));
 }
 
+test "a window too short to hold a segment yields no infinity and no zero contour" {
+    // **The failure this guards is silent rather than loud**, which is why the
+    // test asserts on the contour and not only on the pitch. Unguarded, one sample
+    // sends `segmentPitch` to `inf`, `beamWeight` turns that into a weight of zero,
+    // and `litLevel` returns a contour of zero, under which `measure.litColumns`
+    // reports every column lit and every geometric judgement here passes while
+    // measuring nothing.
+    for ([_]usize{ 0, 1, 2 }) |samples| {
+        const pitch = segmentPitch(960, samples);
+        try testing.expect(std.math.isFinite(pitch));
+        try testing.expect(pitch > 0);
+
+        const contour = litLevel(segmentLength(960, 0.0, samples));
+        try testing.expect(std.math.isFinite(contour));
+        try testing.expect(contour > 0);
+
+        const sine = sineSegment(960, 540, 2.0, 0.8, samples, 1.0);
+        try testing.expect(std.math.isFinite(sine));
+        try testing.expect(sine > 0);
+    }
+
+    // And the guard is the limit of the real case rather than a sentinel: two
+    // samples give one segment spanning the drawable, which is the width.
+    try testing.expectEqual(@as(f32, 960.0), segmentPitch(960, 2));
+    try testing.expectEqual(segmentPitch(960, 2), segmentPitch(960, 1));
+}
+
 test "the beam's cross-section integrates to the biweight, in pixels not clip space" {
     const canvas = try Canvas.init(64, 8);
     defer canvas.deinit();
@@ -1353,7 +1607,7 @@ test "the beam's cross-section integrates to the biweight, in pixels not clip sp
     // why it reads 1.5796 rather than 1.6000.
     _ = canvas.dark();
     beamRow(canvas, 4, 31.5, beam_half_width_px);
-    const got = try beamProfile(canvas.image(), 4);
+    const got = try beamProfile(canvas.image(), 4, 1.0);
     try testing.expectApproxEqAbs(@as(f32, 1.6), got.expected, 1e-6);
     try testing.expectApproxEqAbs(@as(f32, 31.5), got.centre, 0.01);
 
@@ -1362,7 +1616,7 @@ test "the beam's cross-section integrates to the biweight, in pixels not clip sp
     // here reads as a slightly different row and passes.
     _ = canvas.dark();
     beamRow(canvas, 4, 31.5, beam_half_width_px * 960.0 / 540.0);
-    try testing.expectError(Fault.BeamWidthWrong, beamProfile(canvas.image(), 4));
+    try testing.expectError(Fault.BeamWidthWrong, beamProfile(canvas.image(), 4, 1.0));
 
     // A profile with the right integral and the wrong shape, which is what a
     // strip whose corners run the wrong way draws.
@@ -1370,9 +1624,9 @@ test "the beam's cross-section integrates to the biweight, in pixels not clip sp
     for ([_]f32{ 0.1, 0.9, 0.5, 0.1 }, 30..) |value, x| {
         canvas.pixels[(4 * 64 + x) * 4 + 1] = value;
     }
-    try testing.expectError(Fault.BeamNotSymmetric, beamProfile(canvas.image(), 4));
+    try testing.expectError(Fault.BeamNotSymmetric, beamProfile(canvas.image(), 4, 1.0));
 
-    try testing.expectError(Fault.TraceNotDrawn, beamProfile(canvas.dark(), 4));
+    try testing.expectError(Fault.TraceNotDrawn, beamProfile(canvas.dark(), 4, 1.0));
 }
 
 fn beamRow(canvas: Canvas, row: usize, centre: f32, half: f32) void {
@@ -1419,16 +1673,16 @@ test "a deposit is a scalar, and one channel out of step is what that forbids" {
 
     _ = canvas.dark();
     canvas.deposit(4, 2, 2.6133);
-    try testing.expectApproxEqAbs(@as(f32, 0.0), try depositIsScalar(canvas.image()), 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.0), try depositIsScalar(canvas.image(), trace_threshold), 1e-6);
 
     // The claim that replaced `checkBeamIsOneColour` at #60: green is the energy
     // only because the other three are the same number. A weighting that moved
     // one would change the meaning of every green-channel measurement in this
     // project at once, and nothing else anywhere would fail.
     canvas.pixels[(2 * 8 + 4) * 4 + 2] = 2.5;
-    try testing.expectError(Fault.DepositNotScalar, depositIsScalar(canvas.image()));
+    try testing.expectError(Fault.DepositNotScalar, depositIsScalar(canvas.image(), trace_threshold));
 
-    try testing.expectError(Fault.TraceNotDrawn, depositIsScalar(canvas.dark()));
+    try testing.expectError(Fault.TraceNotDrawn, depositIsScalar(canvas.dark(), trace_threshold));
 }
 
 test "the resolve is the tonemap, and #55's gain is what that refuses" {
@@ -1443,7 +1697,7 @@ test "the resolve is the tonemap, and #55's gain is what that refuses" {
         const picture = try pictureFor(image, palette.shipped_palette, 1.0);
         defer freePicture(picture);
 
-        const got = try resolve(image, picture);
+        const got = try resolve(image, picture, trace_threshold);
         try testing.expectEqual(@as(usize, 1), got.lit);
         try testing.expectEqual(@as(i32, 0), got.worst);
         try testing.expectEqualSlices(u8, &palette.background_bytes, got.background[0..3]);
@@ -1456,7 +1710,7 @@ test "the resolve is the tonemap, and #55's gain is what that refuses" {
     {
         const picture = try pictureFor(image, palette.shipped_palette, 1.0 - trace_decay);
         defer freePicture(picture);
-        try testing.expectError(Fault.ResolveNotTheTonemap, resolve(image, picture));
+        try testing.expectError(Fault.ResolveNotTheTonemap, resolve(image, picture, trace_threshold));
     }
 
     // Chroma that does not follow from intensity, which is the palette's whole
@@ -1466,7 +1720,7 @@ test "the resolve is the tonemap, and #55's gain is what that refuses" {
     {
         const picture = try pictureFor(image, .amber, 1.0);
         defer freePicture(picture);
-        try testing.expectError(Fault.ResolveNotTheTonemap, resolve(image, picture));
+        try testing.expectError(Fault.ResolveNotTheTonemap, resolve(image, picture, trace_threshold));
     }
 }
 
@@ -1481,7 +1735,7 @@ test "a run in which nothing was drawn is refused rather than reported as clean"
     const picture = try pictureFor(image, palette.shipped_palette, 1.0);
     defer freePicture(picture);
 
-    try testing.expectError(Fault.TraceNotDrawn, resolve(image, picture));
+    try testing.expectError(Fault.TraceNotDrawn, resolve(image, picture, trace_threshold));
 }
 
 test "the background is the palette at zero, and four ways of not being it" {
@@ -1517,7 +1771,7 @@ test "the background is the palette at zero, and four ways of not being it" {
 
         const bytes = @constCast(picture.bytes);
         @memcpy(bytes[0..4], &case.bytes);
-        try testing.expectError(case.fault, resolve(image, picture));
+        try testing.expectError(case.fault, resolve(image, picture, trace_threshold));
     }
 }
 
@@ -1724,7 +1978,7 @@ test "a picture geometry too large to size is incomplete rather than overflowing
     // reachable from the judgement side rather than only from this assertion.
     const canvas = try Canvas.init(16, 8);
     defer canvas.deinit();
-    try testing.expectError(Fault.ReadbackTruncated, resolve(canvas.dark(), huge));
+    try testing.expectError(Fault.ReadbackTruncated, resolve(canvas.dark(), huge, trace_threshold));
 
     // The negative control: an ordinary picture is complete.
     var bytes: [16 * 8 * 4]u8 = @splat(0);
