@@ -459,9 +459,16 @@ vertex TraceOut trace_vertex(uint vertex_id [[vertex_id]],
 // **The constant is derived rather than chosen, which is why there is no epsilon
 // here.** A capsule's integral of the profile is `(16/15) * h * len` along its
 // length plus `(pi/3) * h * h` for the two caps, so the weight that makes a
-// segment's *total* deposit independent of its length is `1 / (1 + 1.019 * len /
-// h)`. This is that, to within 2% across every length the display can draw, and
-// `measure.segmentEnergy` is the same statement in Zig, asserted without a GPU.
+// segment's *total* deposit exactly independent of its length is
+// `1 / (1 + 1.019 * len / h)`.
+//
+// **What ships is `h / (h + len)`, which is that with the 1.019 dropped, and the
+// rounding is deliberate.** The exact form's constant is `48 / (15 * pi)`, whose
+// only effect is to scale the whole picture by 1.9% at the long end; carrying it
+// would put a magic decimal in the one line of this shader that is supposed to be
+// readable, in exchange for a difference no display can show. That 1.9% *is* the
+// 2% the tolerance below refers to, and `measure.segmentEnergy` is the same
+// statement in Zig, asserted without a GPU rather than taken on trust here.
 // Two things follow. The denominator is `h + len >= h > 0`, so the floor the
 // issue asked for against a stationary beam is answered by construction rather
 // than by a guard. And the floor's real job is physical: below the beam's own
