@@ -270,7 +270,7 @@ rather than anything about the renderer.
 [#89](https://github.com/cboone/fosforo/issues/89) through
 [#99](https://github.com/cboone/fosforo/issues/99), from a review of the whole
 verification surface on `0e1ddf5`, with its own plan at
-[`2026-09-04-close-the-verification-gaps-in-the-test-suite.md`](2026-09-04-close-the-verification-gaps-in-the-test-suite.md).
+[`2026-09-04-close-the-verification-gaps-in-the-test-suite.md`](../done/2026-09-04-close-the-verification-gaps-in-the-test-suite.md).
 Phase 3's section below describes them, because that is when they were found and
 beside where they run. **None is on a milestone under the rule above**: phase 3's
 exit criteria are about the picture and its stability under resize, sample-rate
@@ -426,7 +426,7 @@ Stacking is available, and since [#87](https://github.com/cboone/fosforo/issues/
 
 ### The verification program, which is not phase 3 work and runs beside it
 
-A review of the whole verification surface on `0e1ddf5` produced eleven issues, [#89](https://github.com/cboone/fosforo/issues/89) through [#99](https://github.com/cboone/fosforo/issues/99), with their own plan at [`2026-09-04-close-the-verification-gaps-in-the-test-suite.md`](2026-09-04-close-the-verification-gaps-in-the-test-suite.md). They are recorded here because this is when they were found and beside where they run, and they are on **no milestone** under the rule above: none of them has to close before any phase's exit criteria are met.
+A review of the whole verification surface on `0e1ddf5` produced eleven issues, [#89](https://github.com/cboone/fosforo/issues/89) through [#99](https://github.com/cboone/fosforo/issues/99), with their own plan at [`2026-09-04-close-the-verification-gaps-in-the-test-suite.md`](../done/2026-09-04-close-the-verification-gaps-in-the-test-suite.md). They are recorded here because this is when they were found and beside where they run, and they are on **no milestone** under the rule above: none of them has to close before any phase's exit criteria are met.
 
 **What the review found is not "write more tests".** The suite was 205 named tests when the review ran, about a quarter of the Zig source, and the instruments are layered with a written theory of what each one cannot see, which is the strongest thing in the repository. The gaps cluster in one shape instead: the question "would I know if this broke?" was answered once, by hand, and written into prose rather than into anything that re-runs. ADR 0013 and ADR 0016 both record planted defects as acceptance criteria; neither leaves behind a check that fails if the planted defect returns.
 
