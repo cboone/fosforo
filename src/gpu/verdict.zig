@@ -409,11 +409,11 @@ fn expectClose(a: f32, b: f32, tolerance: f32, fault: Fault) Fault!void {
 /// test, which is what changed.** `traceHalf` allocates one pair of buffers at
 /// exactly `trace_width * trace_height * 4` and `Probe` declares that same
 /// geometry, so the shipping caller cannot produce a short readback. What #92
-/// changed is that these are fifteen public functions a test can hand any
-/// `Image` to, and the tests do exactly that. A Debug build would panic on the
-/// bounds rather than corrupt anything, but `Fault.ReadbackTruncated` is in the
-/// error set to be returned, and an error two of fifteen entrypoints could
-/// return was nearly dead.
+/// changed is that these are public functions a test can hand any `Image` to,
+/// and the tests do exactly that. A Debug build would panic on the bounds rather
+/// than corrupt anything, but `Fault.ReadbackTruncated` is in the error set to be
+/// returned, and only two of the fifteen entrypoints could return it at the time,
+/// which left it nearly unreachable.
 ///
 /// Longer than the geometry stays fine and the tail stays ignored, which is
 /// `measure.Image`'s own documented contract and what lets one buffer serve a
@@ -431,7 +431,7 @@ fn expectClose(a: f32, b: f32, tolerance: f32, fault: Fault) Fault!void {
 /// models this correctly already: one geometry, two buffers. A `Picture` that
 /// carried no geometry of its own, indexed through the image's, would make the
 /// mismatch unrepresentable rather than merely refused. It is the better shape
-/// and it costs all fifteen judge signatures plus every test that hands a judge
+/// and it costs every judge signature plus every test that hands a judge
 /// an image alone, which is most of them. Recorded here so the next person to
 /// touch this can weigh it with the reason rather than rediscovering it.
 fn requireComplete(image: measure.Image, picture: ?Picture) Fault!void {

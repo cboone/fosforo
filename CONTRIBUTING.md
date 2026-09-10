@@ -43,8 +43,12 @@ git config blame.ignoreRevsFile .git-blame-ignore-revs
 # Build. Dependencies are fetched and pinned by content hash automatically.
 zig build
 
-# Run tests
+# Run tests. Three modes, and they are additive rather than alternatives: `test`
+# follows `-Doptimize` and is Debug by default, and CI's `test-modes` job runs the
+# two pinned ones. The Debug run cannot be retired -- see docs/notes/the-test-suite.md.
 zig build test
+zig build test-safe     # the same suite pinned to ReleaseSafe
+zig build test-release  # the same suite pinned to ReleaseFast, which is what ships
 
 # Format check
 zig fmt --check build.zig src/
@@ -65,17 +69,20 @@ install steps print and `scripts/read-provenance` reads back out of any built
 file. That is the check to reach for when there is nothing here to compare a
 hash against, such as a component another branch installed.
 
-A CLAP needs no install at all. REAPER honours `CLAP_PATH`, so a bundle can be
-loaded straight out of a worktree, which sidesteps the shared folder entirely.
-Move any installed copy aside first, because the variable adds to the standard
-locations rather than replacing them:
+**One host stream at a time**, which is the working rule rather than a
+constraint to route around: install, launch, read. Only one worktree verifies
+against a host at any moment. No `CLAP_PATH`, no moving bundles aside, no second
+copy of anything claiming `com.catamount.fosforo`.
 
-```bash
-CLAP_PATH="$PWD/zig-out" /Applications/REAPER.app/Contents/MacOS/REAPER
-```
+`CLAP_PATH` does work — REAPER honours it and a bundle loads straight out of a
+worktree — and it is deliberately not used. It is additive rather than
+replacing, so both copies claim the same plugin id, and what it buys is
+concurrency this project does not want. The measurement is recorded in
+[host verification](docs/notes/host-verification.md) so it is not repeated, not
+so the route is taken.
 
-There is no equivalent for the Audio Unit, and a symlinked component is not
-registered by macOS at all, so that half really does have to be copied.
+There is no equivalent for the Audio Unit in any case, and a symlinked component
+is not registered by macOS at all, so that half always has to be copied.
 
 ### Building the Audio Unit
 
@@ -103,9 +110,10 @@ run `xcrun --kill-cache`.
 
 ### Checks that need hardware CI cannot assume
 
-Three checks exist that `zig build test` deliberately does not run, and none is
+Several checks exist that `zig build test` deliberately does not run, and none is
 a pull request checklist item, because the machine you are on may not be able to
-run them.
+run them. `zig build validate-shaders` is a sixth alongside these five, and needs
+the Metal toolchain rather than a device.
 
 ```bash
 zig build smoke        # runs Metal and AppKit for real; needs a GPU and a window server
@@ -199,11 +207,13 @@ build: bump pinned Zig to 0.17.0
 1. Fork the repository
 1. Create a feature branch
 1. Make your changes
-1. Ensure tests pass: `zig build test`
+1. Ensure tests pass in every mode CI runs: `zig build test`, `zig build test-safe` and `zig build test-release`
 1. Ensure formatting passes: `zig fmt --check build.zig src/`
 1. If you touched a shell script, ensure `git ls-files -z | xargs -0 shfmt -f | xargs shfmt -d` and the same pipeline ending in `xargs shellcheck` are both silent
 1. Ensure the spell check passes: `typos`
 1. If you touched `scripts/measure-trace`, ensure `ruff format --check .` and `ruff check .` are both clean
+1. If you touched anything under `.github/workflows/`, ensure `actionlint` is silent, with `shellcheck` on `PATH` or it skips every `run:` block without saying so
+1. If you touched any Markdown, run `npm ci` then `npm run format`, then ensure `npm run lint:md` is clean. In that order, and never `markdownlint-cli2 --fix`
 1. Submit a pull request
 
 ### Branch Naming

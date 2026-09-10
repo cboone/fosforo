@@ -14,7 +14,13 @@ permissions:
   contents: read
 
 jobs:
-  scan:
+  # Named for the tool rather than `scan`, which trufflehog.yml also used.
+  # A reusable workflow's rollup rows are `<caller job>/<inner job>`, so the
+  # tool rows were always distinct -- but `scan / Validate inputs` appeared
+  # twice, identically, which is the ambiguous branch-protection target
+  # markdown.yml records observing on #115. Measured off a real run's job
+  # names rather than assumed.
+  gitleaks:
     uses: cboone/gh-actions/.github/workflows/scan-for-secrets.yml@91f9abd25d4f82354c0f950dfc8b6d7525b0f5b5 # v3.0.0
     with:
       tool: gitleaks

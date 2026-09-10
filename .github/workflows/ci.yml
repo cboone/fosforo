@@ -606,23 +606,20 @@ jobs:
 
       # Neither project publishes a checksum manifest with its releases, so the
       # sums are committed here rather than fetched. Fetching them from the same
-      # host that serves the asset would verify transport, not provenance.
-      #
-      # shellcheck is downloaded to a file rather than piped straight into tar,
-      # because a pipe would have tar consuming bytes before anything could
-      # verify them.
-      - name: Install shfmt and shellcheck
+      # host that serves the asset would verify transport, not provenance. That
+      # applies to shellcheck below too, where the same reasoning plus the
+      # download-before-extract one now lives in the action rather than here.
+      - name: Install shfmt
         run: |
           curl -sSfL -o shfmt \
             "https://github.com/mvdan/sh/releases/download/v${SHFMT_VERSION}/shfmt_v${SHFMT_VERSION}_linux_amd64"
           echo "${SHFMT_SHA256}  shfmt" | sha256sum --check --strict -
           sudo install shfmt /usr/local/bin/shfmt
 
-          curl -sSfL -o shellcheck.tar.xz \
-            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
-          echo "${SHELLCHECK_SHA256}  shellcheck.tar.xz" | sha256sum --check --strict -
-          tar -xJf shellcheck.tar.xz
-          sudo install "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+      - uses: ./.github/actions/shellcheck
+        with:
+          version: ${{ env.SHELLCHECK_VERSION }}
+          sha256: ${{ env.SHELLCHECK_SHA256 }}
 
       # Confirms the pins resolved to the intended versions, so a sum bumped
       # without its version (or the reverse) fails here rather than silently
@@ -655,9 +652,12 @@ jobs:
   # The one Python file here, scripts/measure-trace, which nothing else can see.
   # The `shell` job above selects with `shfmt -f`, which finds shell files by
   # shebang, and that file's is `env -S uv run ... python`: measured rather than
-  # assumed, `git ls-files -z | xargs -0 shfmt -f` returns twelve files and not
-  # that one. So without this job the tool every number in #38's verification
-  # came out of is the only unchecked file in the repository.
+  # assumed, `git ls-files -z | xargs -0 shfmt -f` does not return that file.
+  # So without this job the tool every number in #38's verification came out of
+  # is the only unchecked file in the repository. Deliberately not a count of
+  # what it does return: the last one said twelve and went stale the moment
+  # scripts/check-doc-budget landed, and the measurement that matters here is
+  # the exclusion rather than the total.
   #
   # Pinned on typos' reasoning plus one of ruff's own. A version in a URL is not
   # a pin, because a release asset can be replaced in place under the same tag,
@@ -724,11 +724,12 @@ jobs:
       - name: Lint Python
         run: ruff check .
 
-  # This file is 46 KB and nothing checked it. `actionlint` sits in the build
-  # plan's phase 0 exit criteria and in no workflow, so it was a local step at
-  # best -- the fourth instance of a check that is configured, is believed to be
-  # running, and silently is not (#28, #85, #87). Workflow files are the one
-  # place whose errors surface only as a failed run on someone else's branch.
+  # This file was 46 KB when nothing checked it, and has only grown since.
+  # `actionlint` sits in the build plan's phase 0 exit criteria and in no
+  # workflow, so it was a local step at best -- the fourth instance of a check
+  # that is configured, is believed to be running, and silently is not (#28,
+  # #85, #87). Workflow files are the one place whose errors surface only as a
+  # failed run on someone else's branch.
   #
   # In ci.yml rather than its own workflow, and that is confirmed rather than
   # assumed. `typos` is separate because this workflow's `paths-ignore` lists
@@ -739,11 +740,13 @@ jobs:
   # to that and is fixed: `pull_request` no longer carries `branches: [main]`, so
   # a stacked pull request runs this exactly as it runs the rest.
   #
-  # Placed below `python` so the three Ubuntu jobs stay contiguous. The rationale
-  # this comment carried when #99 landed, that the placement keeps `ring-race`'s
+  # Placed below `python` so the Ubuntu jobs stay contiguous. The rationale this
+  # comment carried when #99 landed, that the placement keeps the `race` job's
   # "the two Ubuntu jobs below" true, was wrong in a way position cannot fix:
-  # this job is a pinned Ubuntu download wherever it sits below `ring-race`, so
-  # it made that count three. The count there has been corrected instead.
+  # this job is a pinned Ubuntu download wherever it sits below `race`, so it made
+  # that count three. The count there has been corrected instead. (That job was
+  # named `ring-race` until #91 gave it a second harness; the step inside it still
+  # is, which is why a grep for the old name finds one and not the other.)
   #
   # **What this catches is narrower than it reads, and the gap is this
   # repository's own pinning policy.** Measured against 1.7.12 with a positive
@@ -761,8 +764,8 @@ jobs:
   # Unmeasured, on the `python` job's precedent and for its reason: the job has
   # never run. 3 is the floor `shell`, `python` and `typos` share, and this is
   # structurally the same thing -- an Ubuntu checkout, two pinned downloads and a
-  # walk over four workflow files. It gets a measured value once there are runs
-  # behind it.
+  # walk over every workflow file here. It gets a measured value once there are
+  # runs behind it.
   actionlint:
     runs-on: ubuntu-latest
     timeout-minutes: 3
@@ -794,7 +797,7 @@ jobs:
       # passing -- so relying on the runner image would be a vacuous pass of the
       # kind `python`'s comment names, and relying on its *version* would let the
       # image lint this file with a different tool than `shell` uses.
-      - name: Install actionlint and shellcheck
+      - name: Install actionlint
         run: |
           cd "${RUNNER_TEMP}"
           curl -sSfL -o actionlint.tar.gz \
@@ -803,11 +806,10 @@ jobs:
           tar -xzf actionlint.tar.gz actionlint
           sudo install actionlint /usr/local/bin/actionlint
 
-          curl -sSfL -o shellcheck.tar.xz \
-            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
-          echo "${SHELLCHECK_SHA256}  shellcheck.tar.xz" | sha256sum --check --strict -
-          tar -xJf shellcheck.tar.xz
-          sudo install "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+      - uses: ./.github/actions/shellcheck
+        with:
+          version: ${{ env.SHELLCHECK_VERSION }}
+          sha256: ${{ env.SHELLCHECK_SHA256 }}
 
       # Confirms both pins resolved, on the established reasoning, plus one that
       # belongs to this job alone: the shellcheck line is the only evidence in the
@@ -819,7 +821,9 @@ jobs:
           shellcheck --version | sed -n 's/^version: /shellcheck /p'
 
       # No path arguments, matching `typos` and `python`: actionlint finds the
-      # nearest .github/workflows itself and lints all four files. It resolves
+      # nearest .github/workflows itself and lints every file in it, this one
+      # and markdown.yml included, rather than a list that would need editing
+      # whenever a workflow is added. It resolves
       # `./.github/actions/...` through the git project root, which is why this
       # runs in a checkout rather than an exported tree -- outside a repository it
       # skips the local-action checks silently and exits 0.
@@ -1060,6 +1064,17 @@ jobs:
       # `/usr/bin/grep -a` rather than `strings`, which is `scripts/read-provenance`'s
       # reasoning and not a style choice: /usr/bin/strings is an xcrun shim that fails
       # without the Command Line Tools, while /usr/bin/grep is a base-OS binary.
+      #
+      # **All three needles below are restatements of Zig declarations and nothing
+      # links them**, which the positive control does not cover: it proves the file
+      # is readable, not that the needle is still the right one. `fosforo-build: `
+      # is `build_info.marker_prefix`, whose docstring says changing it changes an
+      # interface and which `src/build_info.zig` ties to `scripts/read-provenance`
+      # by reading that script as text -- this is a third spelling that test cannot
+      # see. `shaders/scope.metal` is `build.zig`'s `shader_source_path`. And
+      # `FOSFORO_SHADER_PATH` is `shader.path_env`; rename its *value* and this
+      # assertion greps forever for a string that can no longer appear, passes, and
+      # says nothing. Grep these three before renaming any of them.
       - name: Assert the release artifacts carry no source path
         run: |
           for bundle in build/assets/Fosforo.component build/assets/Fosforo.clap; do

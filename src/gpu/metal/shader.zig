@@ -15,7 +15,7 @@
 //! Nothing here allocates. The read lands in a caller-owned `Buffer`, on the same
 //! reasoning as `Editor.samples` and the stack buffer in `clap/log.zig`: the one
 //! thread that calls this has no allocator and should not acquire one to read
-//! twenty-two kilobytes.
+//! twenty-nine kilobytes.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -57,7 +57,7 @@ pub const path_env = "FOSFORO_SHADER_PATH";
 
 /// The largest shader this build will read.
 ///
-/// `shaders/scope.metal` is around twenty-two kilobytes; the bound is what makes
+/// `shaders/scope.metal` is around twenty-nine kilobytes; the bound is what makes
 /// the read allocation-free, and the test below pins the headroom against the file
 /// it is for, so a shader that doubled would fail a test rather than being refused
 /// at runtime by a developer who has to work out why.
@@ -72,10 +72,12 @@ pub const path_env = "FOSFORO_SHADER_PATH";
 /// the number that motivated it is stated beside it.
 ///
 /// **This is the last move of the factor that is honest.** At twofold the ceiling
-/// is 32,768 against a file of 22,050, so the next thing to grow the shader by ten
-/// kilobytes — [#59](https://github.com/cboone/fosforo/issues/59)'s upsampling is
-/// the candidate, if it lands in MSL rather than on the CPU — has to move this
-/// bound instead. That means moving `Buffer` below off the stack first, since
+/// on the file is 32,768, and #58 has since taken it from 22,050 to **29,121**, so
+/// what was ten kilobytes of headroom when that sentence was written is **3,647
+/// bytes** today. The next thing to grow the shader at all substantially —
+/// [#59](https://github.com/cboone/fosforo/issues/59)'s upsampling is the
+/// candidate, if it lands in MSL rather than on the CPU — has to move this bound
+/// instead. That means moving `Buffer` below off the stack first, since
 /// `buildPipelines` holds one on the stack of whichever thread compiles and
 /// `src/smoke.zig` holds two `[max_bytes]u8` locals. It is a real change to the
 /// read path rather than the one-liner it looks like, which is the whole reason

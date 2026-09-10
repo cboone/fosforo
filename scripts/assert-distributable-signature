@@ -65,6 +65,8 @@ function usage() {
 #   $1 - path to the bundle
 # Outputs:
 #   The description on stdout
+# Returns:
+#   0 on success, non-zero when the bundle is unsigned or unreadable
 function signature_description() {
   local bundle="${1}"
 
@@ -84,6 +86,11 @@ function assert_distributable() {
   local description flags
   local -i violations=0
 
+  # Present here and deliberately absent from the inverse script, which is the one
+  # asymmetry between the two that is about more than direction. The authority check
+  # below reads a certificate chain, and reading a chain out of a signature that does
+  # not verify tells you nothing; ad-hoc has no chain to read, so its script asserts
+  # only that the marks are absent and needs no precondition.
   if ! /usr/bin/codesign --verify --strict "${bundle}" 2> /dev/null; then
     warn "${bundle}: signature is not valid"
     return "${ASSERT_NO_SIGNATURE}"
@@ -154,8 +161,13 @@ function main() {
     return "${E_USAGE}"
   fi
 
+  # -d rather than -e, matching scripts/assert-adhoc-signature. Every caller passes
+  # a bundle, which is a directory: build-release-bundles passes zig-out/Fosforo.clap
+  # and build/assets/Fosforo.component, and build-installer passes the same two. -e
+  # accepted a plain file where the inverse script refused one, which is a difference
+  # with no reason behind it.
   for bundle in "${bundles[@]}"; do
-    if [[ ! -e "${bundle}" ]]; then
+    if [[ ! -d "${bundle}" ]]; then
       warn "cannot read '${bundle}'"
       return "${E_NOINPUT}"
     fi

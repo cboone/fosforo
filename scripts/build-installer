@@ -90,18 +90,69 @@ function version_from_zon() {
   sed -n 's/^[[:space:]]*\.version = "\([^"]*\)".*/\1/p' build.zig.zon
 }
 
+# Read the version CMake declares, which reaches the shipped Audio Unit's plist.
+#
+# `project(fosforo VERSION ...)` feeds `${PROJECT_VERSION}` into clap-wrapper's
+# `BUNDLE_VERSION`, and clap-wrapper writes that into
+# `build/assets/Fosforo.component/Contents/Info.plist`. So this is not
+# bookkeeping: it is the version a user reads off the component this script
+# packages. Read from the source rather than from the generated plist, because
+# the plist exists only after a CMake build and this check has to hold before
+# one.
+#
+# **Tolerant of how the declaration is written, because none of that changes the
+# version.** CMake accepts whitespace between a command name and its parenthesis
+# and after it, its command names are case-insensitive, and it treats a newline
+# inside an invocation as ordinary whitespace -- so `project (fosforo ...)`,
+# `PROJECT(fosforo ...)` and a declaration wrapped across three lines are all the
+# same declaration. A pattern that reads any of them as absent makes
+# resolve_version refuse, and packaging is then blocked by a formatting change
+# that altered no version at all, with a diagnostic pointing at a missing
+# declaration rather than at the formatting. Failing closed is right when the
+# versions genuinely disagree and is a waste of an afternoon when they do not.
+#
+# Hence the three stages rather than one pattern: strip `#` comments, fold the
+# file to a single line so a wrapped declaration is contiguous, then match.
+# **Stripping first is what makes folding safe.** A CMake comment runs to
+# end-of-line, so joining lines without removing them would let a commented-out
+# `project(fosforo VERSION 9.9.9)` swallow the real one.
+#
+# **Two limits remain and neither is reachable from a version declaration.**
+# Bracket comments (`#[[ ... ]]`) are not handled, and a `#` inside a quoted
+# argument would truncate its line. Both would have to appear inside this one
+# command to matter here.
+#
+# Verified against six legal spellings and five must-not-match inputs, including
+# a comment naming a different version above the real declaration; it selects
+# 0.0.0 from the real file.
+# Outputs:
+#   The version on stdout
+function version_from_cmake() {
+  sed 's/#.*$//' cmake/CMakeLists.txt |
+    tr '\n' ' ' |
+    sed -n -E 's/.*project[[:space:]]*\([[:space:]]*fosforo[[:space:]]+VERSION[[:space:]]+([^[:space:])]+).*/\1/Ip'
+}
+
 # Assert that every place the version is written agrees.
 #
-# The version is not derivable from one source: it crosses Zig and a plist, the same
-# way the display name crosses Zig, CMake and a generated plist. This refuses to
-# package a disagreement rather than shipping a bundle whose plist contradicts the
-# package that installs it.
+# The version is not derivable from one source: it crosses Zig, CMake and a plist,
+# the same way the display name crosses Zig, CMake and a generated plist. This
+# refuses to package a disagreement rather than shipping a bundle whose plist
+# contradicts the package that installs it.
+#
+# **CMake was the fourth and was unchecked until it was added here**, which is the
+# gap worth naming rather than only closing. Bumping `build.zig.zon` and
+# `macos/Info.plist` for a release and forgetting `cmake/CMakeLists.txt` used to
+# pass this function, succeed at `pkgbuild --version`, and ship an Audio Unit whose
+# own plist disagreed with the package around it. Nothing anywhere would have
+# noticed, because the two bundles carry different plists written by different
+# tools.
 # Outputs:
 #   The agreed version on stdout, diagnostics on stderr
 # Returns:
-#   0 when all three agree, non-zero otherwise
+#   0 when all four agree, non-zero otherwise
 function resolve_version() {
-  local zon short bundle
+  local zon short bundle cmake_version
 
   zon=$(version_from_zon)
   if [[ -z "${zon}" ]]; then
@@ -109,12 +160,18 @@ function resolve_version() {
     return 1
   fi
 
+  cmake_version=$(version_from_cmake)
+  if [[ -z "${cmake_version}" ]]; then
+    warn "could not read project(fosforo VERSION ...) from cmake/CMakeLists.txt"
+    return 1
+  fi
+
   short=$(plutil -extract CFBundleShortVersionString raw -o - -- macos/Info.plist)
   bundle=$(plutil -extract CFBundleVersion raw -o - -- macos/Info.plist)
 
-  # Stated positively, so the condition is "all three agree" rather than a
+  # Stated positively, so the condition is "all four agree" rather than a
   # disjunction of ways to disagree. The two are equivalent and this one reads.
-  if [[ "${zon}" == "${short}" && "${zon}" == "${bundle}" ]]; then
+  if [[ "${zon}" == "${short}" && "${zon}" == "${bundle}" && "${zon}" == "${cmake_version}" ]]; then
     echo "${zon}"
     return 0
   fi
@@ -123,6 +180,7 @@ function resolve_version() {
   warn "  build.zig.zon .version                      = ${zon}"
   warn "  macos/Info.plist CFBundleShortVersionString = ${short}"
   warn "  macos/Info.plist CFBundleVersion            = ${bundle}"
+  warn "  cmake/CMakeLists.txt project(... VERSION)   = ${cmake_version}"
   return 1
 }
 

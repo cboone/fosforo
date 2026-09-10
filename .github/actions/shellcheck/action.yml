@@ -1,0 +1,49 @@
+name: Install shellcheck
+description: Downloads a pinned shellcheck release, verifies its checksum, and puts it on PATH.
+
+# Two jobs in ci.yml need shellcheck and they need it for different reasons: `shell`
+# lints this repository's scripts with it directly, and `actionlint` needs it on PATH
+# or it skips every `run:` block in silence while still exiting 0. The version and its
+# checksum were already hoisted to workflow-level `env` on the stated grounds that
+# "duplicating one would let the two copies drift, and a drifted copy still passes".
+# The install block was not, and stayed a byte-identical five lines in both jobs. This
+# is that same argument finished, on `.github/actions/clap-validator`'s precedent: a
+# step written twice can drift, and a drifted copy of *this* step is worse than a
+# drifted cache key, because the `actionlint` job's failure mode for a missing
+# shellcheck is a silent skip rather than a slow build.
+#
+# The lint step itself is deliberately not here, matching that action: the gate should
+# be readable in the job that runs it.
+
+inputs:
+  version:
+    description: The shellcheck release to install. Passed from workflow-level env so both callers cannot diverge.
+    required: true
+  sha256:
+    description: The expected SHA256 of that release's linux.x86_64 tarball.
+    required: true
+
+# Neither input is defaulted, matching the validator action. A caller that forgets one
+# should fail loudly rather than quietly install a different shellcheck than its
+# sibling job.
+
+runs:
+  using: composite
+  steps:
+    # Downloaded to a file and checksummed before extraction rather than piped,
+    # because a pipe would have tar consuming bytes before anything could verify them.
+    #
+    # In RUNNER_TEMP rather than the workspace, which is what the `actionlint` job's
+    # copy already did and the `shell` job's did not. Unifying on the tidier of the
+    # two costs nothing: neither caller reads the tarball again, and `shell` selects
+    # its files from the git index, so an untracked download in the workspace was
+    # never selected either.
+    - name: Install shellcheck
+      shell: bash
+      run: |
+        cd "${RUNNER_TEMP}"
+        curl -sSfL -o shellcheck.tar.xz \
+          "https://github.com/koalaman/shellcheck/releases/download/v${{ inputs.version }}/shellcheck-v${{ inputs.version }}.linux.x86_64.tar.xz"
+        echo "${{ inputs.sha256 }}  shellcheck.tar.xz" | sha256sum --check --strict -
+        tar -xJf shellcheck.tar.xz
+        sudo install "shellcheck-v${{ inputs.version }}/shellcheck" /usr/local/bin/shellcheck

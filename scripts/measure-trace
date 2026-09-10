@@ -43,11 +43,18 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageCms, UnidentifiedImageError
 
-# This project's display contract, restated. Seven numbers this file does not own
-# and cannot derive, copied from three files in two other languages, with a test on
-# the Zig side reading this script and asserting all seven still agree. Without
+# This project's display contract, restated. Twelve names this file does not own
+# and cannot derive -- three from src/gpu/iface.zig and nine from
+# src/gpu/palette.zig, counting each gradient as one -- with a test on the Zig
+# side reading this script and asserting every one of them still agrees. Without
 # that test a constant that moved would leave everything below reporting
 # confident numbers against the old mapping.
+#
+# **One Zig-side language, not two, and #60 is why.** This block used to copy the
+# background and the beam colour out of shaders/scope.metal. The gradients are now
+# Zig data uploaded into a texture the shader indexes, so there is no colour
+# literal left in MSL to compare against and what is restated here is the table's
+# inputs instead.
 #
 # **No name here may end with another's.** The Zig side finds each by substring
 # and takes the first match, so a `TRACE_FULL_SCALE` declared above `FULL_SCALE`

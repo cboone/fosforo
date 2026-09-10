@@ -2681,7 +2681,7 @@ fn buildPipelines(device: objc.Object, diags: *iface.Diagnostics) iface.Error!Pi
         // A stack buffer rather than a field, because this is called from three
         // threads and none of them may allocate. 64 KiB against an 8 MiB
         // main-thread stack and a 16 MiB spawned one, for a file currently
-        // twenty-two.
+        // twenty-nine.
         var buf: shader.Buffer = .{};
 
         if (readShader(&buf)) |source| {
@@ -3600,9 +3600,12 @@ fn argumentsAfter(
 test "the screenshot tool still holds this project's numbers" {
     // `scripts/measure-trace` is the only instrument that answers what the pixels
     // became, which is the gap #51 exists to close and which nothing automated
-    // here can see. It restates four constants it does not own: two from the seam
-    // and two from this shader, in a third language, with nothing linking any of
-    // them. A constant that moved would leave it reporting confident numbers
+    // here can see. It restates twelve constants it does not own: three from the
+    // seam and nine from `gpu/palette.zig`, in a third language, with nothing
+    // linking any of them. **None from this shader any more**, which the colour
+    // half of the test below says at more length: #60 moved the gradients into a
+    // Zig table the shader indexes, so there is no literal here to compare
+    // against. A constant that moved would leave it reporting confident numbers
     // against the old mapping, which is the failure the layout tests above are
     // also about and is worse here, because these numbers get published.
     //
@@ -4100,8 +4103,10 @@ test "a scale no integer can hold is saturated rather than illegal" {
 // The canaries.
 //
 // Two mechanisms here run across threads and **neither has a backstop anywhere**.
-// `Gate` and `Pending` in `gui.zig` at least have #91 ahead of them; the watcher
-// thread is deliberately outside any sanitizer arm, and `Mailbox` carries three
+// `Gate` in `clap/gate.zig` came out of #91 with an arm, and `Pending` in
+// `clap/gui.zig` came out of it with a measured answer for why it gets none;
+// the watcher thread is deliberately outside any sanitizer arm, and `Mailbox`
+// carries three
 // Metal object pointers, so racing it would need a device on a Linux host. This
 // is what they get, and it reads the source as text and proves nothing about
 // behaviour (ADR 0016).

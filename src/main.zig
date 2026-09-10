@@ -57,7 +57,7 @@ comptime {
 // `zig build test-safe` and `zig build test-release` claim to compile this source
 // at a mode the ordinary test run does not reach (#94). Nothing else would notice
 // if that stopped being true: a step whose optimize mode silently reverted would
-// still build, still run 285 tests, still be green, and would be testing Debug
+// still build, still run every test, still be green, and would be testing Debug
 // twice. `build.zig` names the mode it pinned, and this is where the artifact
 // checks it was given what was asked for.
 //
@@ -97,10 +97,11 @@ test {
     _ = @import("platform/objc.zig");
     _ = @import("platform/view.zig");
 
-    // Reached only from the `test` blocks of the five files it guards, so no
-    // import chain from `plugin` runs through it and its own tests would
-    // otherwise not be collected. It is what those five canaries rest on, which
-    // makes a bug in it five checks silently passing.
+    // Reached only from the `test` blocks of the six other files it guards and
+    // from this file's own sweep test below, so no import chain from `plugin`
+    // runs through it and its own tests would otherwise not be collected. It is
+    // what every one of those canaries rests on, which makes a bug in it that
+    // many checks silently passing.
     _ = @import("canary.zig");
 
     // Not reached from the plugin at all: it reads a rendered trace back as
@@ -115,9 +116,9 @@ test {
     // issues. `measure.zig` holds the extraction and this holds the
     // *expectations*, which is where the tolerances, the loops and the guards
     // against going vacuous live. Its one caller is `src/smoke.zig` too, so
-    // without this line the thirteen hardest claims this project makes about
-    // what the pixels became would again be checked only by the build step that
-    // needs a GPU.
+    // without this line the hardest claims this project makes about what the
+    // pixels became would again be checked only by the build step that needs a
+    // GPU.
     _ = @import("gpu/verdict.zig");
 
     // The same argument again, and this one is not about a GPU at all. Its callers

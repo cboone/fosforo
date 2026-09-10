@@ -58,6 +58,14 @@
 
 set -euo pipefail
 
+# Every other script here opens with this and this one did not, which mattered more
+# here than anywhere else: this is the script that runs `rm -rf` inside the user's
+# plug-in folder, so it is the one where seeing each command before it runs is worth
+# something.
+if [[ -n "${TRACE:-}" ]]; then
+  set -x
+fi
+
 readonly E_USAGE=64
 readonly E_DATAERR=65
 readonly E_NOINPUT=66
@@ -66,6 +74,8 @@ readonly PROGRAM_NAME="${0##*/}"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
+REPO_ROOT="$(dirname -- "${SCRIPT_DIR}")"
+readonly REPO_ROOT
 
 readonly CLAP_DEST="${HOME}/Library/Audio/Plug-Ins/CLAP"
 readonly AU_DEST="${HOME}/Library/Audio/Plug-Ins/Components"
@@ -401,11 +411,8 @@ function main() {
     esac
   done
 
-  local root
-  root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
-  local clap_source="${root}/zig-out/${CLAP_BUNDLE}"
-  local au_source="${root}/build/assets/${AU_BUNDLE}"
+  local clap_source="${REPO_ROOT}/zig-out/${CLAP_BUNDLE}"
+  local au_source="${REPO_ROOT}/build/assets/${AU_BUNDLE}"
 
   local installed_any=false
 

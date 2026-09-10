@@ -16,8 +16,16 @@
 # without any of the three marks a real identity leaves behind.
 #
 # CI has no certificate, so this is the only part of the release path it can guard.
-# The positive direction is checked by hand against a real identity; see the release
-# section of AGENTS.md.
+# The positive direction is scripts/assert-distributable-signature, run by hand against
+# a real identity from scripts/build-release-bundles and scripts/build-installer; see
+# docs/notes/signing-and-notarization.md.
+#
+# The two are inverses and the differences between them are intentional, which is worth
+# knowing before "fixing" one to match the other: that script prechecks with
+# `codesign --verify --strict` because it goes on to read a certificate chain, and it
+# matches Authority against a required prefix because a wrong certificate is the real
+# mistake there. This one asserts the *absence* of any Authority line, so a required
+# prefix would be meaningless, and it has no chain to precheck.
 #
 # Usage:
 #   assert-adhoc-signature <bundle> [<bundle>...]
