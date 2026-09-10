@@ -25,8 +25,11 @@
 # passing vacuously from its new home.
 extend-include = ["**/measure-trace"]
 
-# ruff formats Python fenced in Markdown, which puts all 53 .md files here in its
-# remit, and that is wrong for this repository specifically. ci.yml carries
+# ruff formats Python fenced in Markdown, which puts every tracked .md file here
+# in its remit, and that is wrong for this repository specifically. Deliberately
+# not a count: the last one said 53 and was nearly half the true figure by the
+# time anyone read it, and a number that only justifies an exclusion earns
+# nothing by being exact. ci.yml carries
 # `paths-ignore` for `*.md` and `docs/**` on both triggers, so a Markdown-only
 # change can never run the job that would check it: a doc committed with an
 # unformatted fence goes green, and then the next Zig change turns the job red

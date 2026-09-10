@@ -1073,7 +1073,7 @@ test "destroy is safe on an editor that was shown but never parented" {
 // The canaries.
 //
 // **There is no second thread anywhere in this file**, so every ordering below is
-// invisible to all 42 tests beside it and a `.release` simplified to
+// invisible to every other test beside it and a `.release` simplified to
 // `.monotonic` passes every one.
 //
 // That is the same argument ADR 0016 makes about the ring, one layer up. `Gate`

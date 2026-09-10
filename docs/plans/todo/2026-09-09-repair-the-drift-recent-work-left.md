@@ -94,7 +94,7 @@ This is the section with a latent release defect in it.
 
 `cmake/CMakeLists.txt:143` feeds `${PROJECT_VERSION}` into `BUNDLE_VERSION`, which clap-wrapper writes into the shipped `Fosforo.component`'s own `Info.plist`. Bump the first three to `0.1.0` for the release and forget CMake: `resolve_version` (`scripts/build-installer:103-127`) reports agreement, `pkgbuild --version 0.1.0` succeeds, and the Audio Unit inside the package says `0.0.0`. Nothing anywhere notices.
 
-Compounding it, `packaging/distribution.xml:6-9` mis-states the count in a way that hides the gap: "Hardcoding it here would make this a **fourth** place the version lives … and the script already refuses to package a disagreement among **those three**." It is already the fifth, and CMake is not in the enumeration.
+Compounding it, `packaging/distribution.xml:6-9` understates the count in a way that hides the gap: "Hardcoding it here would make this a **fourth** place the version lives … and the script already refuses to package a disagreement among **those three**." It is already the fifth, and CMake is not in the enumeration.
 
 **Repair:** extend `resolve_version` to read the CMake project version as a fourth input, restate its diagnostic over four values, and correct the `distribution.xml` comment. This is the one change in this plan that alters behaviour, and it is a refusal being widened rather than a check being added to new code.
 
