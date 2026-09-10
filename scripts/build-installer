@@ -99,10 +99,26 @@ function version_from_zon() {
 # packages. Read from the source rather than from the generated plist, because
 # the plist exists only after a CMake build and this check has to hold before
 # one.
+#
+# **The pattern is as permissive as CMake's own grammar, deliberately.** CMake
+# accepts whitespace between a command name and its parenthesis and after it, and
+# its command names are case-insensitive, so `project (fosforo ...)` and
+# `PROJECT(fosforo ...)` are both the same declaration. A stricter pattern reads
+# them as absent, and absent makes resolve_version refuse: packaging would be
+# blocked by a formatting change that altered no version at all, with a diagnostic
+# pointing at a missing declaration rather than at the whitespace. Failing closed
+# is right when the versions genuinely disagree and is a waste of an afternoon
+# when they do not.
+#
+# Loosening costs no precision here. The anchor is a line whose first token is the
+# `project` command, so the comment lines in cmake/CMakeLists.txt that mention the
+# word cannot match, and `${PROJECT_VERSION}` uses cannot either. Verified against
+# nine legal spellings and four must-not-match lines; it still selects exactly one
+# line of the real file.
 # Outputs:
 #   The version on stdout
 function version_from_cmake() {
-  sed -n 's/^[[:space:]]*project(fosforo VERSION \([^ )]*\).*/\1/p' cmake/CMakeLists.txt
+  sed -n -E 's/^[[:space:]]*project[[:space:]]*\([[:space:]]*fosforo[[:space:]]+VERSION[[:space:]]+([^[:space:])]+).*/\1/Ip' cmake/CMakeLists.txt
 }
 
 # Assert that every place the version is written agrees.
