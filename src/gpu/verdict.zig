@@ -412,8 +412,8 @@ fn expectClose(a: f32, b: f32, tolerance: f32, fault: Fault) Fault!void {
 /// changed is that these are public functions a test can hand any `Image` to,
 /// and the tests do exactly that. A Debug build would panic on the bounds rather
 /// than corrupt anything, but `Fault.ReadbackTruncated` is in the error set to be
-/// returned, and an error two of the fifteen entrypoints there were then could
-/// return was nearly dead.
+/// returned, and only two of the fifteen entrypoints could return it at the time,
+/// which left it nearly unreachable.
 ///
 /// Longer than the geometry stays fine and the tail stays ignored, which is
 /// `measure.Image`'s own documented contract and what lets one buffer serve a
