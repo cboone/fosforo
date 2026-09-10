@@ -4,9 +4,12 @@
 
   @FOSFORO_VERSION@ is substituted by scripts/build-installer from the version in
   build.zig.zon, which is the single source of truth. Hardcoding it here would make
-  this a fourth place the version lives, alongside build.zig.zon and the two keys in
-  macos/Info.plist, and the script already refuses to package a disagreement among
-  those three.
+  this a fifth place the version lives, alongside build.zig.zon, the two keys in
+  macos/Info.plist, and project(fosforo VERSION ...) in cmake/CMakeLists.txt, which
+  reaches the shipped Audio Unit's own plist through clap-wrapper's BUNDLE_VERSION.
+  The script refuses to package a disagreement among those four. It counted three
+  until the CMake one was found unchecked, and this comment said "fourth" for the
+  same reason: the count and the check went stale together.
 
   The <domains> element is what lets one package serve both audiences. With
   enable_currentUserHome, the installer reinterprets each component's absolute
