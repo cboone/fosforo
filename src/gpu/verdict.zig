@@ -220,6 +220,26 @@ pub const beam_half_width_px: f32 = iface.beam_width_points / 2.0;
 /// a flat trace's segments are the shortest the geometry can produce. A judgement
 /// that needs the length passes the sample count it knows.
 pub fn segmentPitch(width: usize, samples: usize) f32 {
+    // **Fewer than two samples is not a short window, it is no segment at all**,
+    // which is what `traceGeometry` refuses to produce for the same reason. The
+    // guard is unreachable from this file's callers, which pass `image.width` or
+    // the literal 3, and it is kept on `beamDensity`'s precedent: a reader should
+    // not have to work out what the arithmetic does at the edge to see that a
+    // degenerate call is answered.
+    //
+    // What it answers is worse than a crash, which is why it is a guard rather
+    // than an assertion. At one sample `samples - 1` is zero, the float division
+    // yields `inf` rather than trapping, `beamWeight` turns `inf` into a weight of
+    // **zero**, and `litLevel` then returns a contour of zero — under which every
+    // pixel holding any energy counts as lit and every count this file reports is
+    // silently wrong. At zero samples the subtraction underflows a `usize`, which
+    // traps in Debug and wraps in `--release=fast`.
+    //
+    // Returning the full width is the continuous answer rather than a sentinel:
+    // two samples give one segment spanning the drawable, and that is exactly
+    // `width`, so the degenerate case reads as the limit of the real one.
+    if (samples < 2) return @floatFromInt(width);
+
     return @as(f32, @floatFromInt(width)) / @as(f32, @floatFromInt(samples - 1));
 }
 
@@ -257,6 +277,11 @@ pub fn sineSegment(
     samples: usize,
     cosine: f32,
 ) f32 {
+    // The same degenerate case as `segmentPitch`, and it has to be caught here
+    // too because this computes its own `span` rather than going through it. With
+    // no segment there is no travel either, so the flat length is the answer.
+    if (samples < 2) return segmentPitch(width, samples);
+
     const rows: f32 = @floatFromInt(height);
     const span: f32 = @floatFromInt(samples - 1);
 
@@ -1545,6 +1570,33 @@ test "a railed trace lights every column, and a dropped one is not an edge fault
     try testing.expectError(Fault.EdgeColumnDark, edgeColumns(canvas.image()));
 
     try testing.expectError(Fault.TraceNotDrawn, edgeColumns(canvas.dark()));
+}
+
+test "a window too short to hold a segment yields no infinity and no zero contour" {
+    // **The failure this guards is silent rather than loud**, which is why the
+    // test asserts on the contour and not only on the pitch. Unguarded, one sample
+    // sends `segmentPitch` to `inf`, `beamWeight` turns that into a weight of zero,
+    // and `litLevel` returns a contour of zero, under which `measure.litColumns`
+    // reports every column lit and every geometric judgement here passes while
+    // measuring nothing.
+    for ([_]usize{ 0, 1, 2 }) |samples| {
+        const pitch = segmentPitch(960, samples);
+        try testing.expect(std.math.isFinite(pitch));
+        try testing.expect(pitch > 0);
+
+        const contour = litLevel(segmentLength(960, 0.0, samples));
+        try testing.expect(std.math.isFinite(contour));
+        try testing.expect(contour > 0);
+
+        const sine = sineSegment(960, 540, 2.0, 0.8, samples, 1.0);
+        try testing.expect(std.math.isFinite(sine));
+        try testing.expect(sine > 0);
+    }
+
+    // And the guard is the limit of the real case rather than a sentinel: two
+    // samples give one segment spanning the drawable, which is the width.
+    try testing.expectEqual(@as(f32, 960.0), segmentPitch(960, 2));
+    try testing.expectEqual(segmentPitch(960, 2), segmentPitch(960, 1));
 }
 
 test "the beam's cross-section integrates to the biweight, in pixels not clip space" {
