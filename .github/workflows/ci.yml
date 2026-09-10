@@ -137,7 +137,7 @@ jobs:
   # runs in 30s and gets far more headroom than it needs as a consequence, which
   # is the price of a single shared input and not worth an upstream change.
   ci:
-    uses: cboone/gh-actions/.github/workflows/run-zig-ci.yml@91f9abd25d4f82354c0f950dfc8b6d7525b0f5b5 # v3.0.0
+    uses: cboone/gh-actions/.github/workflows/run-zig-ci.yml@844bf31d4ec26df9d0aa531e79d8c3fccf9f0638 # v3.1.0
     with:
       zig-version-file: build.zig.zon
       runs-on: macos-latest
