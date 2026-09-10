@@ -557,9 +557,11 @@ fn signClapBundle(
 
 /// The unit tests, and the two imports that exist only for them.
 ///
-/// `scripts/measure-trace` restates four constants this project owns, two from
-/// `src/gpu/iface.zig` and two from `shaders/scope.metal`, with nothing in Python
-/// or MSL linking any of them. `scripts/read-provenance` restates one, the marker
+/// `scripts/measure-trace` restates twelve constants this project owns, three from
+/// `src/gpu/iface.zig` and nine from `src/gpu/palette.zig`, with nothing in Python
+/// linking any of them. Not `shaders/scope.metal`: #60 moved the colour into a Zig
+/// table the shader indexes, so there is no literal left in MSL to compare against.
+/// `scripts/read-provenance` restates one, the marker
 /// prefix `src/build_info.zig` stamps into every binary, with nothing in shell
 /// linking it either. Both tests read the script as text, the way the shader tests
 /// read the embedded shader source, so both files have to be reachable through the

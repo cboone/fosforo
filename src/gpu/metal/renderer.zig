@@ -3600,9 +3600,12 @@ fn argumentsAfter(
 test "the screenshot tool still holds this project's numbers" {
     // `scripts/measure-trace` is the only instrument that answers what the pixels
     // became, which is the gap #51 exists to close and which nothing automated
-    // here can see. It restates four constants it does not own: two from the seam
-    // and two from this shader, in a third language, with nothing linking any of
-    // them. A constant that moved would leave it reporting confident numbers
+    // here can see. It restates twelve constants it does not own: three from the
+    // seam and nine from `gpu/palette.zig`, in a third language, with nothing
+    // linking any of them. **None from this shader any more**, which the colour
+    // half of the test below says at more length: #60 moved the gradients into a
+    // Zig table the shader indexes, so there is no literal here to compare
+    // against. A constant that moved would leave it reporting confident numbers
     // against the old mapping, which is the failure the layout tests above are
     // also about and is worse here, because these numbers get published.
     //
