@@ -32,6 +32,11 @@ zig-pkg/
 # CMake (clap-wrapper builds)
 build/
 
+# Node, which is here only for the two tools that format and verify Markdown.
+# `package.json` and `package-lock.json` are tracked, because the lockfile is
+# the pin; the tree it installs is not.
+node_modules/
+
 # Host verification captures
 #
 # `verification/` is where a `screencapture` of the editor goes before

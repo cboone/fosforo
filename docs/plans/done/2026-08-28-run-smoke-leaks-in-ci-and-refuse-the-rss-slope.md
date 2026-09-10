@@ -30,7 +30,7 @@ The issue proposed two steps in the existing `smoke` job. Planning found three t
 
 Coverage of each plausible planted defect, by instrument, **as of planning**. One cell was a prediction and is marked with what it turned out to be: the `history` row was `unknown` for `leaks`, measured as **no**, and is now **yes** because this issue added the byte bound that closes it.
 
- `L` is `leaks` through `scripts/smoke-leak-check`; `R` is the proposed RSS slope; `W` and `A` are `liveWindowBuffers` and `liveAccumulationTextures`, both asserted by `smoke-appkit` in CI today; `T` is `zig build test` under `testing.allocator`.
+`L` is `leaks` through `scripts/smoke-leak-check`; `R` is the proposed RSS slope; `W` and `A` are `liveWindowBuffers` and `liveAccumulationTextures`, both asserted by `smoke-appkit` in CI today; `T` is `zig build test` under `testing.allocator`.
 
 | Planted defect                                      | L               | R       | W       | A       | T   |
 | --------------------------------------------------- | --------------- | ------- | ------- | ------- | --- |
@@ -40,8 +40,8 @@ Coverage of each plausible planted defect, by instrument, **as of planning**. On
 | `releaseAccumulation` decrements without releasing  | no              | no      | no      | no      | no  |
 | Command queue or pipeline state release dropped     | **yes**         | no      | no      | no      | no  |
 | `history` ring not freed in `plugin.destroy`        | **no**, now yes | yes     | no      | no      | yes |
-| A future uncounted *shared*-storage buffer          | no              | **yes** | no      | no      | no  |
-| A future uncounted *private*-storage texture        | no              | no      | no      | no      | no  |
+| A future uncounted _shared_-storage buffer          | no              | **yes** | no      | no      | no  |
+| A future uncounted _private_-storage texture        | no              | no      | no      | no      | no  |
 
 Three things follow, and the third is the one that decides it.
 
@@ -49,7 +49,7 @@ Three things follow, and the third is the one that decides it.
 
 **The residual unique coverage is the failure this project has already declined to chase.** `AGENTS.md:204` says of the counter: "a `releaseWindows` that stopped releasing would still balance; what it catches is the realistic failure, a path that builds a ring and forgets it." Buying two minutes per push to guard the unrealistic half is not a trade this repository makes anywhere else, and the identical hole for the accumulation textures is not covered by RSS either, so the guard would be half-applied by construction.
 
-**Its sensitivity is proportional to its cost, and it is blind to the resource that now dominates.** The margin arithmetic: baseline growth is 18.8 MB across 40 to 400 cycles, run-to-run spread is 1.5 MB per endpoint, so the standard deviation on the difference is about 2.1 MB and a five-sigma ceiling sits near 30 MB. The smallest per-cycle leak that clears it is 0.031 MB, against a leaked ring's roughly 0.048 MB of *resident* pages per cycle — a margin of 1.5x. Halving the span to 40/200 doubles the detectable floor to 0.070 MB per cycle, which is above the defect, so the check cannot be made cheaper without ceasing to work. And a leaked accumulation texture moves peak RSS by 0.2 MB while leaking nearly two gigabytes, so the instrument does not see the storage class #55 introduced at all.
+**Its sensitivity is proportional to its cost, and it is blind to the resource that now dominates.** The margin arithmetic: baseline growth is 18.8 MB across 40 to 400 cycles, run-to-run spread is 1.5 MB per endpoint, so the standard deviation on the difference is about 2.1 MB and a five-sigma ceiling sits near 30 MB. The smallest per-cycle leak that clears it is 0.031 MB, against a leaked ring's roughly 0.048 MB of _resident_ pages per cycle — a margin of 1.5x. Halving the span to 40/200 doubles the detectable floor to 0.070 MB per cycle, which is above the defect, so the check cannot be made cheaper without ceasing to work. And a leaked accumulation texture moves peak RSS by 0.2 MB while leaking nearly two gigabytes, so the instrument does not see the storage class #55 introduced at all.
 
 The honest summary, and the sentence the ADR amendment should carry: **the RSS slope is a calibrated instrument for a defect an uncalibrated one already catches, and it is blind to the defect nothing else catches.**
 
@@ -90,7 +90,7 @@ Also, unconditionally: **split the exit codes.** `E_DATAERR=65` currently covers
 
 `.github/workflows/ci.yml`, the `smoke` job (lines 148-179). A step after `Smoke-test the AppKit path`:
 
-- `id: leaks`, `continue-on-error: true`, a step-level `timeout-minutes` as a *label* on the Metal-download precedent rather than a budget, running `zig build smoke-leaks -Dleak-cycles=40`.
+- `id: leaks`, `continue-on-error: true`, a step-level `timeout-minutes` as a _label_ on the Metal-download precedent rather than a budget, running `zig build smoke-leaks -Dleak-cycles=40`.
 - Extend the existing `Report whether the runner granted a window server` step (lines 176-179) to carry both outcomes, and add the leak figures to it. The notice is machine-queryable through the check-runs annotations API, which is how the sample gets collected without opening thirty logs.
 - The figures go out on **every** run, not `if: failure()`. The two `$GITHUB_STEP_SUMMARY` blocks at lines 448-462 and 560-574 are failure-only because their subject is a failing path; here the green runs are the measurement.
 
@@ -161,15 +161,15 @@ The step is `continue-on-error`, so the first runs are the measurement rather th
 
 **The heap-leak measurement came back the bad way, twice as loudly as expected.** The plan hedged it as "unknown" and listed both outcomes. Dropping `self.history.deinit` from `plugin.destroy` and running 40 cycles leaks **42.6 million bytes against a clean 18,816**, and the check reported "nothing this project owns was leaked". So the byte bound landed, and the finding is sharper than a missing coverage note: the check about to become this project's leak gate could not see two thousand times its own baseline.
 
-**The leak count turned out to be actively misleading, which nothing anticipated.** Across two runs of that same planted leak the report gave 232 leaks and then 328, against a clean 288 that does not move at all. One of those two runs would have read as an *improvement* while forty megabytes went missing. The script now says so, because a count is the obvious thing to reach for next.
+**The leak count turned out to be actively misleading, which nothing anticipated.** Across two runs of that same planted leak the report gave 232 leaks and then 328, against a clean 288 that does not move at all. One of those two runs would have read as an _improvement_ while forty megabytes went missing. The script now says so, because a count is the obvious thing to reach for next.
 
-**The class check runs before the byte bound, not after.** The first draft had the bound first, which would have masked the sharper diagnosis: a leaked pipeline state is 8,555,776 bytes, over the bound, and "these objects belong to this project, here they are" is strictly better to read than a byte total. Caught by asking what a *Metal* leak would print, not by the planted heap leak.
+**The class check runs before the byte bound, not after.** The first draft had the bound first, which would have masked the sharper diagnosis: a leaked pipeline state is 8,555,776 bytes, over the bound, and "these objects belong to this project, here they are" is strictly better to read than a byte total. Caught by asking what a _Metal_ leak would print, not by the planted heap leak.
 
 **Both cost figures in the issue were stale, and the plan's replacement for one of them was too.** The `smoke` job's worst case is 58 s over 10 runs rather than 38 s over 3. And `zig build smoke-leaks` at 400 cycles takes **113 s** on this machine today, not 51.8 s: #55's four resizes roughly doubled it, so the issue's central cost argument was measuring a harness that no longer exists.
 
 **40 and 400 cycles report the same figures to within 2%**, which is stronger than the 20-versus-60 result the issue cites and retires the script's stated rationale for its default outright. Across five runs at both depths the report gave 288 leaks for 18,816 bytes four times and 285 for 18,464 once, so the variation is run to run rather than with depth: AppKit's chatter is a fixed startup cost. The first four runs all gave the same figure and the claim was written as "exactly", in five places, before the fifth run falsified it — which is a small instance of the thing this repository keeps rediscovering, that four agreeing samples are not a constant.
 
-**The runner is five times noisier than this machine, and that was worth learning even though it changed nothing.** Three CI runs reported 18,656, 18,816 and **14,080** bytes, a 25% spread against the 2% seen across six local runs. The bound absorbs it untouched, with 74x of room at the low end, which is the whole argument for having set it loose. It is also the clearest retrospective case against the refused RSS check: a threshold five sigma above an 18.8 MB baseline, on a machine whose *baseline* wanders 25%, would have needed recalibrating on every runner image refresh to stay meaningful.
+**The runner is five times noisier than this machine, and that was worth learning even though it changed nothing.** Three CI runs reported 18,656, 18,816 and **14,080** bytes, a 25% spread against the 2% seen across six local runs. The bound absorbs it untouched, with 74x of room at the low end, which is the whole argument for having set it loose. It is also the clearest retrospective case against the refused RSS check: a threshold five sigma above an 18.8 MB baseline, on a machine whose _baseline_ wanders 25%, would have needed recalibrating on every runner image refresh to stay meaningful.
 
 **Twice in this issue a claim was generalized from too few samples, and both times the next run falsified it.** Four identical local runs became "exactly 288 leaks for 18,816 bytes" in five files; the fifth run disagreed. Then one CI run became "the runner's chatter did not differ measurably"; the third disagreed. Neither error survived to `main`, because in both cases the next run happened before the branch merged — which is luck rather than method, and the method that would replace it is the one the timeout table already uses: say the sample size beside the figure, so a reader can see how much to trust it.
 

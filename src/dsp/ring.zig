@@ -88,6 +88,18 @@ pub const Ring = struct {
         /// it is a Debug build and the assertion is live; the `--release=fast`
         /// build that ships is the one where it is gone and a host's bad value
         /// would run on unchecked.
+        ///
+        /// **Since #94 this guard is exercised in that build**, by `zig build
+        /// test-release`, and deleting the line above is the plant that measured
+        /// what the borrowed assertion is actually worth there. Debug names it —
+        /// `panic: reached unreachable code` with a trace through
+        /// `std/math.zig:1219`'s `assert(value != 0)`. ReleaseSafe still panics
+        /// but the trace has been optimized down to the test runner, naming no
+        /// line in `std.math` at all. ReleaseFast reports `terminated with signal
+        /// TRAP` and nothing else: no message, no trace, no assertion named. So
+        /// the mode where a bad capacity does damage is also the mode where an
+        /// assertion says least about it, which is the whole of why this is an
+        /// error rather than an `assert`.
         EmptyCapacity,
         /// The capacity, once rounded up, does not fit in a `usize`.
         Overflow,
@@ -351,6 +363,17 @@ fn coherent(snapshot: u64, now: u64, capacity: usize, copied: usize) bool {
 
 const testing = std.testing;
 const canary = @import("../canary.zig");
+
+test {
+    // This file is the worked example `AGENTS.md` uses for lazy analysis: `read`
+    // and `capacity` are called by nothing but the tests below, so a type error in
+    // either survived a plain build. Referencing the type is not enough to fix it.
+    // `refAllDecls` walks one container's public declarations and does not descend,
+    // and `refAllDeclsRecursive` was removed in Zig 0.16, so the second call is
+    // what reaches `Ring`'s methods rather than something the first implies.
+    testing.refAllDecls(@This());
+    testing.refAllDecls(Ring);
+}
 
 /// A monotonically increasing signal, so the order samples come back in is
 /// checkable rather than merely plausible.

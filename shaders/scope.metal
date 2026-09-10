@@ -113,6 +113,24 @@ using namespace metal;
 // the number worth turning while looking at a host.
 constant float white_headroom = 0.8;
 
+// The smallest dwell fraction the white point will divide by.
+//
+// `palette.min_dwell`, and the same value the model clamps at, so the two agree
+// by a pin rather than by inspection.
+//
+// **It guards the `decay == 1` end, and that is a different failure from the
+// unbound-buffer one.** An unbound fragment buffer reads zeros, so a reloaded
+// source that fails to declare `phosphor` gives `decay == 0`: the white point
+// falls to `white_headroom`, everything from one deposit up blows out white, and
+// that is loud and is the right failure. Nothing needs clamping there. What this
+// clamps is the other end, where a stale or uninitialised `decay` of 1 makes
+// `1 - decay` zero and the division a NaN the format turns into garbage. Clamped,
+// the shoulder term vanishes and the curve degrades to plain Reinhard instead.
+//
+// Not editable live in any useful sense, unlike `white_headroom` above. See the
+// tonemap below and `src/gpu/palette.zig` for the argument at both ends.
+constant float min_dwell = 1e-6;
+
 // Which gradient to read: 0 green, 1 amber, 2 storage-tube blue, 3 neutral.
 //
 // A literal rather than a uniform because nothing can author or automate a choice
@@ -197,7 +215,7 @@ fragment float4 decay_fragment(VertexOut in [[stage_in]],
 // by zero; clamped, the shoulder term vanishes and this degrades to plain
 // Reinhard rather than to a NaN the format turns into garbage.
 float tonemap(float energy, float decay) {
-    const float dwell = max(1.0 - decay, 1e-6);
+    const float dwell = max(1.0 - decay, min_dwell);
     const float white = white_headroom / dwell;
     return min(energy * (1.0 + energy / (white * white)) / (1.0 + energy), 1.0);
 }

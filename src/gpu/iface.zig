@@ -317,10 +317,13 @@ pub const Readback = struct {
 /// What the backend has done about the shader on disk, for a caller that cannot
 /// see the picture.
 ///
-/// One struct rather than four `fn () usize`, because the four numbers are only
-/// ever read together and every assertion about them has the same shape: this one
-/// moved and those did not. Four separate seam operations would also be four
-/// separate `assertSignature` lines pinning nothing the struct does not.
+/// One struct rather than a `fn () usize` per number, because they are only ever
+/// read together and every assertion about them has the same shape: this one moved
+/// and those did not. Separate seam operations would also be that many separate
+/// `assertSignature` lines pinning nothing the struct does not — and a field is
+/// what lets #77 add a fifth number, and #118 a sixth, without touching the seam's
+/// signature list at all, which is the count `Renderer`'s own docstring has now
+/// been wrong about twice.
 ///
 /// It names nothing Metal owns, which is what lets it sit above this line at all.
 /// `reloads` and `rejected` are the pair that matters: a counter alone cannot
@@ -336,7 +339,7 @@ pub const ShaderStats = struct {
     ///
     /// **It says a path was chosen, and deliberately not two things it looks
     /// like it might.** It does not say the file exists: a path that resolves
-    /// and then cannot be read leaves this true and moves `fallbacks`, which is
+    /// and then cannot be read leaves this true and moves `unreadable`, which is
     /// how a caller tells those apart. And it does not say a watcher thread is
     /// running, because `probe` resolves a path without starting one.
     ///
@@ -351,10 +354,59 @@ pub const ShaderStats = struct {
     /// what the pipelines ask for. The picture keeps whatever last worked.
     rejected: u64 = 0,
 
-    /// Times the embedded copy was used because the disk one could not be:
-    /// unreadable *or* unusable, so this moves alongside `rejected` as well as on
-    /// its own. The editor opens either way, which is the point of counting it.
+    /// Sources that could not be read at all, at either of the two sites that
+    /// read one: a path that resolved and then would not open, or a file too
+    /// large for the buffer `src/gpu/metal/shader.zig` reads into.
+    ///
+    /// **It is not `rejected` and it is not `fallbacks`, which is the whole of
+    /// #118.** A file that could not be read was never a source and never reached
+    /// the compiler, so `rejected` — "read and refused" — does not describe it.
+    /// And under the watcher nothing falls back: the pipelines already running
+    /// stay, which is what `Watcher.poll`'s own message says and what makes the
+    /// swap fail-soft, so `fallbacks` did not describe it either. That row
+    /// credited `fallbacks` until #118 and the claim was simply false.
+    ///
+    /// It moves alone under the watcher and alongside `fallbacks` when an editor
+    /// opens, exactly as `rejected` does, because the difference between the two
+    /// sites is only ever whether the embedded copy was what ran next.
+    unreadable: u64 = 0,
+
+    /// Times the embedded copy was used because the disk one could not be. It
+    /// moves alongside `rejected` and alongside `unreadable`, never on its own,
+    /// and only where an editor was opening: the editor opens either way, which
+    /// is the point of counting it.
+    ///
+    /// **Under the watcher it does not move at all**, for either failure. There
+    /// is nothing to fall back to once a shader is running, and reading this
+    /// counter as "the disk copy was not used" is the widening #118 refused: that
+    /// would be true of a watcher-side rejection too, and that row deliberately
+    /// leaves this alone.
     fallbacks: u64 = 0,
+
+    /// Sources off disk that compiled but read a binding somewhere this backend
+    /// does not bind it.
+    ///
+    /// **It moves alongside `reloads`, never instead of it**, which is the whole
+    /// of #77's decision stated as a type: the swap happens and the mismatch is
+    /// said out loud, because a reloader that silently declines to reload is how
+    /// people stop trusting one. Refusing was the alternative and what settled it
+    /// was a measurement rather than a preference — drawing through a moved index
+    /// completes the frame and reads the unbound argument as zeros, so keeping the
+    /// swap costs a wrong picture the next save fixes rather than a wedged GPU.
+    ///
+    /// It exists so the check can be *asserted* rather than trusted: a warning on
+    /// a stream nothing reads is indistinguishable from a check that never ran,
+    /// which is the distinction ADR 0013 keeps insisting on. `src/smoke.zig` plants
+    /// a shader with one index moved and watches this move by one.
+    ///
+    /// **Half a class, and the half it leaves open is the sharper one.** MSL states
+    /// binding indices as literals, so they can be read out of the text. It
+    /// computes struct offsets itself, so a `TraceUniforms` field added or
+    /// reordered on one side only leaves text that still describes the struct
+    /// correctly and draws a plausible trace at the wrong scale. Nothing counts
+    /// that, here or anywhere: seeing it needs a readback of a *reloaded* shader,
+    /// and `zig build smoke-trace` deliberately reads the embedded copy.
+    binding_mismatches: u64 = 0,
 };
 
 /// The one backend. Aliased rather than dispatched through a vtable, because
@@ -525,10 +577,27 @@ fn assertSignature(comptime name: []const u8, comptime Found: type, comptime Wan
 
 const testing = std.testing;
 
+test {
+    // The seam's own declarations, compiled here rather than at whichever caller
+    // reaches them first. `Renderer` is re-exported from the backend, which carries
+    // its own sweep; `Error` is an error set, and `std.meta.declarations` raises a
+    // compile error on anything that is not a struct, enum, union or opaque.
+    testing.refAllDecls(@This());
+    testing.refAllDecls(Size);
+    testing.refAllDecls(Outcome);
+    testing.refAllDecls(Diagnostics);
+    testing.refAllDecls(Readback);
+    testing.refAllDecls(ShaderStats);
+}
+
 // Nothing here constructs a `Renderer`. Doing so would acquire a GPU, and
 // `zig build test` runs in CI on a runner whose Metal support is not something
 // this project should depend on (ADR 0009). The backend is verified by running
 // the plugin in a host; what is testable without one is tested here.
+//
+// `Renderer.shaderStats` is the one backend function reached below, and it does
+// not break that rule: it is a static read of six atomics and acquires
+// nothing.
 
 test "only a presented frame counts as having drawn" {
     // The distinctions between the skips are for a human reading a log; this is
@@ -578,4 +647,43 @@ test "setting a diagnostic twice replaces it rather than appending" {
     diags.set("no device");
 
     try testing.expectEqualStrings("no device", diags.message());
+}
+
+// The invariant the struct's docstring states, which until now was documented
+// and asserted nowhere. Every *call site* that credits the six counters behind
+// `shaderStats` sits inside a `shader.live` branch, and `shader.live` folds in
+// `!builtin.is_test`, so in a test binary none of them is compiled. Zig runs a
+// test binary single-threaded and in order and nothing here constructs a
+// `Renderer`, so this cannot be perturbed by whatever ran before it. A future
+// test that started a watcher would break this one, and that is the right
+// outcome rather than a fragility.
+//
+// **The claim narrowed at #93 and the narrower one is the honest one.** This used
+// to say the writers were "comptime-unreachable rather than merely unreached",
+// which stopped being true when the bookkeeping moved into
+// `gpu/metal/reload.zig`: `Counters.note` is compiled in a test binary now, and
+// covered there. What still holds, and is what this asserts, is that nothing
+// reaches the *shared* instance. `reload.zig`'s own tests each construct their
+// own `Counters`, which is what keeps the two from perturbing each other.
+//
+// The two halves catch different things and neither subsumes the other: the
+// equality catches a field default that stopped agreeing with the atomic behind
+// it, and the explicit zeros catch both defaults moving together.
+//
+// **It does not close the gate it looks like it closes.** Dropping
+// `!builtin.is_test` from `shader.live` does not fail this test, because
+// nothing in a test binary would then start a watcher either. That plant
+// belongs to `"nothing is read from disk in a test build"` in
+// `gpu/metal/shader.zig`, which is where the cause lives.
+test "the shader counters read zero in a build that has no watcher" {
+    const stats = Renderer.shaderStats();
+
+    try testing.expectEqual(ShaderStats{}, stats);
+
+    try testing.expect(!stats.path_resolved);
+    try testing.expectEqual(@as(u64, 0), stats.reloads);
+    try testing.expectEqual(@as(u64, 0), stats.rejected);
+    try testing.expectEqual(@as(u64, 0), stats.unreadable);
+    try testing.expectEqual(@as(u64, 0), stats.fallbacks);
+    try testing.expectEqual(@as(u64, 0), stats.binding_mismatches);
 }

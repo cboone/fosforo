@@ -9,6 +9,7 @@
 //! packaged as the `.clap` bundle.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const build_options = @import("build_options");
 const clap = @import("clap/c.zig");
 const plugin = @import("clap/plugin.zig");
@@ -53,6 +54,29 @@ comptime {
     }
 }
 
+// `zig build test-safe` and `zig build test-release` claim to compile this source
+// at a mode the ordinary test run does not reach (#94). Nothing else would notice
+// if that stopped being true: a step whose optimize mode silently reverted would
+// still build, still run 285 tests, still be green, and would be testing Debug
+// twice. `build.zig` names the mode it pinned, and this is where the artifact
+// checks it was given what was asked for.
+//
+// **Comptime rather than `std.debug.assert`**, on the reason `src/platform/io.zig`
+// already states for its own: an assertion on a runtime path is compiled out of
+// `--release=fast`, which here would be exactly the artifact with the most to
+// prove. A failing comptime assertion is a compile error in every optimize mode.
+//
+// Inert in every other build, because `pinned_optimize` is "" for all of them —
+// `Core.Options` defaults it and only `addTestStep`'s two pinned call sites pass
+// anything else.
+comptime {
+    const pinned = build_options.pinned_optimize;
+    if (pinned.len != 0 and !std.mem.eql(u8, pinned, @tagName(builtin.mode))) {
+        @compileError("this artifact is pinned to " ++ pinned ++ " and was built at " ++
+            @tagName(builtin.mode) ++ "; see addTestStep in build.zig");
+    }
+}
+
 test {
     std.testing.refAllDecls(@This());
     _ = clap;
@@ -60,6 +84,7 @@ test {
 
     // Reached only through `plugin`, so named here to get their tests collected.
     _ = @import("build_info.zig");
+    _ = @import("clap/gate.zig");
     _ = @import("clap/gui.zig");
     _ = @import("clap/log.zig");
     _ = @import("clap/state.zig");
@@ -86,11 +111,97 @@ test {
     // would never see.
     _ = @import("gpu/measure.zig");
 
-    // Not reached from the plugin at all: it is the root of the race harness,
-    // which `zig build ring-race` builds as its own executable. Named here so its
-    // pure parts are still checked by `zig build test`, because the machine that
-    // runs that command is usually the one machine that cannot run the harness.
+    // The other half of that same argument, and it was left unmade for four
+    // issues. `measure.zig` holds the extraction and this holds the
+    // *expectations*, which is where the tolerances, the loops and the guards
+    // against going vacuous live. Its one caller is `src/smoke.zig` too, so
+    // without this line the thirteen hardest claims this project makes about
+    // what the pixels became would again be checked only by the build step that
+    // needs a GPU.
+    _ = @import("gpu/verdict.zig");
+
+    // The same argument again, and this one is not about a GPU at all. Its callers
+    // are all inside `shader.live`, which folds in `!builtin.is_test`, so a test
+    // build compiles none of them and no import chain reaches this file: without
+    // this line its tests would not be collected and the bookkeeping they cover
+    // would be checked only by `zig build smoke-appkit`, which #93 measured
+    // catching none of it.
+    _ = @import("gpu/metal/reload.zig");
+
+    // Not reached from the plugin at all: these are the roots of the two race
+    // harnesses, which `zig build ring-race` and `zig build gate-race` build as
+    // their own executables. Named here so their pure parts are still checked by
+    // `zig build test`, because the machine that runs that command is usually the
+    // one machine that cannot run either harness.
+    //
+    // For `gate_race.zig` that is not only a convenience. Its canaries assert
+    // that the replica differs from the real `Gate` in exactly one ordering and
+    // that neither the rendezvous nor the join has quietly become an edge, and
+    // each of those is a way for both arms to come back clean. A control that
+    // stopped controlling anything is the one failure the Linux job cannot see.
+    _ = @import("gate_race.zig");
     _ = @import("ring_race.zig");
+}
+
+test "every module a test build compiles carries a declaration sweep" {
+    const canary = @import("canary.zig");
+
+    // Zig analyses lazily per declaration, so a `pub fn` nothing reaches is never
+    // type-checked however the file it lives in was imported (#95). Every module
+    // below answers that with a `refAllDecls` block. Nothing but this makes the
+    // convention hold for the module added next month: the sweep itself is a
+    // one-time edit, and the hole it closed reopens silently without a check.
+    //
+    // Every `.zig` file under `src/` except `smoke.zig`, which `zig build test`
+    // compiles none of; #92 owns that one.
+    const sources = .{
+        .{ "main.zig", @embedFile("main.zig") },
+        .{ "build_info.zig", @embedFile("build_info.zig") },
+        .{ "canary.zig", @embedFile("canary.zig") },
+        .{ "gate_race.zig", @embedFile("gate_race.zig") },
+        .{ "ring_race.zig", @embedFile("ring_race.zig") },
+        .{ "clap/c.zig", @embedFile("clap/c.zig") },
+        .{ "clap/gate.zig", @embedFile("clap/gate.zig") },
+        .{ "clap/gui.zig", @embedFile("clap/gui.zig") },
+        .{ "clap/log.zig", @embedFile("clap/log.zig") },
+        .{ "clap/plugin.zig", @embedFile("clap/plugin.zig") },
+        .{ "clap/state.zig", @embedFile("clap/state.zig") },
+        .{ "dsp/ring.zig", @embedFile("dsp/ring.zig") },
+        .{ "gpu/iface.zig", @embedFile("gpu/iface.zig") },
+        .{ "gpu/measure.zig", @embedFile("gpu/measure.zig") },
+        .{ "gpu/palette.zig", @embedFile("gpu/palette.zig") },
+        .{ "gpu/verdict.zig", @embedFile("gpu/verdict.zig") },
+        .{ "gpu/metal/reload.zig", @embedFile("gpu/metal/reload.zig") },
+        .{ "gpu/metal/renderer.zig", @embedFile("gpu/metal/renderer.zig") },
+        .{ "gpu/metal/shader.zig", @embedFile("gpu/metal/shader.zig") },
+        .{ "platform/displaylink.zig", @embedFile("platform/displaylink.zig") },
+        .{ "platform/io.zig", @embedFile("platform/io.zig") },
+        .{ "platform/objc.zig", @embedFile("platform/objc.zig") },
+        .{ "platform/view.zig", @embedFile("platform/view.zig") },
+    };
+
+    // Split so this line is not itself a match. The needle would otherwise appear
+    // verbatim in this file's own source and count as a second statement, which is
+    // the hazard `canary.implementation` exists for and which cannot help here:
+    // this file has no tests banner to cut at.
+    //
+    // `canary.mentions` rather than `indexOf` for the reason it exists: it does not
+    // count comment lines, so a file that documented the convention instead of
+    // following it fails. `src/smoke.zig` names `testing.refAllDecls` in its
+    // docstring and follows nothing, which is what that would look like.
+    const sweep = "refAllDecls(" ++ "@This());";
+    inline for (sources) |module| {
+        errdefer std.debug.print("\nsrc/{s} carries no declaration sweep\n", .{module[0]});
+        try std.testing.expectEqual(1, canary.mentions(module[1], sweep));
+    }
+
+    // The two lists tied together, so adding one without the other fails here
+    // rather than quietly narrowing what the sweep covers. `sources` holds four
+    // entries the block above does not name: this file, the two it imports at file
+    // scope, and `gpu/palette.zig`, whose tests are collected only because
+    // `Renderer`'s method bodies reference it. Split for the same reason as above.
+    const listed = canary.mentions(@embedFile("main.zig"), "_ = @imp" ++ "ort(\"");
+    try std.testing.expectEqual(sources.len, listed + 4);
 }
 
 test "the entry hands back the plugin factory, and only for its own id" {

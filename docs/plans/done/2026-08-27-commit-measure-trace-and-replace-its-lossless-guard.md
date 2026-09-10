@@ -194,7 +194,7 @@ Recorded as the work went, rather than at the end.
 ## Out of scope
 
 - **Rewriting it as an offscreen harness.** That is [#51](https://github.com/cboone/fosforo/issues/51), which reads a texture rather than a screenshot and needs neither the crop nor any guard. This issue is about not losing the working tool in the meantime.
-- **The peak-row measurement's own retirement under persistence.** The tool will still find the topmost lit pixel in a column; that pixel just stops being this frame's sample once a trail is lit above it. This plan makes the tool *say* so and does not change what it measures.
+- **The peak-row measurement's own retirement under persistence.** The tool will still find the topmost lit pixel in a column; that pixel just stops being this frame's sample once a trail is lit above it. This plan makes the tool _say_ so and does not change what it measures.
 - **Anything #60 breaks.** A tonemap and a palette end the green-channel isolation and the ray relation both. That issue already carries reworking this tooling; nothing here tries to anticipate it.
 - **Pinning `pillow` and `numpy`.** The shebang keeps taking them unpinned through `uv`. Pinning tools that gate CI is this repository's rule; this script gates nothing automatic and informs a human.
 

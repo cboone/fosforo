@@ -29,21 +29,29 @@ The work below does not replace planting. It moves the plants that can be expres
 
 ## Summary
 
-| Issue                                              | Work                                                          | Type        | Needs               | Closes                                                    |
-| -------------------------------------------------- | ------------------------------------------------------------- | ----------- | ------------------- | --------------------------------------------------------- |
-| [#89](https://github.com/cboone/fosforo/issues/89) | Give the trace half's frame wait a deadline                   | `fix:`      | A device, no window | A red `main` on a required check                          |
-| [#90](https://github.com/cboone/fosforo/issues/90) | Canary every ordering-critical declaration                    | `test:`     | Nothing             | ADR 0015 and three unguarded atomics                      |
-| [#91](https://github.com/cboone/fosforo/issues/91) | Race `gui.zig`'s two cross-thread primitives                  | `test:`     | A Linux runner      | ADR 0016 applied to the primitives that guard teardown    |
-| [#92](https://github.com/cboone/fosforo/issues/92) | Make the trace half's judgements pure, and test them          | `refactor:` | A device, no window | `src/smoke.zig`'s 0 tests; makes the plant table regress  |
-| [#93](https://github.com/cboone/fosforo/issues/93) | Make the watcher's bookkeeping reachable from a test build    | `refactor:` | Nothing             | Code no test binary compiles                              |
-| [#94](https://github.com/cboone/fosforo/issues/94) | Run the unit suite in the mode that ships                     | `ci:`       | Nothing             | Debug-only test coverage of a ReleaseFast product         |
-| [#95](https://github.com/cboone/fosforo/issues/95) | Analyze every public declaration, and settle the uncalled one | `test:`     | Nothing             | The lazy-analysis hole, live in one declaration           |
-| [#96](https://github.com/cboone/fosforo/issues/96) | Assert the transfer function's defining properties            | `test:`     | Nothing             | `tonemap` and `whitePoint`'s stated claims                |
-| [#97](https://github.com/cboone/fosforo/issues/97) | The remaining cheap assertions                                | `test:`     | Nothing             | Eleven small, named holes                                 |
-| [#98](https://github.com/cboone/fosforo/issues/98) | Cover the render thread's read side                           | `test:`     | A seam decision     | `Editor.tick` and `Editor.readWindow`, currently untested |
-| [#99](https://github.com/cboone/fosforo/issues/99) | Lint the workflows                                            | `ci:`       | Nothing             | 46 KB of `ci.yml` that nothing checks                     |
+| Issue                                              | Work                                                                 | Type        | Needs               | Closes                                                    |
+| -------------------------------------------------- | -------------------------------------------------------------------- | ----------- | ------------------- | --------------------------------------------------------- |
+| [#89](https://github.com/cboone/fosforo/issues/89) | Give the trace half's frame wait a deadline                          | `fix:`      | A device, no window | A red `main` on a required check                          |
+| [#90](https://github.com/cboone/fosforo/issues/90) | Canary every ordering-critical declaration                           | `test:`     | Nothing             | ADR 0015 and three unguarded atomics                      |
+| [#91](https://github.com/cboone/fosforo/issues/91) | Race the editor's teardown gate                                      | `test:`     | A Linux runner      | ADR 0016 applied to the primitive that guards teardown    |
+| [#92](https://github.com/cboone/fosforo/issues/92) | Make the trace half's judgements pure, and test them                 | `refactor:` | A device, no window | `src/smoke.zig`'s 0 tests; makes the plant table regress  |
+| [#93](https://github.com/cboone/fosforo/issues/93) | Make the watcher's bookkeeping reachable from a test build. **Done** | `refactor:` | Nothing             | Code no test binary compiles                              |
+| [#94](https://github.com/cboone/fosforo/issues/94) | Run the unit suite in the mode that ships. **Done**                  | `ci:`       | Nothing             | Debug-only test coverage of a ReleaseFast product         |
+| [#95](https://github.com/cboone/fosforo/issues/95) | Analyze every public declaration, and settle the uncalled one        | `test:`     | Nothing             | The lazy-analysis hole, live in one declaration           |
+| [#96](https://github.com/cboone/fosforo/issues/96) | Assert the transfer function's defining properties                   | `test:`     | Nothing             | `tonemap` and `whitePoint`'s stated claims                |
+| [#97](https://github.com/cboone/fosforo/issues/97) | The remaining cheap assertions                                       | `test:`     | Nothing             | Eleven small, named holes                                 |
+| [#98](https://github.com/cboone/fosforo/issues/98) | Cover the render thread's read side                                  | `test:`     | A seam decision     | `Editor.tick` and `Editor.readWindow`, currently untested |
+| [#99](https://github.com/cboone/fosforo/issues/99) | Lint the workflows                                                   | `ci:`       | Nothing             | 46 KB of `ci.yml` that nothing checks                     |
 
 **[#89](https://github.com/cboone/fosforo/issues/89) has landed**, so `main` is no longer red on a required check and the remaining ten are all `test:`, `refactor:` or `ci:` work with nothing currently costing anything. Section 1 below records what it found, including a correction to its own reasoning.
+
+**Nine of the eleven have landed: #89, #91, #92, #93, #94, #95, #96, #97 and #99.** Their sections carry the measured results and, in four cases, a correction to what the section predicted. The pattern across all four is worth stating once here rather than four times below: **an acceptance criterion written against the tree as it was can be falsified by a neighbouring issue landing first.** #96's headroom plant, #97's clock ceiling and #92's `expectClose` defect were each true when filed and each wrong by the time they were run, so every remaining item's acceptance should be re-derived against the tree rather than executed as written.
+
+**#93 is the fourth and it failed in the other direction, which is worth separating.** Its acceptance was not falsified by a neighbouring issue; it was wrong when filed, and stayed wrong. It said the defect it names is one "today only a hand-run `smoke-appkit` would catch", and running the plant showed `smoke-appkit` catching nothing. So the rule generalises past staleness: **an acceptance criterion that names the instrument it expects to fail is asserting something, and it has to be run rather than read.**
+
+**#96 and #99 landed close enough together to demonstrate it twice over.** Both corrected the build plan's stale unit-test count and conflicted over that one line, and both arrived at **265** for `main` independently — #99 by counting it, #96 by measuring a baseline before adding to it. That agreement is the durable part; the number itself has moved three times since, through #94, #91 and #96 in turn, which is the anchored-versus-present-tense distinction `.github/docs.instructions.md` describes playing out in one row of one table. **Re-measure it rather than adding to whatever it currently reads.**
+
+The one remaining is [#98](https://github.com/cboone/fosforo/issues/98).
 
 ## 1. Give the trace half's frame wait a deadline rather than a spin count
 
@@ -81,7 +89,7 @@ All three met.
 
 ### What it does not close
 
-Nothing about whether the trace half's *assertions* are right. That is item 4.
+Nothing about whether the trace half's _assertions_ are right. That is item 4.
 
 ## 2. Canary every ordering-critical declaration
 
@@ -159,13 +167,23 @@ The arms worth having, given what each primitive is for:
 
 ### Acceptance
 
-- Both weakened arms are flagged with `WARNING: ThreadSanitizer: data race` before either clean arm's result is read, judged by a script on `scripts/ring-race-check`'s assertion order.
+- Both weakened arms are flagged with `WARNING: ThreadSanitizer: data race` before either clean arm's result is read, judged by `scripts/race-check`, which is `scripts/ring-race-check` renamed and generalized and carries the same control-first assertion order.
 - The defect is planted in the **real** primitives as well as the replicas, on ADR 0016's own reasoning that "a control that models the defect is not the subject exhibiting it".
 - `Gate`'s spin body is genuinely entered, confirmed by a counter the harness prints, so a `close` that never waited would be visible as a vacuous pass.
 
+**Landed.** Plan: [`2026-09-08-race-the-editors-teardown-gate-under-tsan.md`](../done/2026-09-08-race-the-editors-teardown-gate-under-tsan.md). `Gate` is now `src/clap/gate.zig`, `src/gate_race.zig` races it, `scripts/ring-race-check` became `scripts/race-check` and is parameterized for both harnesses, and the `ring-race` job became `race`. The suite went from 265 named tests to 270, counted against `main` rather than against this branch's original base, which has since moved.
+
+**Three corrections to this section as it was written**, all of them measured rather than reasoned about, and all recorded in ADR 0016's #91 amendment.
+
+The arms table named `enter`'s acquire as the defect for the gate's control. **That ordering comes back clean**, along with `enter`'s refusal store and `close`'s `fetchOr`; only `leave`'s release and the acquire load in `close`'s spin flag, and they are the two halves of one edge. A control built as specified would have reported nothing and the failure would have read as a broken sanitizer.
+
+**`Pending` gets no arm, and neither candidate for "how `Pending` stops needing `gpu.Size`" was taken**, because it does not need to. A Thread Sanitizer reports unordered access to _non-atomic_ memory, and `Pending` packs its whole message into the `u64`, so a weakened `post` leaves nothing to report. A 2x2 confirmed it discriminates when something rides alongside the word and does not when nothing does. So `Size` stays in `src/gpu/iface.zig` and `Pending` stays in `src/clap/gui.zig`.
+
+Two claims here are false on `main` and were checked while the files were open. The ADR 0005 comptime block is at `iface.zig:486`, not 430. And `Size` is used by `gui.zig` and the renderer but **not** by `src/platform/view.zig`, which names it nowhere and passes geometry as bare `u32`.
+
 ### What it does not close
 
-`renderer.Mailbox` carries `Pipelines`, which are Objective-C objects, so it cannot be raced on Linux at all. Item 6 covers what is testable about it. And the watcher thread itself stays outside any sanitizer, which should be stated in the ADR amendment rather than left to be rediscovered.
+`renderer.Mailbox` carries `Pipelines`, which are Objective-C objects, so it cannot be raced on Linux at all. Item 6 covers what is testable about it. And the watcher thread itself stays outside any sanitizer, which should be stated in the ADR amendment rather than left to be rediscovered. Both are stated there.
 
 ## 4. Make the trace half's judgements pure, and turn the plant table into tests
 
@@ -177,7 +195,7 @@ The arms worth having, given what each primitive is for:
 
 ADR 0013's #51 amendment already made this argument and won it, about the other half of the same analysis:
 
-> #38's defect was in the *analysis* and not in the shader: its first period counter read the topmost lit pixel against the centre row, a steep segment crossing the centre lights every row it spans, and every tone came back exactly one period low. An analysis that runs only against a GPU is an analysis nothing tests, so this one has its own tests.
+> #38's defect was in the _analysis_ and not in the shader: its first period counter read the topmost lit pixel against the centre row, a steep segment crossing the centre lights every row it spans, and every tone came back exactly one period low. An analysis that runs only against a GPU is an analysis nothing tests, so this one has its own tests.
 
 That reasoning was applied to `src/gpu/measure.zig`, which has 15 tests and a model rasterizer that deliberately reproduces the spanning behaviour that broke the original. It was not carried through to the **thirteen** `check*` functions, which hold the expectations rather than the extraction. #57 added two of those thirteen, `checkEdgeColumns` and `checkBeamProfile`, and both keep the `(energy, picture, window)` signature the split below depends on, so the premise is on firmer ground than when it was written rather than weaker. And it has already been vindicated a second time: `checkDecayIsInRealTime`'s per-step composition exists because asking `decayOver` for the whole span clamps and predicts 0.7684 against a true 0.5451, which `AGENTS.md` records as "the first thing this check caught and it was in the check itself".
 
@@ -208,13 +226,19 @@ Two arithmetic details to fix while the code is open, both currently correct and
 
 ### Acceptance
 
-- Every test added is verified by the plant it encodes, run against the judge in isolation rather than against the GPU.
-- `zig build smoke-trace` on this machine reports figures identical to the ones it reports today, printed and compared, since a refactor that moved a number is a refactor that changed the check.
-- The plan document's plant table gains a column naming the test that now covers each row, and the rows that cannot be covered say so.
+- [x] Every test added is verified by the plant it encodes, run against the judge in isolation rather than against the GPU.
+- [x] `zig build smoke-trace` on this machine reports figures identical to the ones it reports today, printed and compared, since a refactor that moved a number is a refactor that changed the check.
+- [x] The plan document's plant table gains a column naming the test that now covers each row, and the rows that cannot be covered say so.
+
+**Landed.** Plan: [`2026-09-05-make-the-trace-judgements-pure-and-testable.md`](../done/2026-09-05-make-the-trace-judgements-pure-and-testable.md). `src/gpu/verdict.zig` holds fifteen judges, `src/smoke.zig` lost 528 lines, the suite went from 230 tests to 252, and the transcript is byte-identical. Two of the three items above were satisfied as written; the third needed the table's twelve rows read as ten defects, with two rows saying why they are not coverable.
+
+**Two corrections to this section as it was written.** The `decay_span_nanos / interval` item was right and is now a `@compileError` on a comptime table both the driver and the judge read. The `expectClose` item was **wrong**: that helper performed no division, and at zero it reduced to exact equality, which is the right answer for a relative tolerance. Planting the old spelling back made the test written for it pass, which is what surfaced the real defect, that it read its scale from one of its two arguments and so could return different verdicts for swapped arguments.
+
+**And the acceptance was not enough, which is worth carrying to the rest of this program.** "Every test added is verified by the plant it encodes" was satisfied by tests that did not discriminate: two arms sat far enough outside their bound to be caught by a sibling check, so weakening the arm they named changed nothing. Planting the _judge_ rather than the shader is what found them, and that second pass is the one this criterion should have asked for.
 
 ### What it does not close
 
-The driving halves stay untested, correctly: they acquire a device. And this says nothing about whether the *drawable* looks right in a host, which `scripts/measure-trace` and #38's procedure still own.
+The driving halves stay untested, correctly: they acquire a device. And this says nothing about whether the _drawable_ looks right in a host, which `scripts/measure-trace` and #38's procedure still own.
 
 ## 5. Make the watcher's bookkeeping reachable from a test build
 
@@ -234,6 +258,14 @@ The decision of what a poll outcome does to the counters, and in what order `see
 
 - Plant a `poll` that advances `seen` only on success and confirm the extracted test fails, which is the defect the docstring at `renderer.zig:842-846` names and which today only a hand-run `smoke-appkit` would catch.
 - Confirm `zig build smoke-appkit`'s hot-reload arms still pass unchanged.
+
+**Landed.** Plan: [`2026-09-09-make-the-shader-watchers-bookkeeping-testable.md`](../done/2026-09-09-make-the-shader-watchers-bookkeeping-testable.md). `src/gpu/metal/reload.zig` holds the poll's state machine and a six-row outcome table, the suite went from 297 tests to 318, and both smoke transcripts are unchanged.
+
+**Every line number in this section was stale by roughly 190 to 270 lines** when the work started: #96, #97 and #114 landed after the last refresh. They are left as written, on the rule that an anchored citation stays as measured; `renderer.zig:957`, `:1090-1152` and `:2603` are where those symbols were on `83ae938`.
+
+**The second acceptance criterion was satisfied and the first was falsified.** The plant was applied to `poll` as it stood, before anything moved, and neither instrument saw it: `zig build test` reported 297 of 297 and `zig build smoke-appkit` reported `ok`, with all five hot-reload arms running. "Today only a hand-run `smoke-appkit` would catch it" was wrong — nothing caught it — so this item closed a gap one instrument wider than it claimed. After the extraction the plant fails three tests in `reload.zig`, and nine further plants were run one at a time, each caught by the test named for it.
+
+**And it widened once more than the section says.** The issue was widened after filing to cover `buildPipelines` and `readShader`; running it added a third site, `noteBindings`, whose counter increment no test binary compiled either, because a private function reached only from gated call sites is never analyzed. See the plan and ADR 0013's #93 amendment, which also records a weakness in `hotReloadPhase`'s fourth arm that the plant exposed and that stays open.
 
 ## 6. Run the unit suite in the mode that ships
 
@@ -256,16 +288,30 @@ If any test does need to differ by mode, that is a finding worth recording rathe
 
 ### Acceptance
 
-- Both steps green locally and in CI.
-- Plant a value that a trust boundary is supposed to refuse and confirm the ReleaseFast run refuses it rather than trapping, which is the property the split exists to make observable.
+- [x] Both steps green locally and in CI.
+- [x] Plant a value that a trust boundary is supposed to refuse and confirm the ReleaseFast run refuses it rather than trapping, which is the property the split exists to make observable.
+
+**Landed.** Plan: [`2026-09-08-run-the-unit-suite-in-the-modes-that-ship.md`](../done/2026-09-08-run-the-unit-suite-in-the-modes-that-ship.md). Three steps rather than two, because the secondary question above was answered yes: `test` still follows `-Doptimize`, `test-safe` is pinned to ReleaseSafe and `test-release` to ReleaseFast, all three from one `addTestStep`, with a `test-modes` job running the two pinned ones. Both "measure rather than assume" items came back clean — 285 of 285 in every mode on the first try, and `palette.zig`'s tolerances survive down to its 1e-7 because Zig enables no fast-math and `decay_tau_nanos` is comptime-folded.
+
+**Five findings, four of them corrections to this section as written.**
+
+- **The `ci` job cannot host the step.** It is `uses: cboone/gh-actions/.github/workflows/run-zig-ci.yml@91f9abd`, a reusable workflow with no hook for one, so "a step in the `ci` job beside the existing one" was not available and `test-modes` is its own job. Its ceiling is unmeasured on `python`'s precedent and is to be set from real runs.
+- **`assert(fba.end_index == 0)` is vacuous in every mode**, not Debug-only. `scratchBytes` returns 0 unconditionally and both `passThrough` and `tap` take the allocator and discard it deliberately, so `end_index` is structurally always zero. It is a tripwire for a future step that wants scratch. The convention it stands for is real; that line is not evidence of it, and the issue should not have led with it.
+- **Zig's `std.debug.assert` evaluates its argument in every optimize mode**, because it is an ordinary function rather than a macro. So the C bug class of work inside an assert does not exist here, and the plant designed to be the discriminating one — `buildPalette`'s whole loop moved into an assert argument — stayed **green in all three modes**. What ReleaseFast strips is the `unreachable` branch, not the call. **There is consequently no plant in this codebase where Debug is green and ReleaseFast is red**, and that is the honest statement of what these steps buy: not extra detection, since every difference between the modes _removes_ a check, but the suite running at all in the build that ships, so a refusal that lapsed would be caught where nothing else is looking.
+- **An assertion is worth least in the mode where it is the only thing left**, which the `Ring.init` plant quantified rather than asserted. Deleting `if (minimum_capacity == 0) return error.EmptyCapacity;`: Debug prints `panic: reached unreachable code` with a trace through `std/math.zig:1219`'s own `assert(value != 0)`; ReleaseSafe prints the same panic with the trace optimized down to the test runner, naming no `std.math` line; ReleaseFast prints `terminated with signal TRAP` and nothing else. The prediction in the plan was that ReleaseFast would return a wrong `error.Overflow` off a `usize` underflow. It does not — it traps opaquely, which is worse and is the sharper argument for the refusal.
+- **The Debug run cannot be retired**, measured rather than reasoned about. `shader.zig`'s "nothing is read from disk in a test build" asserts `!shader.live`, and `live` is `builtin.mode == .Debug and !builtin.is_test`, so outside Debug the first clause has already decided it. Planted, `zig build test` fails 1 of 285 and both release steps report 285 of 285. That is why the steps are additive and why a fourth was not substituted for the first.
+
+**And the instrument has a control.** A `pinned_optimize` build option carries the mode `build.zig` asked for, and a comptime block in `src/main.zig` fails compilation if the artifact was built at another. Planted — `.ReleaseFast` swapped for `.Debug` at the call site — it fails naming both modes. Without it, a refactor that dropped the pin would leave a green job testing Debug twice, which is this issue's own failure one level up.
 
 ### What it does not close
 
-The watcher, which is stubbed out in ReleaseFast too. That is item 5.
+The watcher, which is stubbed out in ReleaseFast too. That is item 5. And nothing about the five `if (builtin.mode != .Debug) return;` sites — `Editor.report`, the two render-thread assertions and the two `objc` thread assertions — where the release steps take a _different_ path rather than a harder one, so they are not evidence about those either.
 
 ## 7. Analyze every public declaration, and settle the one with no caller
 
 **Issue:** [#95](https://github.com/cboone/fosforo/issues/95). **Type:** `test:`. Cheap, and it closes a class rather than an instance.
+
+**Landed.** Plan: [`2026-09-05-analyze-every-public-declaration.md`](../done/2026-09-05-analyze-every-public-declaration.md). Every module a test build compiles carries a sweep now, `palette.zig` among them, so the sentence below saying it does not is the state before rather than the state. The rest of the shape held: private declarations and containers nested more than one level deep stay lazy in both builds, which the plan records with the plants that measured it.
 
 ### The gap
 
@@ -282,6 +328,8 @@ Two parts, and the first is what closes the class:
 - Add `testing.refAllDecls(@This())` to the test section of every module that lacks one. Six modules have it; ten do not, including `palette.zig`, `iface.zig`, `measure.zig`, `ring.zig`, `plugin.zig` and `gui.zig`. It forces analysis of every public declaration in a test build at the cost of one line each.
 - Give `dominantToTonemapped` the test that makes it mean something: assert it inverts `paletteAt`'s dominant channel across the byte range. That is the executable link between the Zig model and the Python tool that currently exists only as a restated constant, and it belongs with item 8.
 
+  **It landed with item 8, as written, and through the closed form rather than `paletteAt`.** The table is 0.05 bytes off the closed form by its own test, which is enough to cross a rounding boundary, and its agreement with the closed form is already asserted — so routing the round trip through it would have added noise rather than reach.
+
 ### Acceptance
 
 - Plant a type error in `dominantToTonemapped` and confirm `zig build test` now fails, where today it builds clean everywhere.
@@ -290,6 +338,10 @@ Two parts, and the first is what closes the class:
 ## 8. Assert the transfer function's defining properties
 
 **Issue:** [#96](https://github.com/cboone/fosforo/issues/96). **Type:** `test:`. Small, and it reaches the claims ADR 0019 rests on.
+
+**Landed.** Plan: [`2026-09-08-assert-the-transfer-functions-defining-properties.md`](../done/2026-09-08-assert-the-transfer-functions-defining-properties.md). Five tests, the suite from 265 named to 270, and `zig build smoke-trace`'s transcript byte-identical across the branch.
+
+**The acceptance below is wrong about which plant closes something, and the correction is the useful part of this item.** A white point wrong by a factor of ten fires **six** tests, three of them pre-existing, because [#56](https://github.com/cboone/fosforo/issues/56) added a steady-state assertion that requires byte 255 at `1 / (1 - decay)` and #92 added its counterpart in `verdict.zig`. The quote it rests on was written before either existed. What was genuinely uncovered is the _other_ constant in the same expression: the `1e-6` the `@max` clamps at, restated in Zig, MSL and Python and pinned in none. Moving it by a factor of ten in all three at once left the suite at 285 of 285 passing. It is now `palette.min_dwell`, pinned in both constants tests, and the resulting `8e5` is pinned as a literal — after which that plant fails exactly one test.
 
 ### The gap
 
@@ -311,6 +363,8 @@ Plant a white point wrong by a factor of ten, which `docs/plans/done/2026-08-30-
 ## 9. The remaining cheap assertions
 
 **Issue:** [#97](https://github.com/cboone/fosforo/issues/97). **Type:** `test:`. One issue with a checklist, because splitting eleven small pure tests across eleven PRs is worse than the alternative.
+
+**Landed.** Plan: [`2026-09-05-close-the-eleven-cheap-assertions.md`](../done/2026-09-05-close-the-eleven-cheap-assertions.md). Fourteen tests across eight files, every row planted. Two things it got wrong are recorded there and are worth carrying: a one-second ceiling on `monotonicNanos` did not catch a scale error and was replaced by a ratio against a second clock, and two plants did not compile, which a grep for failures read as a pass. **A plant that does not compile is not a passing plant**, and the build's exit code rather than the shape of its output is what separates them.
 
 | Target                                       | Where                              | Why it is not covered now                                                                    |
 | -------------------------------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------- |
@@ -354,11 +408,19 @@ The recommendation is the second, and the third is a defensible outcome that sho
 
 ## 11. Lint the workflows
 
-**Issue:** [#99](https://github.com/cboone/fosforo/issues/99). **Type:** `ci:`.
+**Issue:** [#99](https://github.com/cboone/fosforo/issues/99). **Type:** `ci:`. **Landed**, with its own plan at [`2026-09-08-lint-the-workflows-in-ci.md`](../done/2026-09-08-lint-the-workflows-in-ci.md), which carries its results. Noted here by #96 rather than by #99 itself, because the two were open at the same time and this is the row that was left unmarked.
 
 `.github/workflows/ci.yml` is 46 KB and nothing checks it. `actionlint` appears in the phase 1 exit criteria in the build plan and in no workflow, so it has been a local step at best. On the `shell`, `python` and `typos` jobs' precedent: Ubuntu, a pinned binary, a committed SHA256, and its own job rather than a step inside an existing one.
 
 Worth folding in while the workflows are open: the deprecation warnings the last run emitted, about `version-file` being an unexpected input to `mlugg/setup-zig` and Node 20 actions being forced onto Node 24.
+
+**Done**, with its own plan at [`2026-09-08-lint-the-workflows-in-ci.md`](../done/2026-09-08-lint-the-workflows-in-ci.md). One correction to the section above: `actionlint` sits in the build plan's **phase 0** exit criteria, not phase 1.
+
+**The second acceptance criterion was answered in the negative, and before the job was written.** `actionlint` would not have caught the `version-file` warning, for a reason that is structural rather than a gap a newer release closes: it validates `with:` inputs against a database bundled in the binary and keyed by _tag_, so pinning every action to a commit — which this repository does deliberately and will keep doing — defeats the check outright. Measured both ways, with a positive control in the same run: `actions/checkout@v4` with a bogus input is reported and the identical input on the same action pinned by SHA is not. It does not resolve a remote reusable workflow's inputs at all either, which retires a claim in `docs/plans/done/2026-07-29-tighten-ci-job-timeouts.md` that it "resolves the pinned SHA to check" them.
+
+What the job does catch was measured the same way: a misspelled `runs-on`, an `if:` naming a missing step id, a `needs:` naming a missing job, a `shellcheck` finding inside a `run:` block, and both unknown and missing-required inputs on the local composite action. **Two silent skips were found and one of them shaped the job**: `actionlint` resolves local actions through the git project root, so it quietly checks less outside a checkout, and with no `shellcheck` on `PATH` it skips `run:` blocks entirely while still exiting 0. The job therefore installs the pinned `shellcheck` rather than trusting the runner image, and `SHELLCHECK_VERSION` and `SHELLCHECK_SHA256` moved to workflow-level `env` so the `shell` job and this one cannot drift apart.
+
+Both fold-ins landed. The `version-file` input was deleted from all five `mlugg/setup-zig` steps, which provably cannot change the installed compiler because the input was ignored and the empty `version` default is what reads `minimum_zig_version`. `actions/checkout` moved to v6.1.0 and Node 24; the Node 20 warning **remains**, because `mlugg/setup-zig@v2.2.1` is the latest release and is itself `node20`.
 
 ## Already filed, and not restated here
 
@@ -367,16 +429,16 @@ These are real gaps and each already has an issue. This plan should not duplicat
 | Issue                                              | Gap                                                                                       |
 | -------------------------------------------------- | ----------------------------------------------------------------------------------------- |
 | [#69](https://github.com/cboone/fosforo/issues/69) | `MTL_DEBUG_LAYER` is the only instrument for two Metal misconfigurations and runs by hand |
-| [#77](https://github.com/cboone/fosforo/issues/77) | A hot-reloaded shader's binding indices are checked by nothing                            |
+| [#77](https://github.com/cboone/fosforo/issues/77) | A hot-reloaded shader's binding indices are checked by nothing. **Done**                  |
 | [#34](https://github.com/cboone/fosforo/issues/34) | The cross-display path has never executed                                                 |
 | [#85](https://github.com/cboone/fosforo/issues/85) | Nothing runs `markdownlint`                                                               |
-| [#87](https://github.com/cboone/fosforo/issues/87) | A pull request based on anything but `main` runs no CI at all                             |
+| [#87](https://github.com/cboone/fosforo/issues/87) | A pull request based on anything but `main` runs no CI at all. **Done**                   |
 
-**[#87](https://github.com/cboone/fosforo/issues/87) is the one that bears on how this program is worked**, rather than on what it contains. `ci.yml`'s `pull_request` trigger carries `branches: [main]`, so a PR targeting anything else runs none of the nine jobs. Every issue here is an ordinary branch off `main` for that reason as much as for the usual one, and none of them should be stacked until #87 is settled. #99 is its natural neighbour: both are workflow changes and both are about a check that is configured, believed to be running, and silently is not.
+**[#87](https://github.com/cboone/fosforo/issues/87) was the one that bore on how this program is worked**, rather than on what it contains, and it is **done**. `ci.yml`'s `pull_request` trigger no longer carries `branches: [main]`, so a pull request targeting any base runs the whole workflow, measured on run `34271723634` at all twelve job names. Stacking these is therefore verified rather than forbidden, and where one of them genuinely depends on another the build plan's working-order section says to use a native stack rather than retargeting by hand. #99 remains its natural neighbour: both are workflow changes, and #99 is now the survivor of the pair about a check that is configured, believed to be running, and silently is not.
 
 ## Sequencing and contention
 
-The build plan sorts work into three exclusive lanes and one free lane, separated by *why* each resource is exclusive: Logic and the Audio Unit (the filesystem, so not negotiable at all), the install path and a host (a choice, since `CLAP_PATH` works and is deliberately not used), and the GPU and the window server (hardware). Everything else overlaps freely.
+The build plan sorts work into three exclusive lanes and one free lane, separated by _why_ each resource is exclusive: Logic and the Audio Unit (the filesystem, so not negotiable at all), the install path and a host (a choice, since `CLAP_PATH` works and is deliberately not used), and the GPU and the window server (hardware). Everything else overlaps freely.
 
 **Ten of these eleven are in the free lane.**
 
@@ -394,7 +456,7 @@ Order within the program: **#89 first**, because `main` was red; that one has la
 
 **Nothing here is blocked.** #92 needed [#57](https://github.com/cboone/fosforo/issues/57), which has merged. What survives is a merge conflict rather than a dependency: #92, #80 and #58 all edit `src/smoke.zig`, so whichever lands second rebases, and the build plan's merge-order table records that as costing nothing but the rebase. They are in different lanes and can be in flight together.
 
-**Do not stack them**, per [#87](https://github.com/cboone/fosforo/issues/87): `ci.yml`'s `pull_request` trigger carries `branches: [main]`, so a pull request based on anything else runs none of the nine jobs. Each of these is an ordinary branch off `main`.
+**Stacking them is now safe and is still not the default**, per [#87](https://github.com/cboone/fosforo/issues/87): a pull request based on anything but `main` runs the whole workflow since that landed, so the prohibition is retired, but nothing here needs another's unfinished work and an ordinary branch off `main` keeps the diffs readable. Stack only where a real code dependency appears, and use a native stack when you do.
 
 ## Out of scope
 

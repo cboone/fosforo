@@ -16,7 +16,6 @@ The order of the work matters. The short-SHA false positive is structural rather
 
 Everything below was confirmed against this worktree with `typos` 1.49.0, not assumed.
 
-<!-- prettier-ignore -->
 | Claim                                                            | Result                                                                     |
 | ---------------------------------------------------------------- | -------------------------------------------------------------------------- |
 | Bare `typos` fails on this tree                                  | Yes, **exit 2**, two errors                                                |
@@ -78,7 +77,7 @@ Two details to confirm before relying on the second pattern, both first thing du
 
 Modelled on `gitleaks.yml` for its triggers and on `ci.yml`'s `shell` job for how the tool is installed.
 
-```yaml
+````yaml
 name: typos
 
 on:
@@ -169,7 +168,7 @@ jobs:
             typos --format brief || true
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
-```
+````
 
 No step asserts that `typos.toml` was found, and none is needed. A config that went unread fails loudly rather than quietly: `precessing` and the SHAs would both start reporting. The silent-failure direction this repository usually guards against does not exist here.
 
@@ -197,13 +196,12 @@ Three small additions, matching how `shfmt` and `shellcheck` are already handled
 
 ## Files touched
 
-<!-- prettier-ignore -->
-| File                            | Change                                                              |
-| ------------------------------- | ------------------------------------------------------------------- |
-| `typos.toml`                    | New `[default]` section with `extend-ignore-re`                     |
-| `.github/workflows/typos.yml`   | New. One Ubuntu job, pinned binary and checksum, no `paths-ignore`  |
-| `AGENTS.md`                     | One Development command and one Gotchas bullet                      |
-| `CONTRIBUTING.md`               | Requirements, Code Style, Pull Request Process                      |
+| File                          | Change                                                             |
+| ----------------------------- | ------------------------------------------------------------------ |
+| `typos.toml`                  | New `[default]` section with `extend-ignore-re`                    |
+| `.github/workflows/typos.yml` | New. One Ubuntu job, pinned binary and checksum, no `paths-ignore` |
+| `AGENTS.md`                   | One Development command and one Gotchas bullet                     |
+| `CONTRIBUTING.md`             | Requirements, Code Style, Pull Request Process                     |
 
 `docs/plans/done/2026-07-29-tighten-ci-job-timeouts.md` is **not** modified, per the issue's own scope note. Plans in `docs/plans/done/` are historical records, and rewording one to satisfy a tool would be the wrong repair. The config change is what makes it pass.
 
@@ -280,16 +278,15 @@ Everything above landed as planned, in four commits rather than three: the plan 
 
 Every control returned what the plan predicted, and the two that could have gone the other way did not.
 
-<!-- prettier-ignore -->
-| Control                                                     | Result                                                                |
-| ----------------------------------------------------------- | --------------------------------------------------------------------- |
-| Negative, before the config change                          | Exit 2, nine findings across the done plan and this one               |
-| Whole tree, after it                                        | Silent, exit 0                                                        |
-| Sample with a short pin, a full pin and one misspelling     | Only the misspelling reported: it narrows without blinding            |
-| Marked span, unmarked copy, unclosed marker                 | Silent, reported, reported. The unclosed case fails safe              |
-| `typos --isolated` against the design document              | `precessing` reported, and silent with the config, so it is read      |
-| `actionlint` on the new workflow and a broken one           | Silent, then a finding, so its silence means something                |
-| Download, sum check and `tar -xzf typos.tar.gz ./typos`     | Verified against the pinned asset: a static x86-64 Linux binary       |
+| Control                                                 | Result                                                           |
+| ------------------------------------------------------- | ---------------------------------------------------------------- |
+| Negative, before the config change                      | Exit 2, nine findings across the done plan and this one          |
+| Whole tree, after it                                    | Silent, exit 0                                                   |
+| Sample with a short pin, a full pin and one misspelling | Only the misspelling reported: it narrows without blinding       |
+| Marked span, unmarked copy, unclosed marker             | Silent, reported, reported. The unclosed case fails safe         |
+| `typos --isolated` against the design document          | `precessing` reported, and silent with the config, so it is read |
+| `actionlint` on the new workflow and a broken one       | Silent, then a finding, so its silence means something           |
+| Download, sum check and `tar -xzf typos.tar.gz ./typos` | Verified against the pinned asset: a static x86-64 Linux binary  |
 
 `zig build test`, `zig fmt --check`, `shfmt`, `shellcheck` and `markdownlint-cli2` were all clean afterwards.
 

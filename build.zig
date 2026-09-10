@@ -27,34 +27,43 @@ pub fn build(b: *std.Build) void {
     });
     const optimize = b.standardOptimizeOption(.{});
 
-    // First, and before anything below reaches `b.dependency`. This is the only
-    // step here that builds on a non-Apple target, and the graph below cannot even
+    // First, and before anything below reaches `b.dependency`. These are the only
+    // steps here that build on a non-Apple target, and the graph below cannot even
     // be *described* on one: `b.dependency` runs a dependency's `build` function
     // at configure time, and zig-objc's calls `appleSDKPath`, which panics on any
     // OS that is not Darwin. So `zig build ring-race` on Linux aborted inside a
     // dependency's build script before a single step ran, which is what the first
-    // CI run of the `ring-race` job did (#44). Fetching the tarball is a cost;
-    // describing the graph is the failure, and only the second one is fatal.
+    // CI run of the race job did, back when it was still named `ring-race` (#44).
+    // Fetching the tarball is a cost; describing the graph is the failure, and
+    // only the second one is fatal.
     //
     // Everything past this line is macOS-only anyway (ADR 0001), so the early
     // return costs nothing: on Linux there is genuinely nothing else to build.
-    addRingRaceStep(b);
+    addRaceStep(b, .{
+        .name = "ring-race",
+        .root = "src/ring_race.zig",
+        .description = "Race-check the history buffer under Thread Sanitizer (needs a Linux host)",
+        .clean_arm = "ring",
+        .weakened_arm = "weakened",
+        .progress_field = "validated",
+    });
+    addRaceStep(b, .{
+        .name = "gate-race",
+        .root = "src/gate_race.zig",
+        .description = "Race-check the editor's teardown gate under Thread Sanitizer (needs a Linux host)",
+        .clean_arm = "gate",
+        .weakened_arm = "gate-weakened",
+        .progress_field = "contended",
+    });
     if (target.result.os.tag != .macos) return;
 
-    const core: Core = .{
-        .b = b,
-        .target = target,
-        .optimize = optimize,
-        .clap_c = translateClap(b, target, optimize),
-        .objc = b.dependency("objc", .{ .target = target, .optimize = optimize }).module("objc"),
+    // Deliberately below the early return above, so the one step that builds off
+    // macOS never spawns a process it has no use for. Resolved once and handed to
+    // every graph below, so no artifact this build produces can disagree with
+    // another about which commit it came from.
+    const provenance = gitProvenance(b);
 
-        // Deliberately below the early return above, so the one step that builds
-        // off macOS never spawns a process it has no use for.
-        .provenance = gitProvenance(b),
-
-        // Resolved once here rather than per module, on `provenance`'s reasoning.
-        .shader_path = debugShaderPath(b, optimize),
-    };
+    const core = coreAt(b, target, provenance, optimize);
 
     // Zig's own step, re-described. Its default text is "Copy build artifacts to
     // prefix path", which is accurate and is read next to two project steps whose
@@ -95,9 +104,68 @@ pub fn build(b: *std.Build) void {
 
     const audio_unit = addAudioUnitStep(b);
     installClapBundle(b, plugin, audio_unit);
-    addTestStep(core);
+
+    // Three test artifacts, one per optimize mode worth running the suite in. See
+    // `addTestStep` for what each mode can and cannot see, and why the first of
+    // them stays mode-following while the other two are pinned (#94).
+    addTestStep(core, .{
+        .step = "test",
+        .description = "Run unit tests",
+    });
+    addTestStep(coreAt(b, target, provenance, .ReleaseSafe), .{
+        .step = "test-safe",
+        .description = "Run unit tests at ReleaseSafe: optimized, with asserts and safety checks live",
+        .pinned_optimize = "ReleaseSafe",
+    });
+    addTestStep(coreAt(b, target, provenance, .ReleaseFast), .{
+        .step = "test-release",
+        .description = "Run unit tests in the optimize mode that ships (ReleaseFast)",
+        .pinned_optimize = "ReleaseFast",
+    });
+
     addShaderValidationStep(b);
     addSmokeSteps(core);
+}
+
+/// Everything every artifact compiled at one optimize mode shares, gathered here
+/// so a graph at a *different* mode is one call rather than a second literal that
+/// can drift from this one.
+///
+/// **Every field but `provenance` is re-derived rather than copied**, and two of
+/// them are why this is a function at all. `clap_c` and `objc` carry their own
+/// optimize mode, so a pinned test artifact whose dependencies stayed at the
+/// shared mode would not be compiled the way the shipping binary is, which is the
+/// whole claim `test-release` makes. And `shader_path` is *derived* from the mode:
+/// `debugShaderPath` returns "" for anything but Debug, so copying a Debug value
+/// into a release-mode graph would bake an absolute path into somebody else's
+/// worktree — the exact negative that function's docstring and the `clap-wrapper`
+/// job's provenance assertion both exist to hold.
+///
+/// **The eager cost is `b.dependency`, and going from one mode to three did not move
+/// it at the resolution this was measured at**, which was worth checking rather than
+/// assuming, because it is paid at configure time by every `zig build` invocation,
+/// including the plain one that only wants the bundle. `b.dependency` runs zig-objc's
+/// build function, which executes `xcrun`. `zig build --help` read **0.11 s** across
+/// three runs before this change and 0.11 s across three after, so whatever the two
+/// extra instances cost is under the ~10 ms `xcrun` takes warm and lost in a graph
+/// description that was already paying it once. Zig caches a dependency instance by
+/// its argument hash, so `-Doptimize=ReleaseFast` yields two instances rather than
+/// four, and nothing here is *built* unless a step that wants it was asked for.
+fn coreAt(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    provenance: Provenance,
+    optimize: std.builtin.OptimizeMode,
+) Core {
+    return .{
+        .b = b,
+        .target = target,
+        .optimize = optimize,
+        .clap_c = translateClap(b, target, optimize),
+        .objc = b.dependency("objc", .{ .target = target, .optimize = optimize }).module("objc"),
+        .provenance = provenance,
+        .shader_path = debugShaderPath(b, optimize),
+    };
 }
 
 /// Which worktree and which commit a binary came from, stamped in so the question
@@ -279,8 +347,11 @@ const Core = struct {
     clap_c: *std.Build.Module,
     objc: *std.Build.Module,
 
-    /// Resolved once in `build` rather than per module, so the four artifacts
-    /// cannot disagree about which commit they came from.
+    /// Resolved once in `build` rather than per module, so no artifact this build
+    /// produces can disagree with another about which commit it came from.
+    /// Deliberately not a count any more: three test artifacts joined the two
+    /// libraries and the smoke harness at #94, and the number was wrong the moment
+    /// they did.
     provenance: Provenance,
 
     /// The file a debug build reloads the shader from, absolute, or "" for the
@@ -295,6 +366,12 @@ const Core = struct {
         /// put the rest of src/ out of reach and break the shader import below.
         root: []const u8 = "src/main.zig",
         export_entry: bool = false,
+
+        /// The optimize mode this module is *required* to be built at, as the
+        /// tag name, or "" for a module that follows `-Doptimize`. Only the two
+        /// pinned test artifacts set it; see the comptime block in
+        /// `src/main.zig` that reads it back.
+        pinned_optimize: []const u8 = "",
     };
 
     fn module(self: Core, options: Options) *std.Build.Module {
@@ -323,6 +400,14 @@ const Core = struct {
         // moves, so it costs one full rebuild after a `git worktree move`. What it
         // does add is that two worktrees on the same commit stop sharing an entry.
         build_options.addOption([]const u8, "shader_path", self.shader_path);
+
+        // Not sentinel-terminated either, and compared rather than printed. A
+        // string rather than the enum, because the only consumer is a comptime
+        // `std.mem.eql` against `@tagName(builtin.mode)` and a string needs no
+        // agreement about how `addOption` renders an enum from `std.builtin`.
+        // "" everywhere but the two pinned test artifacts, which is why this
+        // costs no shipping build anything.
+        build_options.addOption([]const u8, "pinned_optimize", options.pinned_optimize);
 
         const mod = b.createModule(.{
             .root_source_file = b.path(options.root),
@@ -486,9 +571,58 @@ fn signClapBundle(
 /// build. Each call to `Core.module` is a separate `createModule`, so these imports
 /// exist in exactly one of the two and that is structural rather than something to
 /// measure afterwards.
-fn addTestStep(core: Core) void {
+///
+/// **Called three times, once per optimize mode the suite is worth running in, and
+/// the three are additive rather than alternatives** (#94). Until then every test
+/// this project had ever run was a Debug build, because `standardOptimizeOption`
+/// declares no default and CI passes no `-Doptimize`, while the shipped CLAP is
+/// `--release=fast`. So the convention that every trust boundary here *refuses*
+/// rather than asserts — `dsp/ring.zig`'s `EmptyCapacity`, `plugin.process`'s frame
+/// count, `gui.zig`'s `max_size` — was checked only in the build where the asserts
+/// were still there to catch a lapse.
+///
+/// | Step           | Mode          | `std.debug.assert` | Safety checks |
+/// | -------------- | ------------- | ------------------ | ------------- |
+/// | `test`         | `-Doptimize`  | live by default    | on by default |
+/// | `test-safe`    | `ReleaseSafe` | live               | on            |
+/// | `test-release` | `ReleaseFast` | **stripped**       | **off**       |
+///
+/// `test` stays mode-following rather than pinned to Debug, so `-Doptimize` still
+/// reaches it and `ReleaseSmall` needs no fourth step. The other two are pinned,
+/// because a step named for a mode that silently followed a flag would be the
+/// failure this whole issue is about, one level up.
+///
+/// **The Debug run cannot be dropped in favour of the release ones**, and that is a
+/// measured fact rather than caution. `gpu/metal/shader.zig`'s "nothing is read from
+/// disk in a test build" asserts `!shader.live`, and `live` is
+/// `builtin.mode == .Debug and !builtin.is_test`: outside Debug the first clause
+/// already decides it, so the `!builtin.is_test` plant that test exists for passes
+/// vacuously in both release steps. Planted, `zig build test` fails and
+/// `zig build test-release` does not. `gpu/iface.zig` records that nothing else
+/// covers it.
+///
+/// **`test-release` is a strictly weaker detector than `test`, and saying otherwise
+/// was this docstring's first mistake.** Every difference between the modes
+/// *removes* a check, so there is no defect it catches that Debug does not. The
+/// tempting claim is that it uniquely sees work living inside a
+/// `std.debug.assert` argument — and that is false here, because Zig's `assert` is
+/// an ordinary function rather than a macro, so its argument is evaluated in every
+/// optimize mode and only the check on the result is stripped. Measured rather than
+/// reasoned about: `palette.buildPalette`'s entire loop moved into an assert
+/// argument leaves all three steps green. The C bug class does not exist in Zig.
+///
+/// So what these two steps buy is not extra detection. It is that the suite runs at
+/// all in the build that ships, where a trust boundary that had lapsed from a
+/// refusal into an assertion would be caught by nothing else, and that the tree
+/// compiles and passes through the optimizer. `test-safe` adds the one combination
+/// neither neighbour has, optimized code with the safety checks still armed.
+fn addTestStep(core: Core, options: struct {
+    step: []const u8,
+    description: []const u8,
+    pinned_optimize: []const u8 = "",
+}) void {
     const b = core.b;
-    const mod = core.module(.{});
+    const mod = core.module(.{ .pinned_optimize = options.pinned_optimize });
     mod.addAnonymousImport("measure-trace", .{
         .root_source_file = b.path("scripts/measure-trace"),
     });
@@ -498,7 +632,7 @@ fn addTestStep(core: Core) void {
 
     const tests = b.addTest(.{ .root_module = mod });
     const run = b.addRunArtifact(tests);
-    b.step("test", "Run unit tests").dependOn(&run.step);
+    b.step(options.step, options.description).dependOn(&run.step);
 }
 
 /// Shaders are compiled at runtime from embedded source (ADR 0009), so the
@@ -583,22 +717,42 @@ fn addSmokeSteps(core: Core) void {
     leaks.dependOn(&check.step);
 }
 
-/// The race harness (src/ring_race.zig and ADR 0016), which runs `Ring.write`
-/// and `Ring.read` on two threads under Thread Sanitizer.
+/// One race harness under Thread Sanitizer (ADR 0016), of which there are two.
 ///
-/// **The only step here that cannot run on the machine this project is developed
-/// on.** Zig 0.16 links a `-fsanitize-thread` binary on `aarch64-macos` that
-/// segfaults before `main`, re-measured on 0.16.0 rather than inherited. The
-/// container is the one part of the signal path with no reason to stay on that
-/// target: `src/dsp/ring.zig` imports `std` and nothing else. So this step wants
-/// a Linux host, and CI supplies one. That is the same bargain
-/// `addShaderValidationStep` and `addSmokeSteps` already make, a step allowed to
-/// require a machine capability the default build must not depend on, with the
-/// capability here being *not* macOS.
+/// **The only steps here that cannot run on the machine this project is
+/// developed on.** Zig 0.16 links a `-fsanitize-thread` binary on
+/// `aarch64-macos` that segfaults before `main`, re-measured on 0.16.0 rather
+/// than inherited. So these steps want a Linux host, and CI supplies one. That
+/// is the same bargain `addShaderValidationStep` and `addSmokeSteps` already
+/// make, a step allowed to require a machine capability the default build must
+/// not depend on, with the capability here being *not* macOS.
+///
+/// What both subjects have in common is the reason they can be raced at all:
+/// `src/dsp/ring.zig` and `src/clap/gate.zig` each import `std` and nothing
+/// else, so neither drags anything Apple owns into a Linux module. `Gate` is in
+/// its own file rather than inside `src/clap/gui.zig` precisely for that (#91).
 ///
 /// Deliberately not wired into `zig build test`, for their reasons and ADR 0009's.
-fn addRingRaceStep(b: *std.Build) void {
-    const step = b.step("ring-race", "Race-check the history buffer under Thread Sanitizer (needs a Linux host)");
+const RaceHarness = struct {
+    /// The build step's name, and the binary's, minus the `fosforo-` prefix.
+    name: []const u8,
+
+    /// Module root, which must sit directly in `src/`.
+    root: []const u8,
+
+    /// What the step says it does in `zig build --help`.
+    description: []const u8,
+
+    /// The arm that must be clean, the arm that must be flagged, and the field
+    /// whose value proves the two threads met. `scripts/race-check` takes all
+    /// three, so its assertion order is written once for both harnesses.
+    clean_arm: []const u8,
+    weakened_arm: []const u8,
+    progress_field: []const u8,
+};
+
+fn addRaceStep(b: *std.Build, harness: RaceHarness) void {
+    const step = b.step(harness.name, harness.description);
 
     // Its own module rather than `Core.module`. That constructor adds `objc`,
     // the translated CLAP header, the anonymous shader import and five Apple
@@ -606,8 +760,8 @@ fn addRingRaceStep(b: *std.Build) void {
     //
     // `resolveTargetQuery(.{})` rather than the shared target, which carries
     // `os_version_min` 11.0 as a macOS deployment floor. Resolved on Linux that
-    // becomes a minimum kernel version no kernel satisfies. The ring has no
-    // deployment target, so it takes the bare host.
+    // becomes a minimum kernel version no kernel satisfies. Neither subject has
+    // a deployment target, so this takes the bare host.
     //
     // `link_libc` is load-bearing rather than incidental: Thread Sanitizer learns
     // about threads by intercepting `pthread_create`, and without libc Zig issues
@@ -618,9 +772,9 @@ fn addRingRaceStep(b: *std.Build) void {
     // optimization level, so this costs no coverage.
     const target = b.resolveTargetQuery(.{});
     const exe = b.addExecutable(.{
-        .name = "fosforo-ring-race",
+        .name = b.fmt("fosforo-{s}", .{harness.name}),
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/ring_race.zig"),
+            .root_source_file = b.path(harness.root),
             .target = target,
             .optimize = .Debug,
             .link_libc = true,
@@ -645,16 +799,16 @@ fn addRingRaceStep(b: *std.Build) void {
     // A cross-compiled harness is still worth building, so `-Dtarget` is not what
     // is consulted here: the question is whether *this* host can run one.
     if (b.graph.host.result.os.tag != .linux) {
-        const fail = b.addFail(
-            \\`zig build ring-race` needs a Linux host.
+        const fail = b.addFail(b.fmt(
+            \\`zig build {s}` needs a Linux host.
             \\
             \\Thread Sanitizer links on aarch64-macos and segfaults before main, which
-            \\is why this check lives in the `ring-race` job on ubuntu-latest. See
+            \\is why this check lives in the `race` job on ubuntu-latest. See
             \\docs/adr/0016-verify-the-ring-ordering-with-tsan.md.
             \\
             \\To compile-check the harness from here without running it:
-            \\    zig build-exe src/ring_race.zig -fsanitize-thread -lc -target x86_64-linux-gnu
-        );
+            \\    zig build-exe {s} -fsanitize-thread -lc -target x86_64-linux-gnu
+        , .{ harness.name, harness.root }));
 
         // Still built, so a type error in the harness fails this step on macOS
         // rather than waiting for CI. Zig analyses a declaration only where it is
@@ -671,8 +825,9 @@ fn addRingRaceStep(b: *std.Build) void {
     // The script rather than the two runs, because the criterion is an absence
     // and an absence has to be told apart from an instrument that was not
     // running. See the assertion order in its header.
-    const check = b.addSystemCommand(&.{"./scripts/ring-race-check"});
+    const check = b.addSystemCommand(&.{"./scripts/race-check"});
     check.addFileArg(exe.getEmittedBin());
+    check.addArgs(&.{ harness.clean_arm, harness.weakened_arm, harness.progress_field });
     check.step.dependOn(&install.step);
     check.stdio = .inherit;
     check.has_side_effects = true;

@@ -24,10 +24,10 @@ These four shape everything below. The first three were confirmed with the issue
 
 **The two halves stay separate**, because their environmental requirements differ:
 
-| Half   | Needs                        | Catches                                                                | CI status                    |
-| ------ | ---------------------------- | ---------------------------------------------------------------------- | ---------------------------- |
-| GPU    | A Metal device, no window    | Runtime shader compilation, pipeline assembly, wrong Metal selectors   | Required                     |
-| AppKit | A window server and a device | View embedding, teardown order, retain and release across cycles       | `continue-on-error` at first |
+| Half   | Needs                        | Catches                                                              | CI status                    |
+| ------ | ---------------------------- | -------------------------------------------------------------------- | ---------------------------- |
+| GPU    | A Metal device, no window    | Runtime shader compilation, pipeline assembly, wrong Metal selectors | Required                     |
+| AppKit | A window server and a device | View embedding, teardown order, retain and release across cycles     | `continue-on-error` at first |
 
 ## Work
 
@@ -104,7 +104,7 @@ A plain executable rather than a test artifact, and `src/clap/log.zig` already d
 
 **Both halves go through the real entry point.** `@import("main.zig")` exposes `entry`, so the harness calls `entry.init`, then `get_factory(&c.CLAP_PLUGIN_FACTORY_ID)`, then `create_plugin`, exactly as a host does. Reaching for `plugin.factory` directly would skip `src/main.zig` entirely.
 
-**The harness offers `clap.log`.** It copies the shared `test_host` and overrides `get_extension` alone, which is sharing rather than a second fixture. This is worth the few lines twice over: it is the only runtime exercise of the plugin calling *into* a host, and in a non-Debug build the `stderr` mirror in `log.zig` is compiled out, so it is the only channel a Metal compiler diagnostic has.
+**The harness offers `clap.log`.** It copies the shared `test_host` and overrides `get_extension` alone, which is sharing rather than a second fixture. This is worth the few lines twice over: it is the only runtime exercise of the plugin calling _into_ a host, and in a non-Debug build the `stderr` mirror in `log.zig` is compiled out, so it is the only channel a Metal compiler diagnostic has.
 
 The GPU half is `gpu.Renderer.probe(&diags)` and a printed device name.
 
@@ -121,12 +121,12 @@ The AppKit half, per cycle and inside its own `objc.AutoreleasePool` so autorele
 
 Alongside `addShaderValidationStep` in `build.zig`, and depending on the new artifact rather than on `test`:
 
-| Step           | Runs                                                    |
-| -------------- | ------------------------------------------------------- |
-| `smoke-gpu`    | `fosforo-smoke gpu`                                     |
-| `smoke-appkit` | `fosforo-smoke appkit`                                  |
-| `smoke`        | Both halves                                             |
-| `smoke-leaks`  | `scripts/smoke-leak-check` over the AppKit half         |
+| Step           | Runs                                            |
+| -------------- | ----------------------------------------------- |
+| `smoke-gpu`    | `fosforo-smoke gpu`                             |
+| `smoke-appkit` | `fosforo-smoke appkit`                          |
+| `smoke`        | Both halves                                     |
+| `smoke-leaks`  | `scripts/smoke-leak-check` over the AppKit half |
 
 Two details that decide whether the output is usable. `run.stdio = .inherit`, so the harness's progress lines reach the terminal rather than being buffered and discarded on success; and `has_side_effects = true`, so the step re-runs rather than reporting a cached result for a check whose whole subject is the machine it runs on.
 

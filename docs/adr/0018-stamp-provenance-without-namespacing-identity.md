@@ -18,10 +18,10 @@ Phase 3's remaining issues are all judged in a running host, so an ambiguous ins
 
 `build.zig` asks git at configure time and passes three facts through `build_options`. `src/build_info.zig` composes the three strings anyone needs from them, and is the only place any of those formats is written down:
 
-| Declaration          | Read by                                                       |
-| -------------------- | ------------------------------------------------------------- |
-| `marker`             | `scripts/read-provenance`; also logged, which keeps it live   |
-| `descriptor_version` | the host, as the plugin's version                             |
+| Declaration          | Read by                                                     |
+| -------------------- | ----------------------------------------------------------- |
+| `marker`             | `scripts/read-provenance`; also logged, which keeps it live |
+| `descriptor_version` | the host, as the plugin's version                           |
 
 ```text
 marker              fosforo-build: version=0.0.0 branch=chore/x commit=84bd70d dirty=no
@@ -66,7 +66,7 @@ The instrument is Logic's own scan log, `~/Library/Caches/AudioUnitCache/Logs/AU
 | **symlink**  | **59**      | **absent** |
 | copy         | 60          | present    |
 
-**The first attempt at this measurement was a false negative, and its own control caught it.** An earlier A/B pair read 59 for the symlink *and* 59 for the copy, because `AudioComponentRegistrar` had not settled after several rapid reinstalls. Waiting before relaunching Logic is what makes the reading stable. Without the control, "symlinks do not work" would have been recorded as a measurement while resting on an instrument that was answering the same way to everything.
+**The first attempt at this measurement was a false negative, and its own control caught it.** An earlier A/B pair read 59 for the symlink _and_ 59 for the copy, because `AudioComponentRegistrar` had not settled after several rapid reinstalls. Waiting before relaunching Logic is what makes the reading stable. Without the control, "symlinks do not work" would have been recorded as a measurement while resting on an instrument that was answering the same way to everything.
 
 `link_note` in `scripts/install-plugins` survives the refusal, and the refusal is what makes it worth having. A symlink made by hand produces a plugin that is silently missing from Logic, with no error anywhere and nothing wrong inside the bundle. That is precisely the class of failure this tooling exists to end, so it is now detected, explained, and repaired by an ordinary `zig build install-plugins`.
 

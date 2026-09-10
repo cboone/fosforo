@@ -29,7 +29,7 @@
 //! wrong reason when the instrument is not running. An unlinked runtime, an
 //! uninstrumented `@memcpy`, a `pthread_create` TSan never saw, a job that built
 //! the wrong module: each of those makes both arms come back clean, and only the
-//! control can tell that apart from a correct ring. `scripts/ring-race-check`
+//! control can tell that apart from a correct ring. `scripts/race-check`
 //! therefore judges the control first and refuses to read anything into the
 //! ring's result until it has passed. That is `scripts/smoke-leak-check`'s
 //! ordering, for the same reason.
@@ -128,7 +128,7 @@ fn usage() u8 {
         \\  ring      the real Ring on two threads; Thread Sanitizer must find nothing
         \\  weakened  the same pattern with the publishing store relaxed; TSan must find a race
         \\
-        \\Run both through scripts/ring-race-check, which judges them in the order
+        \\Run both through scripts/race-check, which judges them in the order
         \\that makes the first one's silence mean something.
     , .{});
     return 2;
@@ -140,24 +140,24 @@ fn usage() u8 {
 /// being called wrong. Note that a passing **weakened** arm still exits non-zero
 /// overall, because Thread Sanitizer replaces the status with its own `exitcode`
 /// when it has reported anything. That is the intended result there, and the
-/// reason `scripts/ring-race-check` reads the output rather than only the status.
+/// reason `scripts/race-check` reads the output rather than only the status.
 fn report(arm: []const u8, result: anyerror!Counters) u8 {
     const counters = result catch |err| {
-        say("ring-race: {s} FAILED: {s}", .{ arm, @errorName(err) });
+        say("race: {s} FAILED: {s}", .{ arm, @errorName(err) });
         return 1;
     };
 
     // The overlap statistic, printed rather than merely counted. A clean arm
     // whose reader never saw a sample the writer produced would be a vacuous
     // pass, and this line is what lets the script rule that out from outside.
-    say("ring-race: {s} reads={d} validated={d} torn={d} published={d}", .{
+    say("race: {s} reads={d} validated={d} torn={d} published={d}", .{
         arm,
         counters.attempts,
         counters.validated,
         counters.torn,
         counters.published,
     });
-    say("ring-race: {s} ok", .{arm});
+    say("race: {s} ok", .{arm});
     return 0;
 }
 
@@ -394,6 +394,13 @@ fn valid(window: []const f32) bool {
 // ---------------------------------------------------------------------------
 
 const testing = std.testing;
+
+test {
+    // `main` has only ever been analysed for the Linux target the harness runs on,
+    // because `zig build ring-race` refuses on a macOS host and nothing else
+    // referenced it. This is the first thing that compiles it here.
+    testing.refAllDecls(@This());
+}
 
 test "a window of consecutive samples behind a zero pad is valid" {
     try testing.expect(valid(&[_]f32{ 0, 0, 1, 2, 3 }));

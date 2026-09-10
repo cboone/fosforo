@@ -8,7 +8,7 @@ Issue: [#89](https://github.com/cboone/fosforo/issues/89). Type: `fix:`. Item 1 
 
 `FramesNeverPresented` comes from `driveFrame` (`src/smoke.zig:762`) exhausting `trace_frame_attempts = 100_000` while `Renderer.frame` reports `.no_frame_slot`. That constant's docstring (`src/smoke.zig:628`) argues the bound is on scheduler turns rather than on a duration, and that "a hundred thousand yields is many seconds of slack on a loaded runner". The failing step ran three seconds against four for a passing trace step on the previous commit: it did not spend many seconds of slack, it gave up faster than a healthy run completes, because `std.Thread.yield()` returns almost immediately when nothing else on the core is runnable. **The bound is a spin count wearing a timeout's clothes**, and it is the only wait in the harness that is not wall-clock, against `frame_timeout_us` at 2 s (`:91`) and `reload_timeout_us` at 6 s (`:429`).
 
-One correction to the issue as filed, and it changes the repair rather than only the record. The issue reasons that exposure grows with frame count, so `checkDecayIsInRealTime`'s thirteen-frame arm is next. **Exposure is not proportional to frame count**: `checkHotCore` drives thirty frames (`src/smoke.zig:1246`), runs *before* `checkDecay`, and passed in that same failing run, which is what the `hot core` line in the log proves. Raising the count would therefore have been the wrong repair; the count is not a duration at any value.
+One correction to the issue as filed, and it changes the repair rather than only the record. The issue reasons that exposure grows with frame count, so `checkDecayIsInRealTime`'s thirteen-frame arm is next. **Exposure is not proportional to frame count**: `checkHotCore` drives thirty frames (`src/smoke.zig:1246`), runs _before_ `checkDecay`, and passed in that same failing run, which is what the `hot core` line in the log proves. Raising the count would therefore have been the wrong repair; the count is not a duration at any value.
 
 The intended outcome is that the offscreen wait gives up on a measured duration and says which one, so the next occurrence is attributable from the CI log without reading the source, and so a runner slow enough to matter is distinguishable from a completion handler that never fires.
 
@@ -86,14 +86,14 @@ The measured elapsed rather than the ceiling is what the issue asks to print, an
 
 The comment on the `.no_frame_slot` arm needs rewording rather than keeping. Its `spinLoopHint` measurement stays (it is a finding and still true), but its claim that "reaching for `std.Io` from a thread its single-threaded instance did not spawn is a bigger claim than this needs" is now the thing being done, one function up. The yield stays because it is the right latency for a slot that frees in microseconds, not because of ADR 0015.
 
-**Not touched:** `src/gpu/iface.zig:411`'s "there is exactly one clock, `display_link.monotonicNanos()`". That sentence is about what may be passed *through the seam* into `Renderer.frame`, and this deadline never reaches it — `frame` still receives the synthetic `now_nanos` unchanged, which is what keeps a retried frame from advancing the simulated clock (`src/smoke.zig:745`).
+**Not touched:** `src/gpu/iface.zig:411`'s "there is exactly one clock, `display_link.monotonicNanos()`". That sentence is about what may be passed _through the seam_ into `Renderer.frame`, and this deadline never reaches it — `frame` still receives the synthetic `now_nanos` unchanged, which is what keeps a retried frame from advancing the simulated clock (`src/smoke.zig:745`).
 
 ## Documents
 
 Each lands in this branch, on the program plan's rule that a document updated later describes a state nobody checked.
 
 | Document                                                       | Edit                                                                                                                                      |
-|----------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------|
+| -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | `docs/adr/0013-gui-smoke-harness-as-a-build-step.md`           | A new `## Amended by issue #89` section. Line 252's finding stays standing, on that ADR's own rule; the amendment says what its bound was |
 | `AGENTS.md`, the `smoke-trace` bullet                          | A paragraph on the harness's two wait idioms and why the offscreen one is a deadline                                                      |
 | `docs/plans/todo/2026-09-04-close-the-verification-gaps-...md` | Item 1 and its summary-table row marked landed, with the `checkHotCore` correction to its exposure claim                                  |
@@ -105,7 +105,7 @@ The ADR amendment is an addition to the scope the program plan set, which assign
 All three of the issue's acceptance criteria are met, and the plant returned a sharper number than the issue could.
 
 | Check                                         | Result                                                                                             |
-|-----------------------------------------------|----------------------------------------------------------------------------------------------------|
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | `zig build smoke-trace`, before and after     | Byte-identical below the provenance line. No measurement moved                                     |
 | Plant, 2 s ceiling                            | `waited 2000ms across 14468498 attempts for a frame slot`, 2.034 s total, failed in `checkSilence` |
 | Plant, 1 ms ceiling                           | `waited 1ms across 5344 attempts for a frame slot`, 0.031 s total                                  |
@@ -117,7 +117,7 @@ All three of the issue's acceptance criteria are met, and the plant returned a s
 
 ## Verification
 
-Run in this order. The first two must both be captured *before* any edit, because the second acceptance criterion is a comparison against today's output rather than an inspection of tomorrow's.
+Run in this order. The first two must both be captured _before_ any edit, because the second acceptance criterion is a comparison against today's output rather than an inspection of tomorrow's.
 
 1. **Baseline.** On the current `HEAD` (`4602f9c`), `zig build smoke-trace 2>&1 | tee /tmp/trace-before.txt`. Note that the first line is the provenance marker and will differ afterwards; every line below it must not.
 2. **Build and unit tests.** `zig build`, `zig build test`, `zig fmt --check build.zig src/`.
@@ -128,6 +128,7 @@ Run in this order. The first two must both be captured *before* any edit, becaus
    - fail in `checkSilence`, the first case, since the plant is unconditional.
 
    Then `git restore src/gpu/metal/renderer.zig` and re-run step 3 to confirm the plant left nothing behind.
+
 5. **A negative control for the deadline itself.** Temporarily set `trace_frame_timeout_us` to `1 * std.time.us_per_ms` with the plant still in place and confirm the printed duration follows the constant. Without this the run in step 4 proves a two-second wait happened, not that this constant is what caused it.
 6. **Nothing else moved.** `zig build smoke-gpu`, and `zig build smoke-appkit` since the `sleepFor` docstring is in its path even though its code is not.
 7. **Linters.** `lint-and-fix`, which covers `zig fmt`, `typos` over the changed Markdown, and `shfmt`/`shellcheck`/`ruff` on files this branch does not touch. Run `markdownlint` in check mode only: `--fix` ignores its file argument and rewrites the whole tree.

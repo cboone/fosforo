@@ -26,12 +26,19 @@ Two things are worth knowing before you start. First, the project is deliberatel
 - `shfmt` and `shellcheck`, only if you are changing shell scripts. CI pins 3.13.1 and 0.11.0
 - `typos`, for the spell check CI runs over the whole tree. CI pins 1.49.0; `brew install typos-cli`
 - `ruff`, only if you are changing `scripts/measure-trace`, the one Python file here. CI pins 0.16.5; `brew install ruff`. Running the script itself needs [`uv`](https://docs.astral.sh/uv/) rather than a Python install, since its shebang resolves its own dependencies
+- `actionlint`, only if you are changing anything under `.github/`. CI pins 1.7.12; `brew install actionlint`. It wants `shellcheck` on `PATH` as well, or it skips the `run:` blocks without saying so
+- `node` and `npm`, only if you are changing Markdown, which includes every document in `docs/`. Run `npm ci` once; that installs Prettier and `markdownlint-cli2` at the versions `package-lock.json` pins, and it is the only thing in this repository that wants Node. Do not install either globally and expect it to match, since the lockfile is what CI resolves
 
 ### Getting Started
 
 ```bash
 git clone https://github.com/cboone/fosforo.git
 cd fosforo
+
+# Teach git blame to skip the tree-wide formatting commits. GitHub applies
+# .git-blame-ignore-revs to its own blame view automatically; locally this is
+# what makes `git blame` name the author of a line rather than the formatter.
+git config blame.ignoreRevsFile .git-blame-ignore-revs
 
 # Build. Dependencies are fetched and pinned by content hash automatically.
 zig build
@@ -105,6 +112,7 @@ zig build smoke        # runs Metal and AppKit for real; needs a GPU and a windo
 zig build smoke-trace  # renders into a texture and measures it; needs a GPU, no window
 zig build smoke-leaks  # 400 editor cycles under `leaks --atExit`
 zig build ring-race    # the history buffer under Thread Sanitizer; needs a Linux host
+zig build gate-race    # the editor's teardown gate, the same way and on the same host
 ```
 
 **CI runs all of them now.** The `smoke` job runs each half as its own step, and
@@ -112,7 +120,8 @@ zig build ring-race    # the history buffer under Thread Sanitizer; needs a Linu
 need a device and no window, and the third's window-server dependency was
 settled by the 65 green runs #72 cites. `smoke-leaks` runs beside them at
 `-Dleak-cycles=40` under `continue-on-error`, so it reports without being able
-to stop anything. The `ring-race` job runs on Linux, where it is required.
+to stop anything. The `race` job runs both race harnesses on Linux, as two
+steps, where they are required.
 
 `smoke-trace` is the one that answers what the shader drew, as opposed to whether
 it compiled or whether a frame was presented. It renders through the shipping
@@ -130,13 +139,20 @@ own account would fail it with nothing here being wrong. Running it locally is
 what has teeth. Its criteria do not vary with the cycle count while its cost
 does, which is why CI takes 40 against a default of 400 here.
 
-`zig build ring-race` refuses on macOS and says where it does run: Zig 0.16 links
-a `-fsanitize-thread` binary on Apple Silicon that segfaults before `main`, so it
-runs on Linux in CI. Compile-check it from a Mac with `zig build-exe
-src/ring_race.zig -fsanitize-thread -lc -target x86_64-linux-gnu`. The ring's
-memory ordering also has a source canary that fails `zig build test` on any
-machine, so weakening it is caught locally even though the sanitizer is not
-([ADR 0016](docs/adr/0016-verify-the-ring-ordering-with-tsan.md)).
+Both race steps refuse on macOS and say where they do run: Zig 0.16 links a
+`-fsanitize-thread` binary on Apple Silicon that segfaults before `main`, so
+they run on Linux in CI. Compile-check either from a Mac with `zig build-exe
+src/ring_race.zig -fsanitize-thread -lc -target x86_64-linux-gnu`, substituting
+`src/gate_race.zig`. Each subject also has a source canary that fails `zig build
+test` on any machine, so weakening an ordering is caught locally even though the
+sanitizer is not ([ADR 0016](docs/adr/0016-verify-the-ring-ordering-with-tsan.md)).
+
+`Gate` lives in `src/clap/gate.zig` rather than in `src/clap/gui.zig` so that a
+Linux target can reach it, and `src/gate_race.zig` races a plain buffer standing
+in for the editor's own fields. That payload is the whole reason the arm can
+discriminate anything: Thread Sanitizer reports unordered access to _non-atomic_
+memory, so an ordering that guards nothing but its own word is invisible to it.
+That is why `Pending` has no arm and keeps only its canary.
 
 ## Code Style
 
@@ -145,6 +161,8 @@ machine, so weakening it is caught locally even though the sanitizer is not
 - Keep `shellcheck` clean: `git ls-files -z | xargs -0 shfmt -f | xargs shellcheck`
 - Keep `typos` clean by running it before committing. It reads `typos.toml`, which allowlists words the tool is wrong about and ignores backticked commit SHAs. Add to that file rather than rewording a correct word, and if a document has to spell out a misspelling in order to explain it, wrap that part in `<!-- spellchecker:off -->` and `<!-- spellchecker:on -->`
 - Keep `ruff` clean if you touched `scripts/measure-trace`: `ruff format --check . && ruff check .`. That file has no `.py` extension, so `ruff.toml`'s `extend-include` is the only reason ruff can see it at all, and **a vacuous pass is the failure to watch for**: ruff reports discovering nothing as success, so check that `ruff format --check` says it read 1 file rather than 0. `ruff.toml` is the authority on its style, and the `[measure-trace]` section in `.editorconfig` restates it by hand, because ruff does not read that file
+- Keep `actionlint` clean if you touched a workflow or the composite action: run `actionlint` from the repository root, with no arguments, which is what CI runs. Two silent skips to know about. It finds local actions through the **git** project root, so it must run inside a checkout rather than an exported tree, and **without `shellcheck` on `PATH` it does not lint `run:` blocks at all and still exits 0**. It also cannot check `with:` inputs on a SHA-pinned action or on a remote reusable workflow, which is most of what this repository uses, so a bad input name is caught by reading the run's warnings and by nothing else
+- Keep Markdown clean if you touched any `.md` file. **Run `npm ci` first**, then `npm run format`, then `npm run lint:md`. Prettier is the fixer and markdownlint is the verifier, so running the linter first only shows you findings the formatter was about to resolve. **`npm ci` is not optional and the reason is measured**: `npx prettier` with no `node_modules` present downloads and runs whatever is _latest_ at that moment rather than the pinned release, and `npm run` falls through to a global install if there is one. Either way the tool that formats your branch is not the tool CI checks it with, which is the whole failure this pinning exists to prevent. Do not read a passing run by hand as proof you are on the pin: as of 2026-09-09 both pins sit at latest, Prettier 3.9.6 and `markdownlint-cli2` 0.23.2, so an unpinned tool agrees with CI by coincidence, and that coincidence ends the day either project ships a release. **Never run `markdownlint-cli2 --fix`**: it cannot fix `MD060` at any version, and it ignores the file arguments it is given and rewrites every file matching its globs, including completed plans under `docs/plans/done/` that are historical records. The binary is `markdownlint-cli2` and there is no `markdownlint` here, so the warning names the command you would actually type. Two things that surprise people: `markdownlint-cli2` lints `node_modules/` unless the `ignores` list stops it, which is why that entry is there and must stay; and Prettier normalises `*emphasis*` to `_emphasis_`, which is deliberate and is why `MD049` is `false`
 - Keep Metal types out of anything above `src/gpu/iface.zig`. That seam is load-bearing; see [ADR 0005](docs/adr/0005-metal-behind-a-renderer-seam.md)
 - Anything reachable from the audio thread must not allocate, lock, or make a syscall
 

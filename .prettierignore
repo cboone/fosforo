@@ -1,0 +1,24 @@
+# Prettier's remit here is Markdown, and the CI job invokes it over an explicit
+# `**/*.md` glob rather than over `.`, so YAML, JSON and JSONC keep the styles
+# `.editorconfig` states for them. This file is the second half of that: it
+# stops a bare `prettier --write .` run by hand from reaching anything the job
+# would not have judged.
+
+# Preserved verbatim as the source brainstorm this project came from.
+# Reformatting it would edit a historical record. `.markdownlint-cli2.jsonc`
+# ignores the same file for the same reason; the two lists are kept in step by
+# hand, because neither tool can read the other's.
+docs/design/scope-plugin-handoff.md
+
+# Prettier already skips `node_modules/` with no configuration, measured rather
+# than assumed. It is listed anyway because the reader's question is whether a
+# dependency's README can be reformatted, and an empty answer is not one.
+# markdownlint-cli2 does *not* skip it and needs its own entry.
+node_modules/
+
+# Build outputs. Nothing here is authored.
+build/
+zig-out/
+zig-pkg/
+.zig-cache/
+dist/

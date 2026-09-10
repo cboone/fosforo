@@ -1,0 +1,177 @@
+name: markdown
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# Deliberately its own workflow rather than a job in ci.yml, on typos.yml's
+# precedent and for exactly its reason. That workflow ignores `*.md`, `docs/**`,
+# `LICENSE` and the agent config files on both triggers, which is right for a
+# set of macOS builds and precisely wrong for a Markdown check: the files this
+# job exists to judge are the files that would skip it, so a job added there
+# would be green on every pull request that could have failed it.
+# `paths-ignore` is workflow-level rather than job-level, so no job can be
+# exempted from it, and dropping `docs/**` from those lists would instead run
+# the CMake build on every documentation fix.
+#
+# This workflow therefore carries no `paths-ignore` at all: a check must not be
+# able to skip the change that governs it, and .prettierrc.json,
+# .markdownlint-cli2.jsonc, .prettierignore and this file all live in the set it
+# reads.
+#
+# That gap is what #85 was filed for. `.markdownlint-cli2.jsonc` pinned MD060 to
+# `aligned` and nothing ran it, so `main` reported 0 findings while a live
+# branch reported 129, of which 127 sat in that branch's own plan file with
+# nothing saying so. It is the fourth instance of the same shape here, after
+# typos (#28), ruff, and actionlint (#99).
+#
+# Ubuntu rather than macOS, matching `shell`, `python`, `typos` and
+# `actionlint`: this is platform-independent static analysis and the macOS
+# runner bills at ten times the rate.
+jobs:
+  # Named for what it checks rather than `check`, which is what typos.yml calls
+  # its job. A status check is identified by its job name, so two workflows both
+  # using `check` produce two indistinguishable rows in a pull request's rollup
+  # and an ambiguous target for any branch protection rule. Observed on #115
+  # before this rename. Every job in ci.yml is already named this way.
+  markdown:
+    runs-on: ubuntu-latest
+    # 3 on the floor that `shell`, `python`, `typos` and `actionlint` share, and
+    # unmeasured for the same reason theirs were when they landed: this is
+    # structurally the same thing, an Ubuntu checkout plus a dependency install
+    # plus a tree walk over every tracked Markdown file. Deliberately not a
+    # count. The last one here said 79 and went stale the moment #120 split
+    # AGENTS.md into docs/notes/, and a figure that only justifies a ceiling
+    # earns nothing by being exact. Re-measure from real runs rather than
+    # copying this ceiling onward, which is how the old ones propagated.
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      # The major only. What pins the tools' behaviour is package-lock.json,
+      # not Node's patch level, so tracking a patch release here would be churn
+      # that changes no finding. `cache: npm` keys on the lockfile, so a cache
+      # hit is by definition the same dependency tree.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+
+      # `npm ci` rather than `npm install`, because it installs the lockfile
+      # exactly and fails if package.json has drifted from it. This is the npm
+      # analogue of the `sha256sum --check --strict` the pinned release binaries
+      # in ci.yml use, and it reaches further: the lockfile carries an integrity
+      # hash for all 86 packages, not just the two named ones. That matters for
+      # markdownlint-cli2 specifically, whose rules ship inside that tree, so
+      # pinning only the top-level version would leave findings free to move
+      # under a green build.
+      - name: Install the pinned tooling
+        run: npm ci
+
+      # Confirms the lockfile resolved to the intended versions, so a
+      # package.json bumped without its lockfile, or the reverse, fails here
+      # rather than silently checking against different rules than the tree was
+      # cleared with.
+      - name: Report tool versions
+        run: |
+          npx prettier --version
+          npx markdownlint-cli2 --version
+
+      # Through the npm scripts rather than spelling the commands out again, so
+      # that CI and the invocation AGENTS.md, CONTRIBUTING.md and the PR
+      # template all document are one string with two readers rather than two
+      # that can drift. package.json is where the glob lives; changing it here
+      # would otherwise leave CI checking something the docs do not describe.
+      #
+      # What that glob is doing is still worth knowing. It is quoted inside the
+      # script so Prettier expands it rather than the shell, and it is
+      # Markdown-only on purpose: a bare `prettier --check .` would pull every
+      # workflow, .markdownlint-cli2.jsonc and .claude/settings.json into
+      # Prettier's remit, which .editorconfig already governs. .prettierignore
+      # is the second half of that fence, for anyone running the tool by hand.
+      - name: Check Markdown formatting
+        id: prettier
+        run: npm run format:check
+
+      # `lint:md` takes no arguments: markdownlint-cli2 reads its globs and
+      # ignores from .markdownlint-cli2.jsonc. `node_modules/**` is on that
+      # ignore list and is load-bearing here rather than tidy, because this tool
+      # walks into node_modules and lints dependency READMEs, which the install
+      # step above has just created. Prettier excludes them itself and needs no
+      # equivalent.
+      - name: Lint Markdown
+        id: markdownlint
+        run: npm run lint:md
+
+      # Only on the failing path, matching typos.yml and the clap-validator
+      # jobs, so the passing path pays nothing for it. Both steps are reported
+      # because either can fail alone: Prettier catches what it would rewrite,
+      # markdownlint catches what no formatter has an opinion about.
+      - name: Summarize the findings
+        if: failure() && (steps.prettier.outcome == 'failure' || steps.markdownlint.outcome == 'failure')
+        run: |
+          {
+            echo "### markdown"
+            echo
+            echo "Run \`npm ci\` then \`npm run format\` to fix formatting."
+            echo "Fix markdownlint findings by hand; never run"
+            echo "\`markdownlint-cli2 --fix\`, which ignores its file arguments"
+            echo "and rewrites every file matching its globs."
+            echo
+            echo '```text'
+            npm run --silent format:check 2>&1 || true
+            npm run --silent lint:md 2>&1 || true
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  # A separate job rather than a step in `markdown`, because it shares that
+  # job's reason for being in this workflow and none of its dependencies. It
+  # needs no Node, no lockfile and no npm cache, so bolting it on would make a
+  # 200-millisecond `wc -c` wait on an 86-package install; and a failing
+  # Prettier step would skip it, when the two answer unrelated questions.
+  #
+  # It is here rather than in ci.yml for this workflow's own recorded reason.
+  # That workflow's `paths-ignore` carries `*.md`, `docs/**`, `.claude/**`,
+  # `**/CLAUDE.md` and `**/AGENTS.md` on both triggers, and `paths-ignore` is
+  # workflow-level, so a job added there could never fail on the one file it
+  # exists to measure. This workflow carries no `paths-ignore` at all.
+  budget:
+    runs-on: ubuntu-latest
+    # 3, matching every other Ubuntu static-analysis job here. Unmeasured, and
+    # generous by a wide margin: a checkout plus one `wc -c`. Re-measure from
+    # real runs rather than carrying this number onward.
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      # The script prints the size on the passing path, which is the positive
+      # control: a run that reported nothing would be indistinguishable from one
+      # where the check silently did not measure the file. Its two refusals were
+      # exercised by hand when it landed; see its header and #117.
+      - name: Check the memory file's budget
+        id: budget
+        run: ./scripts/check-doc-budget
+
+      - name: Explain the refusal
+        if: failure() && steps.budget.outcome == 'failure'
+        run: |
+          {
+            echo "### budget"
+            echo
+            echo "AGENTS.md is loaded into every session in full, and the"
+            echo "threshold is 40,000 characters outside a 1M-context session."
+            echo "Move the depth into \`docs/notes/\` and leave a pointer."
+            echo
+            echo '```text'
+            ./scripts/check-doc-budget 2>&1 || true
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"

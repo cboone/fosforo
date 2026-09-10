@@ -6,7 +6,7 @@
 
 Contemporary plugins increasingly use system WebViews for their interfaces, including through a documented JUCE 8 pathway. The option needed ruling in or out explicitly so it is not revisited.
 
-Two common objections do **not** hold and should be set aside. These are not Electron: the WebView is the operating system's own component (WebKit on macOS), not a bundled Chromium, so the "hundreds of megabytes per plugin" complaint does not apply. And the stability argument runs the *other* way: the DSP stays native on the audio thread, and a WebView living in another process is structurally incapable of causing the classic UI-induced audio dropout.
+Two common objections do **not** hold and should be set aside. These are not Electron: the WebView is the operating system's own component (WebKit on macOS), not a bundled Chromium, so the "hundreds of megabytes per plugin" complaint does not apply. And the stability argument runs the _other_ way: the DSP stays native on the audio thread, and a WebView living in another process is structurally incapable of causing the classic UI-induced audio dropout.
 
 The real costs are different. Each editor spawns an out-of-process web content process, which degrades at high instance counts, and there is a startup and reload latency cost. There is also a genuine and underdiscussed security surface: the bridge is a scripting-to-native call path inside a process holding the DAW's entitlements, and WebView-choosing plugins tend to be the ones pulling remote content and an npm dependency tree, importing the JavaScript supply-chain threat model into a category with little security-review culture.
 
