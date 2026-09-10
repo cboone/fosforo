@@ -100,25 +100,37 @@ function version_from_zon() {
 # the plist exists only after a CMake build and this check has to hold before
 # one.
 #
-# **The pattern is as permissive as CMake's own grammar, deliberately.** CMake
-# accepts whitespace between a command name and its parenthesis and after it, and
-# its command names are case-insensitive, so `project (fosforo ...)` and
-# `PROJECT(fosforo ...)` are both the same declaration. A stricter pattern reads
-# them as absent, and absent makes resolve_version refuse: packaging would be
-# blocked by a formatting change that altered no version at all, with a diagnostic
-# pointing at a missing declaration rather than at the whitespace. Failing closed
-# is right when the versions genuinely disagree and is a waste of an afternoon
-# when they do not.
+# **Tolerant of how the declaration is written, because none of that changes the
+# version.** CMake accepts whitespace between a command name and its parenthesis
+# and after it, its command names are case-insensitive, and it treats a newline
+# inside an invocation as ordinary whitespace -- so `project (fosforo ...)`,
+# `PROJECT(fosforo ...)` and a declaration wrapped across three lines are all the
+# same declaration. A pattern that reads any of them as absent makes
+# resolve_version refuse, and packaging is then blocked by a formatting change
+# that altered no version at all, with a diagnostic pointing at a missing
+# declaration rather than at the formatting. Failing closed is right when the
+# versions genuinely disagree and is a waste of an afternoon when they do not.
 #
-# Loosening costs no precision here. The anchor is a line whose first token is the
-# `project` command, so the comment lines in cmake/CMakeLists.txt that mention the
-# word cannot match, and `${PROJECT_VERSION}` uses cannot either. Verified against
-# nine legal spellings and four must-not-match lines; it still selects exactly one
-# line of the real file.
+# Hence the three stages rather than one pattern: strip `#` comments, fold the
+# file to a single line so a wrapped declaration is contiguous, then match.
+# **Stripping first is what makes folding safe.** A CMake comment runs to
+# end-of-line, so joining lines without removing them would let a commented-out
+# `project(fosforo VERSION 9.9.9)` swallow the real one.
+#
+# **Two limits remain and neither is reachable from a version declaration.**
+# Bracket comments (`#[[ ... ]]`) are not handled, and a `#` inside a quoted
+# argument would truncate its line. Both would have to appear inside this one
+# command to matter here.
+#
+# Verified against six legal spellings and five must-not-match inputs, including
+# a comment naming a different version above the real declaration; it selects
+# 0.0.0 from the real file.
 # Outputs:
 #   The version on stdout
 function version_from_cmake() {
-  sed -n -E 's/^[[:space:]]*project[[:space:]]*\([[:space:]]*fosforo[[:space:]]+VERSION[[:space:]]+([^[:space:])]+).*/\1/Ip' cmake/CMakeLists.txt
+  sed 's/#.*$//' cmake/CMakeLists.txt |
+    tr '\n' ' ' |
+    sed -n -E 's/.*project[[:space:]]*\([[:space:]]*fosforo[[:space:]]+VERSION[[:space:]]+([^[:space:])]+).*/\1/Ip'
 }
 
 # Assert that every place the version is written agrees.
