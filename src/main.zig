@@ -97,7 +97,7 @@ test {
     _ = @import("platform/objc.zig");
     _ = @import("platform/view.zig");
 
-    // Reached only from the `test` blocks of the eight other files it guards and
+    // Reached only from the `test` blocks of the six other files it guards and
     // from this file's own sweep test below, so no import chain from `plugin`
     // runs through it and its own tests would otherwise not be collected. It is
     // what every one of those canaries rests on, which makes a bug in it that
