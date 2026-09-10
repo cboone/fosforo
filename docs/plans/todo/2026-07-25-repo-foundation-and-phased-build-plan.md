@@ -71,7 +71,7 @@ is complete in one place; [`docs/adr/README.md`](../../adr/README.md) is the ind
 | 0013 | The GUI smoke harness is an executable behind its own build steps, never part of `zig build test` | Phase 1    |
 | 0014 | Distribute as one signed, notarized, stapled `.pkg` placing both bundles                          | Phase 1    |
 | 0015 | Adopt `std.Io` through the single `init_single_threaded` instance in `src/platform/io.zig`        | Phase 2    |
-| 0016 | Verify the ring's release/acquire pairing with Thread Sanitizer, plus a source canary             | Phase 2    |
+| 0016 | Verify the ring's and the gate's orderings with Thread Sanitizer, plus a source canary            | Phase 2    |
 | 0017 | The vertical axis is absolute: no rescaling to the signal, and over-scale rails visibly           | Phase 2    |
 | 0018 | Stamp the branch and commit into every binary; leave the plugin's identity unnamespaced           | Phase 2    |
 | 0019 | Brightness is a fixed transfer function of accumulated energy, and white is that axis's rail      | Phase 3    |
@@ -112,6 +112,8 @@ What exists today, which is the layout to build on:
 ```text
 src/
   main.zig              the host-facing boundary and exported entry points
+  build_info.zig        the branch, commit and dirty state (ADR 0018, #22)
+  canary.zig            reads a file's own source as text (ADR 0016, #90)
   smoke.zig             the out-of-band GUI smoke harness (ADR 0013)
   ring_race.zig         the history buffer on two threads (ADR 0016)
   gate_race.zig         the teardown gate on two threads (ADR 0016, #91)
@@ -120,6 +122,7 @@ src/
     clap_all.h          the header set fed through `zig cc -E`
     plugin.zig          factory, descriptor, lifecycle, audio ports, process
     gui.zig             the editor's lifecycle, the resize mailbox, the tick
+    gate.zig            the teardown barrier, its own file so Linux can race it
     state.zig           the versioned save/load format
     log.zig             diagnostics routed through the host's clap.log
   dsp/
@@ -128,13 +131,19 @@ src/
     iface.zig           THE SEAM: size, upload, resize, frame, present.
                         No Metal types above this
     measure.zig         reads a rendered trace back as numbers; pure, no GPU
+    verdict.zig         what those numbers had to be; pure, no GPU (#92)
+    palette.zig         the display's colour contract (ADR 0019, #60)
     metal/renderer.zig  device, pipeline, surface, one frame
+    metal/reload.zig    what a poll decides and what it costs the tally (#93)
+    metal/shader.zig    where the shader source comes from (ADR 0009, #61)
   platform/
     io.zig              the one std.Io instance (ADR 0015)
     objc.zig            Core Graphics types and the thread assertions
     view.zig            the NSView the host embeds
     displaylink.zig     CVDisplayLink and its monotonic clock
 ```
+
+Seven of those arrived after this section was first written and each is annotated with what put it there, because the block is a claim about the present rather than a record of phase 0. `AGENTS.md`'s Structure section carries the same list; when the two disagree, that one is the copy a reader has already loaded.
 
 The extensions are flat files rather than a `clap/ext/` directory, and there are
 three of them rather than five: `audio-ports`, `state` and `gui`. Those are the
@@ -428,7 +437,7 @@ A review of the whole verification surface on `0e1ddf5` produced eleven issues, 
 | [#91](https://github.com/cboone/fosforo/issues/91) | Race the editor's teardown gate under Thread Sanitizer        | A Linux runner, so CI                    | Done   |
 | [#92](https://github.com/cboone/fosforo/issues/92) | Make the trace half's judgements pure, and test them          | `smoke-trace`, so a device and no window | Done   |
 | [#93](https://github.com/cboone/fosforo/issues/93) | Make the shader watcher's bookkeeping testable                | `zig build test`                         | Done   |
-| [#94](https://github.com/cboone/fosforo/issues/94) | Run the unit suite in the optimize mode that ships            | `zig build test`                         | Open   |
+| [#94](https://github.com/cboone/fosforo/issues/94) | Run the unit suite in the optimize mode that ships            | `zig build test`                         | Done   |
 | [#95](https://github.com/cboone/fosforo/issues/95) | Analyze every public declaration; settle the uncalled one     | `zig build test`                         | Done   |
 | [#96](https://github.com/cboone/fosforo/issues/96) | Assert `tonemap` and `whitePoint`'s defining properties       | `zig build test`                         | Done   |
 | [#97](https://github.com/cboone/fosforo/issues/97) | Eleven small, named, missing assertions                       | `zig build test`                         | Done   |
