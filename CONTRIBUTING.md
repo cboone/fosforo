@@ -43,8 +43,12 @@ git config blame.ignoreRevsFile .git-blame-ignore-revs
 # Build. Dependencies are fetched and pinned by content hash automatically.
 zig build
 
-# Run tests
+# Run tests. Three modes, and they are additive rather than alternatives: `test`
+# follows `-Doptimize` and is Debug by default, and CI's `test-modes` job runs the
+# two pinned ones. The Debug run cannot be retired -- see docs/notes/the-test-suite.md.
 zig build test
+zig build test-safe     # the same suite pinned to ReleaseSafe
+zig build test-release  # the same suite pinned to ReleaseFast, which is what ships
 
 # Format check
 zig fmt --check build.zig src/
@@ -106,9 +110,10 @@ run `xcrun --kill-cache`.
 
 ### Checks that need hardware CI cannot assume
 
-Three checks exist that `zig build test` deliberately does not run, and none is
+Several checks exist that `zig build test` deliberately does not run, and none is
 a pull request checklist item, because the machine you are on may not be able to
-run them.
+run them. `zig build validate-shaders` is a sixth alongside these five, and needs
+the Metal toolchain rather than a device.
 
 ```bash
 zig build smoke        # runs Metal and AppKit for real; needs a GPU and a window server
@@ -202,11 +207,13 @@ build: bump pinned Zig to 0.17.0
 1. Fork the repository
 1. Create a feature branch
 1. Make your changes
-1. Ensure tests pass: `zig build test`
+1. Ensure tests pass in every mode CI runs: `zig build test`, `zig build test-safe` and `zig build test-release`
 1. Ensure formatting passes: `zig fmt --check build.zig src/`
 1. If you touched a shell script, ensure `git ls-files -z | xargs -0 shfmt -f | xargs shfmt -d` and the same pipeline ending in `xargs shellcheck` are both silent
 1. Ensure the spell check passes: `typos`
 1. If you touched `scripts/measure-trace`, ensure `ruff format --check .` and `ruff check .` are both clean
+1. If you touched anything under `.github/workflows/`, ensure `actionlint` is silent, with `shellcheck` on `PATH` or it skips every `run:` block without saying so
+1. If you touched any Markdown, run `npm ci` then `npm run format`, then ensure `npm run lint:md` is clean. In that order, and never `markdownlint-cli2 --fix`
 1. Submit a pull request
 
 ### Branch Naming
