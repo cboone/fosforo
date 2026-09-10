@@ -8,15 +8,15 @@ The display name is **Fósforo**; the repository, binary, and identifiers stay A
 
 ## Current state
 
-Phase 3 of [the build plan](docs/plans/todo/2026-07-25-repo-foundation-and-phased-build-plan.md), four numbered steps in; phase 2 is closed. **That plan's phase 3 table and its verification-gaps table are the source of truth for what has landed**, and both carry a `Status` column, so what follows is orientation rather than a record.
+Phase 3 of [the build plan](docs/plans/todo/2026-07-25-repo-foundation-and-phased-build-plan.md), five numbered steps in; phase 2 is closed. **That plan's phase 3 table and its verification-gaps table are the source of truth for what has landed**, and both carry a `Status` column, so what follows is orientation rather than a record.
 
 The plugin loads in REAPER and Logic, passes stereo audio through, saves state, and taps one channel into `src/dsp/ring.zig`, which the render thread reads as a trailing 20 ms window. The trace is real geometry: each inter-sample segment is an instanced quad **3.0 points** wide, shaded by distance from the segment, so caps are round and joints have no gaps ([#57](https://github.com/cboone/fosforo/issues/57)). It deposits a scalar additively into a persistent `RGBA16F` ping-pong pair ([#55](https://github.com/cboone/fosforo/issues/55)) that fades in real elapsed time with a **158.19 ms** constant ([#56](https://github.com/cboone/fosforo/issues/56)), and a resolve pass compresses that energy through extended Reinhard into one of four gradients running to white ([#60](https://github.com/cboone/fosforo/issues/60), [ADR 0019](docs/adr/0019-brightness-is-a-fixed-transfer-function.md)). The hot core ADR 0007 predicted is emergent rather than drawn. There is no colour anywhere in `shaders/scope.metal`.
 
 **What the pixels became is checked automatically**, by `zig build smoke-trace`, which renders the shipping pipeline into a texture the backend owns and reads the result back as rows, periods and implied samples ([#51](https://github.com/cboone/fosforo/issues/51)); the judgements are pure and unit-tested in `src/gpu/verdict.zig` ([#92](https://github.com/cboone/fosforo/issues/92)). A debug build hot-reloads the shader without restarting the host ([#61](https://github.com/cboone/fosforo/issues/61)), and checks a reloaded shader's binding indices against the Zig constants ([#77](https://github.com/cboone/fosforo/issues/77)); the watcher's own bookkeeping is reachable from a test build since [#93](https://github.com/cboone/fosforo/issues/93). Every build stamps the worktree and commit it came from ([#22](https://github.com/cboone/fosforo/issues/22), [ADR 0018](docs/adr/0018-stamp-provenance-without-namespacing-identity.md)).
 
-**The beam is velocity weighted** ([#58](https://github.com/cboone/fosforo/issues/58)), which ADR 0007 calls the single relationship that produces the whole characteristic look. Each segment's deposit is multiplied by `h / (h + len)`, so energy per unit length falls as `1 / len` above the beam's own width and levels off below it, and a segment's _total_ deposit is constant to within 2%. `white_headroom` is settled at 0.8 and its re-judgement moved to phase 4. See [the trace and phosphor notes](docs/notes/trace-and-phosphor-physics.md).
+**The beam is velocity weighted** ([#58](https://github.com/cboone/fosforo/issues/58)), which ADR 0007 calls the single relationship that produces the whole characteristic look: a slow sweep glows solid where a fast one smears dim. The form, what it conserves, and the settled `white_headroom` are in [the trace and phosphor notes](docs/notes/trace-and-phosphor-physics.md).
 
-**What is left of the phosphor look is filed:** bandlimited reconstruction ([#59](https://github.com/cboone/fosforo/issues/59)). **The next issue in the plan's order is [#79](https://github.com/cboone/fosforo/issues/79)**, which #58 covers, with #59 behind it and [#83](https://github.com/cboone/fosforo/issues/83) behind that.
+**What is left of the phosphor look is filed:** bandlimited reconstruction ([#59](https://github.com/cboone/fosforo/issues/59)), which is **the next issue in the plan's order**, with [#83](https://github.com/cboone/fosforo/issues/83) behind it. [#79](https://github.com/cboone/fosforo/issues/79) closed as covered by #58 rather than fixed.
 
 ## Non-negotiables
 
@@ -31,13 +31,13 @@ These are settled decisions recorded in [`docs/adr/`](docs/adr/). Do not relitig
 - **The GUI smoke harness is an executable behind its own steps, never part of `zig build test`** (ADR 0013).
 - **`std.Io` is reached through the one instance in `src/platform/io.zig`, constructed with `init_single_threaded` and never with `Threaded.init`.** Guarded since #90 by a comptime assertion on the value and a canary on the shape, and by the compiler, which refuses the direct substitution outright (ADR 0015).
 - **The ring's release store and acquire load are verified by `zig build ring-race`, and the gate's by `zig build gate-race`, each guarded by a canary in its own file.** Weakening either without reading ADR 0016 is the failure this exists to stop (ADR 0016, #91).
-- **Every ordering-critical declaration is canaried against its own source**, through `src/canary.zig`: the ring's five atomics, the `std.Io` constructor, `Gate`'s five in `src/clap/gate.zig`, `Pending` in `src/clap/gui.zig`, and `Mailbox` and `Watcher.halt` in `src/gpu/metal/renderer.zig` (#90, #91).
+- **Every ordering-critical declaration is canaried against its own source**, through `src/canary.zig`, which reads a file's own text at comptime and fails `zig build test` if a stated ordering has moved. Fifteen such tests across six files cover the ring, `std.Io`, `Gate`, `Pending`, the editor's counters, `Mailbox`, `Watcher.halt` and the race harnesses' controls; [concurrency and canaries](docs/notes/concurrency-and-canaries.md) is the inventory. Adding a cross-thread declaration without one is the omission this exists to stop (ADR 0016's #91 amendment, #90, #91).
 - **The vertical axis is absolute. The display never rescales itself to the signal, and over-scale rails rather than being hidden or clipped away** (ADR 0017).
 
 ## Structure
 
 ```text
-build.zig                   five artifacts from one core: two libs, the .clap bundle, smoke, two race harnesses
+build.zig                   five artifacts from one core: two libs the .clap assembles from, smoke, two race harnesses
 build.zig.zon               pins Zig 0.16.0, CLAP 1.2.10, zig-objc by content hash
 cmake/                      clap-wrapper integration: the AUv2, and a second .clap CI validates
   CMakeLists.txt
@@ -53,6 +53,7 @@ scripts/
   install-plugins           the one implementation of "copy a bundle and prove it landed"
   smoke-leak-check          wraps the smoke harness in `leaks --atExit` and judges the report
   race-check                runs both arms of a race harness and judges the control first
+  check-doc-budget          refuses this file above 30,000 characters; the budget job runs it
   measure-trace             reads a trace out of a screenshot; the only Python here
   read-provenance           reads the branch and commit back out of a built bundle
   assert-adhoc-signature    CI's guard that the default build stays offline and ad-hoc
@@ -166,14 +167,7 @@ scripts/notarize-installer dist/Fosforo-VERSION.pkg
 
 `scripts/build-installer --unsigned` exercises packaging without a certificate. It cannot be notarized, is named so it cannot be mistaken for a release, and skips the input signature check, which it says out loud.
 
-The credentials `notarytool` needs live in a keychain profile, never on a command line:
-
-```bash
-xcrun notarytool store-credentials "fosforo-notary" \
-  --key ~/path/AuthKey_XXXXXXXX.p8 --key-id XXXXXXXX --issuer XXXXXXXX-...
-```
-
-An App Store Connect API key rather than an app-specific password, because it is scoped, independently revocable, and not the Apple ID password. The `.p8` downloads once and never again, so the copy on disk is the only copy; `.gitignore` covers `*.p8` for that reason.
+The credentials `notarytool` needs live in a keychain profile, never on a command line, and creating one is a one-time step [the signing note](docs/notes/signing-and-notarization.md) spells out.
 
 **The certificates on hand expire 2027-02-01 and replacing them is outstanding** ([#30](https://github.com/cboone/fosforo/issues/30)). They were issued through Xcode under the G1 intermediate rather than G2, which caps both leaves at their issuer's expiry; [signing and notarization](docs/notes/signing-and-notarization.md) has the full diagnosis and the one check that surfaces it. Nothing already signed is at risk, because a secure timestamp outlives the certificate — what stops is signing anything new, and on current sequencing that happens before v0.1.0 is cut. Re-issue from the developer portal rather than Xcode, and do not revoke the superseded pair.
 
@@ -219,9 +213,7 @@ Everything this file used to carry as a flat list of gotchas is in [`docs/notes/
 
 ## Maintaining this file
 
-**This file is loaded into every session in full, and `docs/notes/` is not.** That is the whole basis for deciding where something goes. Claude Code warns above `max(40000, contextWindow * 0.05 * charsPerToken)`, which is 150,000 in a 1M-context session and **40,000 everywhere else**, subagents with a model override included, so 40,000 is the floor to write against rather than the number a generous session reports. `scripts/check-doc-budget` refuses above 30,000 and warns above 27,000, and the `budget` job in `.github/workflows/markdown.yml` runs it on every push and pull request.
-
-It reached 166,639 characters before [#117](https://github.com/cboone/fosforo/issues/117), four times over that floor, and not through one bad commit: 139 commits had touched it, nearly every issue closing with a `docs: record …` commit appending to a flat gotchas list. So the question when adding something here is not whether it is true and worth recording. It is:
+**This file is loaded into every session in full, and `docs/notes/` is not.** That is the whole basis for deciding where something goes. **`scripts/check-doc-budget` refuses above 30,000 characters and warns above 27,000**, and the `budget` job in `.github/workflows/markdown.yml` runs it on every push and pull request; that script's own header carries the formula those thresholds come from and the history that set them. This file reached 166,639 characters before [#117](https://github.com/cboone/fosforo/issues/117) by appending to a flat gotchas list, so the question when adding something here is not whether it is true and worth recording. It is:
 
 - **Does an agent that has not opened anything need it?** A rule whose omission causes silent damage or a wrong pass belongs in [Rules](#rules). A rule whose omission causes a compile error or a failing test does not; the compiler is already telling them.
 - **Is it a settled decision?** Then it is an ADR, and [Non-negotiables](#non-negotiables) gets one line pointing at it.
