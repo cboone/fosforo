@@ -4,7 +4,7 @@
 //! operations with them. Three of those this project needs and takes from here;
 //! `Mutex` it does not, for reasons recorded in ADR 0015 and restated at the two
 //! sites that hand-roll what `Io` would otherwise supply (`Gate` in
-//! `clap/gui.zig`, the libdispatch semaphore in `gpu/metal/renderer.zig`).
+//! `clap/gate.zig`, the libdispatch semaphore in `gpu/metal/renderer.zig`).
 //!
 //! The third arrived with #61 and is two things rather than one: `Dir.statFile`
 //! and `Dir.readFile`, for the shader a debug build reloads, and

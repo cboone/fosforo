@@ -4100,7 +4100,8 @@ test "a scale no integer can hold is saturated rather than illegal" {
 // The canaries.
 //
 // Two mechanisms here run across threads and **neither has a backstop anywhere**.
-// `Gate` and `Pending` in `gui.zig` at least have #91 ahead of them; the watcher
+// `Gate` in `clap/gate.zig` came out of #91 with an arm, and `Pending` in
+// `clap/gui.zig` came out of it with a measured answer for why it gets none; the watcher
 // thread is deliberately outside any sanitizer arm, and `Mailbox` carries three
 // Metal object pointers, so racing it would need a device on a Linux host. This
 // is what they get, and it reads the source as text and proves nothing about
