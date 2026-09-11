@@ -228,7 +228,7 @@ Phase 2's issues were filed on that rule when phase 1 closed, and phase 3's when
 
 **A milestone marks what has to close before that phase's exit criteria are met, not what is one of its numbered steps.** Those are different sets, and the difference is why five issues on the phase 3 milestone carry a step of "none": [#62](https://github.com/cboone/fosforo/issues/62) is what makes "stable under sample-rate change" true, [#77](https://github.com/cboone/fosforo/issues/77) closed a gap [#61](https://github.com/cboone/fosforo/issues/61) opened by making the shader reloadable, [#79](https://github.com/cboone/fosforo/issues/79) and [#80](https://github.com/cboone/fosforo/issues/80) both came out of verifying [#60](https://github.com/cboone/fosforo/issues/60), and [#83](https://github.com/cboone/fosforo/issues/83) came out of verifying [#57](https://github.com/cboone/fosforo/issues/57). Reading a milestone as a list of steps understates a phase's remaining work by exactly the issues its own verification produced, which in this phase is most of them.
 
-**Twelve open issues sit on no milestone, and that is deliberate.** No phase's exit criteria depend on any of them. They fall into five groups.
+**Thirteen open issues sit on no milestone, and that is deliberate.** No phase's exit criteria depend on any of them. They fall into six groups.
 
 **Two are carried in the risks table below instead**, which is where a reader who
 does not open the tracker will find them:
@@ -293,6 +293,20 @@ makes it the only host input on that path that is neither refused nor bounded
 while every other one is refused with a comment saying why an assertion would not
 do. It is on no milestone because ADR 0010's structural guarantee is not one of
 phase 3's exit criteria, not because it is small.
+
+**One is an instrument measuring one term of a two-term sum.**
+[#133](https://github.com/cboone/fosforo/issues/133) is `scripts/check-doc-budget`
+weighing `AGENTS.md` alone, when what it exists to protect is everything an agent
+loads before work starts, and the user-level `CLAUDE.md` outside this repository
+is loaded too. It came out of an audit of roughly 110 repositories, in which this
+is the only one past the 40,000-character floor the script's own header names.
+**Both of its figures want re-measuring before either is quoted again**: it
+reports 26,942 for `AGENTS.md`, against 26,609 when it was filed and 26,882
+today, and 16,649 for the user-level file against 23,703, so the combined total
+is 50,585 rather than 43,591 and the overage is 26% rather than 9%. That
+strengthens the finding. It is on no milestone because no phase's exit criteria
+mention this repository's own documentation, and it is in the free lane, since a
+check script contends for nothing.
 
 **The group that used to sit here is empty, and the shape is worth keeping.**
 Checks that are configured, are believed to be running, and silently are not have
@@ -410,11 +424,11 @@ That rule earns its place here rather than being process for its own sake, becau
 | **The install path and a host**   | **Choice.** `CLAP_PATH` works and is deliberately not used, for the reasons two paragraphs below, so the loop is one `zig build install-clap` against one terminal REAPER and there is one of each                                                                            | #59, #83, #126, #53, and #84's headroom measurement                                                       |
 | **The GPU and the window server** | **Hardware.** Two harnesses cannot both open windows and time each other's frames. It binds independently of any host, which is why #69 is exclusive while touching no DAW at all                                                                                             | #69, #98 if its seam decision needs a control run, plus `smoke-appkit` and `smoke-leaks` inside any issue |
 
-**Everything else overlaps freely, and that is where a second stream belongs.** `zig build smoke-gpu` and `smoke-trace`, both of which acquire a device and open no window; `zig build test`, `validate-shaders` and compiling; and documentation. Today that is [#128](https://github.com/cboone/fosforo/issues/128), [#129](https://github.com/cboone/fosforo/issues/129), [#131](https://github.com/cboone/fosforo/issues/131), [#130](https://github.com/cboone/fosforo/issues/130), [#125](https://github.com/cboone/fosforo/issues/125), [#80](https://github.com/cboone/fosforo/issues/80), [#62](https://github.com/cboone/fosforo/issues/62)'s algorithm half, and [#30](https://github.com/cboone/fosforo/issues/30). #30 belongs there despite re-running the three release scripts and reaching Apple's notary service: what puts it there is that it contends for none of the three above, not that it does nothing on this machine, which is what this paragraph used to claim.
+**Everything else overlaps freely, and that is where a second stream belongs.** `zig build smoke-gpu` and `smoke-trace`, both of which acquire a device and open no window; `zig build test`, `validate-shaders` and compiling; and documentation. Today that is [#128](https://github.com/cboone/fosforo/issues/128), [#129](https://github.com/cboone/fosforo/issues/129), [#131](https://github.com/cboone/fosforo/issues/131), [#130](https://github.com/cboone/fosforo/issues/130), [#125](https://github.com/cboone/fosforo/issues/125), [#80](https://github.com/cboone/fosforo/issues/80), [#62](https://github.com/cboone/fosforo/issues/62)'s algorithm half, [#133](https://github.com/cboone/fosforo/issues/133), and [#30](https://github.com/cboone/fosforo/issues/30). #30 belongs there despite re-running the three release scripts and reaching Apple's notary service: what puts it there is that it contends for none of the three above, not that it does nothing on this machine, which is what this paragraph used to claim.
 
 **Two of those need a capture and only one needs a host to make it**, which is the distinction to keep. #130 is checkable against any capture that happens to be on hand, since the half pixel it corrects is arithmetic that does not depend on what was drawn. #126 is not, and `verification/` being gitignored is the reason rather than an aside: whatever is there is one session's working artifacts, the three on this machine when this was written all predated #57 and #58, and the brightness range #126 exists to accommodate is by definition not in a capture taken before #58. So it needs a fresh one, which puts it in the host lane rather than this one.
 
-**The free lane is no longer the wide one, and that reversed rather than drifted.** It held eleven issues while the verification program filled it and holds eight now, against nine across the three exclusive lanes. The rule two paragraphs down, to prefer an unblocked issue in the free lane over a blocked one in an exclusive lane, is therefore worth about what it was worth before that program was filed. The program is what made the lane wide, and finishing it is what made it narrow again; neither is a reason to loosen a constraint.
+**The free lane is no longer the wide one, and that reversed rather than drifted.** It held eleven issues while the verification program filled it and holds nine now, level with the nine across the three exclusive lanes. The rule two paragraphs down, to prefer an unblocked issue in the free lane over a blocked one in an exclusive lane, is therefore worth about what it was worth before that program was filed. The program is what made the lane wide, and finishing it is what made it narrow again; neither is a reason to loosen a constraint.
 
 **Do not start an issue whose only blocker is contention.** That is a working rule rather than a fact about the machine, and it is stated separately for that reason. An issue waiting on a resource is not partial progress; it is work in progress that cannot be finished, and this phase's rule that code and verification land together means a branch that cannot verify cannot merge. Prefer an unblocked issue in the free lane over a blocked one in an exclusive lane, even when the blocked one is more interesting.
 
