@@ -2,7 +2,7 @@
 
 Read [build system](../docs/notes/build-system.md) before editing wrappers, exported entry points, identifiers or bundle metadata, and [signing and notarization](../docs/notes/signing-and-notarization.md) before signing changes.
 
-- Zig authors the CLAP; CMake only integrates clap-wrapper. Preserve permanent CLAP and Audio Unit identity and the separate display-name rules.
+- Zig authors the CLAP; CMake invokes Zig's `impl` target for the implementation archive and integrates clap-wrapper for the plugin formats. Preserve permanent CLAP and Audio Unit identity and the separate display-name rules.
 - From the repository root, use `scripts/build-audio-unit`, which configures an absent build directory and builds `fosforo_all`, not only `fosforo_auv2`.
 - CMake builds the Zig implementation archive under its own prefix. It must not overwrite or re-sign the separate Zig-built bundle.
 - Keep default signing ad-hoc and offline. A cold CMake configure downloads clap-wrapper and its SDK dependencies; release signatures require the documented local workflow.

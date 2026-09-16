@@ -20,12 +20,12 @@ Read the relevant [ADRs](docs/adr/) before changing architecture. Supersede sett
 
 ## Rules
 
-- Confirm bundle hash and provenance before trusting host results. `install-*` builds what it installs and prints what landed. All other steps stay in the worktree. Use one host stream at a time: the shared plugin folder and window server are exclusive.
+- Confirm bundle hash and provenance before trusting host results. `zig build install-*` builds what it installs and prints what landed. All other steps stay in the worktree. Use one host stream at a time: the shared plugin folder and window server are exclusive.
 - For REAPER diagnostics, redirect stderr with `2>&1` and use `grep --line-buffered`; otherwise lines are missed or misleadingly delayed. Read [diagnostics](docs/notes/reading-diagnostics.md) before running a host.
 - Use the worktree's own `scripts/measure-trace`. Its `--periods` measurement is unreliable for velocity-weighted captures; centroids are unaffected. Verify at 48 kHz and read [capture measurement](docs/notes/measuring-a-capture.md) before quoting numbers.
 - Captures belong in ignored `verification/`, never in commits. Commit measured results, not session captures.
 - `zig build` does not rebuild the smoke executable. Run the named smoke step to ensure the harness matches the source.
-- Run `npm ci`, then Prettier, then markdownlint. Never pass `--fix` to markdownlint-cli2 here; it rewrites all configured globs, including completed plans. Use `npm run format`, then `npm run lint:md`.
+- Run `npm ci`, then Prettier, then `markdownlint-cli2`. Never pass `--fix` to `markdownlint-cli2` here; it rewrites all configured globs, including completed plans. Use `npm run format`, then `npm run lint:md`.
 - Select shell files with `git ls-files`, never a recursive shfmt tree walk, which reaches vendored build scripts. Read [linters](docs/notes/linters.md) before changing lint commands.
 - When correcting a measured figure, search the old value across current repository docs and code. Completed plans are historical records: never update their figures, citations or line numbers. Notes are living and corrected in place.
 - Do not put CI job/run counts in prose. Anchor measurements to a run ID or omit them.
@@ -34,6 +34,7 @@ Read the relevant [ADRs](docs/adr/) before changing architecture. Supersede sett
 
 ```bash
 zig build                  # Zig-built CLAP; no CMake
+zig fmt --check build.zig src/
 zig build test
 zig build test-safe
 zig build test-release
