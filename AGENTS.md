@@ -27,7 +27,7 @@ Read the relevant [ADRs](docs/adr/) before changing architecture. Supersede sett
 - `zig build` does not rebuild the smoke executable. Run the named smoke step to ensure the harness matches the source.
 - Run `npm ci`, then Prettier, then `markdownlint-cli2`. Never pass `--fix` to `markdownlint-cli2` here; it rewrites all configured globs, including completed plans. Use `npm run format`, then `npm run lint:md`.
 - Select shell files with `git ls-files`, never a recursive shfmt tree walk, which reaches vendored build scripts. Read [linters](docs/notes/linters.md) before changing lint commands.
-- When correcting a measured figure, search the old value across current repository docs and code. Completed plans are historical records: never update their figures, citations or line numbers. Notes are living and corrected in place.
+- When correcting a measured figure, search the old value across the repository, including source/code, docs, ADRs, comments and workflows. Completed plans are historical records: never update their figures, citations or line numbers. Notes are living and corrected in place.
 - Do not put CI job/run counts in prose. Anchor measurements to a run ID or omit them.
 
 ## Development
