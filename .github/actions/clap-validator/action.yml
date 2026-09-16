@@ -36,7 +36,7 @@ runs:
     # a different commit.
     - name: Restore the cached validator
       id: cache
-      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}/clap-validator
         key: clap-validator-${{ runner.os }}-${{ runner.arch }}-${{ inputs.validator-rev }}-rust${{ inputs.rust-version }}
@@ -63,7 +63,7 @@ runs:
     # loser's save logs a warning and does not fail, so the job stays green.
     - name: Cache the built validator
       if: steps.cache.outputs.cache-hit != 'true'
-      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}/clap-validator
         key: ${{ steps.cache.outputs.cache-primary-key }}
