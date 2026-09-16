@@ -143,7 +143,7 @@ src/
     displaylink.zig     CVDisplayLink and its monotonic clock
 ```
 
-Seven of those arrived after this section was first written and each is annotated with what put it there, because the block is a claim about the present rather than a record of phase 0. `AGENTS.md`'s Structure section carries the same list; when the two disagree, that one is the copy a reader has already loaded.
+This source-layout list describes the current implementation. For operating rules, use the root [AGENTS.md](../../../AGENTS.md) and the scoped [source instructions](../../../src/AGENTS.md); specialized implementation guidance lives in the [notes index](../../notes/README.md).
 
 The extensions are flat files rather than a `clap/ext/` directory, and there are
 three of them rather than five: `audio-ports`, `state` and `gui`. Those are the
