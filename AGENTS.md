@@ -68,6 +68,6 @@ Read each scoped file before touching that directory, including from a root sess
 
 ## Releasing
 
-Read [signing and notarization](docs/notes/signing-and-notarization.md) first. Releases are one signed, notarized, stapled `.pkg`, built locally, never in public CI. Run `scripts/build-release-bundles`, `scripts/build-installer`, then `scripts/notarize-installer`; identities come from environment variables and notarization credentials from a keychain profile. The note records certificate expiry and replacement requirements. Do not revoke superseded certificates.
+Read [signing and notarization](docs/notes/signing-and-notarization.md) first. Releases are one signed, notarized, stapled `.pkg`, built locally, never in public CI. Run `scripts/build-release-bundles`, `scripts/build-installer`, then `scripts/notarize-installer dist/Fosforo-VERSION.pkg`, replacing `VERSION` with the built package's version; identities come from environment variables and notarization credentials from a keychain profile. The note records certificate expiry and replacement requirements. Do not revoke superseded certificates.
 
 Keep this root an operating summary. Specialized detail belongs in existing living notes and paired scoped instructions. Measure every global-plus-root-plus-nested chain against 32 KiB; do not raise the limit to accommodate growth.
