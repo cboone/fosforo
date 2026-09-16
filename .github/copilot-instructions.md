@@ -1,6 +1,6 @@
 # GitHub Copilot Instructions for fosforo
 
-For full project conventions, see AGENTS.md in the repository root. It carries the rules and a pointer table; the depth behind each pointer is in `docs/notes/`, indexed by `docs/notes/README.md`. When a review turns on how some part of this project actually behaves, the note is where the measurement is.
+For full project conventions, see [AGENTS.md](../AGENTS.md) in the repository root. It carries the operating rules and links to scoped `AGENTS.md` files; read each scoped file before working in its directory. Specialized implementation guidance and measurements live in `docs/notes/`, indexed by [docs/notes/README.md](../docs/notes/README.md).
 
 ## PR Review
 
