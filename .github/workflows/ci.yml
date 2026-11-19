@@ -188,6 +188,14 @@ jobs:
       - name: Run unit tests in the mode that ships
         run: zig build test-release
 
+      - uses: astral-sh/setup-uv@ed21f2f24f8dd64503750218de024bcf64c7250a # v7.1.5
+        with:
+          version: "0.13.7"
+          enable-cache: false
+
+      - name: Compare script and Zig measurement helpers
+        run: uv run --with pillow --with numpy python scripts/test-measure-trace.py -v
+
   # Shaders compile at runtime from embedded source, so the build deliberately
   # does not depend on the Metal toolchain (ADR 0009). This job installs it
   # solely to type-check them, which is why it is separate from `ci` above.
@@ -649,12 +657,11 @@ jobs:
       - name: Lint shell scripts
         run: git ls-files -z | xargs -0 shfmt -f | xargs -r shellcheck
 
-  # The one Python file here, scripts/measure-trace, which nothing else can see.
-  # The `shell` job above selects with `shfmt -f`, which finds shell files by
-  # shebang, and that file's is `env -S uv run ... python`: measured rather than
-  # assumed, `git ls-files -z | xargs -0 shfmt -f` does not return that file.
-  # So without this job the tool every number in #38's verification came out of
-  # is the only unchecked file in the repository. Deliberately not a count of
+  # Python helpers and their parity test are excluded from the shell job.
+  # `shfmt -f` selects shell files by shebang; measure-trace uses
+  # `env -S uv run ... python`.
+  # `git ls-files -z | xargs -0 shfmt -f` does not return that file.
+  # This job lints the measurement script and its Python parity test. Deliberately not a count of
   # what it does return: the last one said twelve and went stale the moment
   # scripts/check-doc-budget landed, and the measurement that matters here is
   # the exclusion rather than the total.
@@ -673,8 +680,9 @@ jobs:
   # Python by extension and this file has none. `ruff.toml`'s `extend-include` is
   # what makes it visible at all, and a bare `measure-trace` there matches
   # nothing while reporting success; see that file for the measurement. The tell
-  # is in the log rather than in an assertion: `ruff format --check` prints the
-  # number of files it read, and that number must be 1.
+  # is discovery: `ruff check --show-files` lists paths. Confirm it includes
+  # measure-trace and test-measure-trace.py. `ruff format --check` reports only
+  # a count for already-formatted files.
   #
   # Unmeasured, unlike every other ceiling in this workflow, because the job has
   # never run. 3 is the floor `shell` and `typos` share and this is structurally

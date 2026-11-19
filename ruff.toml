@@ -1,4 +1,4 @@
-# ruff's configuration, for the one Python file here: scripts/measure-trace.
+# Ruff's configuration for scripts/measure-trace and its Python parity test.
 #
 # Deliberately not a pyproject.toml. There is no Python package here and never
 # will be; this configures a tool, not a distribution.
@@ -9,11 +9,10 @@
 # [measure-trace] section in .editorconfig is what stops an editor fighting it
 # before ruff has run.
 
-# **Load-bearing, and the `**/` is load-bearing within it.** ruff discovers Python
-# by extension and this file has none, deliberately, matching every other script
-# in scripts/. Without an include entry a walk of the tree finds no Python at all
-# and both `ruff check` and `ruff format --check` exit zero having read nothing:
-# a green job that checked no file.
+# Keep `**/`: Ruff discovers Python by extension, and measure-trace has none.
+# Without this include entry, Ruff discovers the .py parity test but silently
+# omits the measurement script.
+# Verify both discovered paths with `ruff check --show-files`.
 #
 # A bare `measure-trace` is that same silent pass, and it is the spelling anyone
 # would write first. ruff matches these globs with a literal path separator, so a

@@ -1,0 +1,11 @@
+--- a/src/gpu/measure.zig
++++ b/src/gpu/measure.zig
+@@ -392,7 +392,7 @@
+ 
+ /// Halfway between zero and the highest lit row, in row-index coordinates.
+ pub fn periodBand(height: usize, peak: usize) f32 {
+-    return (centreRow(height) + @as(f32, @floatFromInt(peak))) / 2.0;
++    return (@as(f32, @floatFromInt(height)) / 2.0 + @as(f32, @floatFromInt(peak))) / 2.0;
+ }
+ 
+ // ---------------------------------------------------------------------------

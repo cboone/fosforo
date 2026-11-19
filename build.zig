@@ -65,6 +65,22 @@ pub fn build(b: *std.Build) void {
 
     const core = coreAt(b, target, provenance, optimize);
 
+    // Python supplies executed helper results; this separate step keeps the
+    // ordinary unit suite independent of a Python environment.
+    if (b.option([]const u8, "measurement-cases", "Generated measurement parity cases")) |path| {
+        const mod = core.module(.{ .root = "src/measure_parity.zig" });
+        mod.addAnonymousImport("cases", .{ .root_source_file = .{ .cwd_relative = path } });
+        const parity = b.addTest(.{
+            .name = "measurement-parity",
+            .root_module = mod,
+            .filters = &.{"derived rows and period runs agree with the script"},
+        });
+        b.step("test-measure", "Compare measurement helpers with generated Python results")
+            .dependOn(&b.addRunArtifact(parity).step);
+        b.step("build-measure", "Compile the measurement parity fixture without running it")
+            .dependOn(&b.addInstallArtifact(parity, .{}).step);
+    }
+
     // Zig's own step, re-described. Its default text is "Copy build artifacts to
     // prefix path", which is accurate and is read next to two project steps whose
     // names also begin with "install" and which write somewhere else entirely. The

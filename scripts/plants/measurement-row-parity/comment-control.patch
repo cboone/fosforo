@@ -1,0 +1,11 @@
+--- a/scripts/measure-trace
++++ b/scripts/measure-trace
+@@ -636,7 +636,7 @@
+ 
+ 
+ def centre_row(height):
+-    """The continuous row position of zero, matching measure.centreRow."""
++    """The continuous row position of zero, matching the Zig centreRow helper."""
+     return height / 2 - 0.5
+ 
+ 

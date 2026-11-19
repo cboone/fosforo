@@ -635,6 +635,36 @@ def lit_rows(img, threshold, channel):
     return top, bottom, any_lit
 
 
+def centre_row(height):
+    """The continuous row position of zero, matching measure.centreRow."""
+    return height / 2 - 0.5
+
+
+def rail_rows(height):
+    """Top and bottom rail positions in row-index coordinates."""
+    inset = (1.0 - RAIL) * height / 2
+    return inset - 0.5, height - inset - 0.5
+
+
+def period_band(height, peak):
+    """Halfway between zero and the highest lit row, matching measure.periodBand."""
+    return (centre_row(height) + peak) / 2
+
+
+def periods(top, any_lit, height):
+    """Count runs reaching the inclusive half-amplitude band; dark columns split runs."""
+    if not any_lit.any():
+        return 0
+    band = period_band(height, int(top[any_lit].min()))
+    runs, inside = 0, False
+    for row, lit in zip(top, any_lit, strict=True):
+        up = lit and row <= band
+        if up and not inside:
+            runs += 1
+        inside = up
+    return runs
+
+
 def implied_sample(row, height):
     """Invert the documented mapping: row -> NDC -> sample value.
 
@@ -894,13 +924,11 @@ def main():
     # The bottom is derived from the same expression rather than as
     # `height - rail_row`, which would put the correction on the wrong side and
     # give 1069.7.
-    rail_inset = (1.0 - RAIL) * height / 2
-    rail_row = rail_inset - 0.5
-    rail_row_bottom = height - rail_inset - 0.5
+    rail_row, rail_row_bottom = rail_rows(height)
 
     print(f"image            {width} x {height}")
     print(f"columns lit      {int(any_lit.sum())} of {width}")
-    print(f"centre row       {height / 2:.1f}")
+    print(f"centre row       {centre_row(height):.1f}")
     print(f"rail rows        {rail_row:.1f} / {rail_row_bottom:.1f}")
     # Kept visible rather than dropped with the guard it used to gate. It is the
     # number every pre-#55 measurement was taken under, so anyone holding #38's
@@ -985,14 +1013,7 @@ def main():
     if args.periods:
         # One run per period, thresholded well above centre so a steep crossing
         # cannot be mistaken for a peak.
-        band = (height / 2 + peak_top) / 2
-        runs, inside = 0, False
-        for x in range(width):
-            up = any_lit[x] and top[x] < band
-            if up and not inside:
-                runs += 1
-            inside = up
-        print(f"periods          {runs}")
+        print(f"periods          {periods(top, any_lit, height)}")
 
     if args.explain:
         explain_ray(deviation, examined)

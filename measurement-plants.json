@@ -1,0 +1,377 @@
+{
+  "inputs": [
+    "build.zig",
+    "build.zig.zon",
+    "scripts/measure-trace",
+    "scripts/plants/measurement-row-parity/check.sh",
+    "scripts/plants/measurement-row-parity/cli-centre-half-pixel.patch",
+    "scripts/plants/measurement-row-parity/cli-period-counter.patch",
+    "scripts/plants/measurement-row-parity/comment-control.patch",
+    "scripts/plants/measurement-row-parity/judge-band.patch",
+    "scripts/plants/measurement-row-parity/judge-bottom.patch",
+    "scripts/plants/measurement-row-parity/judge-centre.patch",
+    "scripts/plants/measurement-row-parity/judge-periods.patch",
+    "scripts/plants/measurement-row-parity/judge-rail.patch",
+    "scripts/plants/measurement-row-parity/python-bottom-half-pixel.patch",
+    "scripts/plants/measurement-row-parity/python-centre-half-pixel.patch",
+    "scripts/plants/measurement-row-parity/python-exact-tie.patch",
+    "scripts/plants/measurement-row-parity/python-period-band.patch",
+    "scripts/plants/measurement-row-parity/python-rail-half-pixel.patch",
+    "scripts/plants/measurement-row-parity/setup.sh",
+    "scripts/plants/measurement-row-parity/zig-centre-half-pixel.patch",
+    "scripts/plants/measurement-row-parity/zig-period-band.patch",
+    "scripts/test-measure-trace.py",
+    "shaders/AGENTS.md",
+    "shaders/scope.metal",
+    "src/AGENTS.md",
+    "src/build_info.zig",
+    "src/canary.zig",
+    "src/clap/c.zig",
+    "src/clap/clap_all.h",
+    "src/clap/gate.zig",
+    "src/clap/gui.zig",
+    "src/clap/log.zig",
+    "src/clap/plugin.zig",
+    "src/clap/state.zig",
+    "src/dsp/ring.zig",
+    "src/gate_race.zig",
+    "src/gpu/iface.zig",
+    "src/gpu/measure.zig",
+    "src/gpu/metal/reload.zig",
+    "src/gpu/metal/renderer.zig",
+    "src/gpu/metal/shader.zig",
+    "src/gpu/palette.zig",
+    "src/gpu/verdict.zig",
+    "src/main.zig",
+    "src/measure_parity.zig",
+    "src/platform/displaylink.zig",
+    "src/platform/io.zig",
+    "src/platform/objc.zig",
+    "src/platform/view.zig",
+    "src/ring_race.zig",
+    "src/smoke.zig"
+  ],
+  "setup": "scripts/plants/measurement-row-parity/setup.sh",
+  "check": "scripts/plants/measurement-row-parity/check.sh",
+  "timeout": 120,
+  "green": {
+    "exit_code": 0,
+    "contains": [
+      "Ran 2 tests",
+      "\nOK\n"
+    ],
+    "excludes": [
+      "ERROR:",
+      "skipped",
+      "SKIP",
+      "FAIL:"
+    ]
+  },
+  "variants": [
+    {
+      "name": "zig-centre-half-pixel",
+      "patch": "scripts/plants/measurement-row-parity/zig-centre-half-pixel.patch",
+      "red": {
+        "exit_code": 1,
+        "contains": [
+          "FAIL: test_derived_helpers_agree",
+          "Ran 2 tests",
+          "FAILED (failures=1)"
+        ],
+        "excludes": [
+          "ERROR:",
+          "(skipped=",
+          "...SKIP",
+          "error:",
+          "CalledProcessError",
+          "SyntaxError",
+          "ImportError"
+        ]
+      }
+    },
+    {
+      "name": "python-centre-half-pixel",
+      "patch": "scripts/plants/measurement-row-parity/python-centre-half-pixel.patch",
+      "red": {
+        "exit_code": 1,
+        "contains": [
+          "FAIL: test_derived_helpers_agree",
+          "Ran 2 tests",
+          "FAILED (failures=1)"
+        ],
+        "excludes": [
+          "ERROR:",
+          "(skipped=",
+          "...SKIP",
+          "error:",
+          "CalledProcessError",
+          "SyntaxError",
+          "ImportError"
+        ]
+      }
+    },
+    {
+      "name": "python-period-band",
+      "patch": "scripts/plants/measurement-row-parity/python-period-band.patch",
+      "red": {
+        "exit_code": 1,
+        "contains": [
+          "FAIL: test_derived_helpers_agree",
+          "Ran 2 tests",
+          "FAILED (failures=1)"
+        ],
+        "excludes": [
+          "ERROR:",
+          "(skipped=",
+          "...SKIP",
+          "error:",
+          "CalledProcessError",
+          "SyntaxError",
+          "ImportError"
+        ]
+      }
+    },
+    {
+      "name": "zig-period-band",
+      "patch": "scripts/plants/measurement-row-parity/zig-period-band.patch",
+      "red": {
+        "exit_code": 1,
+        "contains": [
+          "FAIL: test_derived_helpers_agree",
+          "Ran 2 tests",
+          "FAILED (failures=1)"
+        ],
+        "excludes": [
+          "ERROR:",
+          "(skipped=",
+          "...SKIP",
+          "error:",
+          "CalledProcessError",
+          "SyntaxError",
+          "ImportError"
+        ]
+      }
+    },
+    {
+      "name": "python-exact-tie",
+      "patch": "scripts/plants/measurement-row-parity/python-exact-tie.patch",
+      "red": {
+        "exit_code": 1,
+        "contains": [
+          "FAIL: test_derived_helpers_agree",
+          "Ran 2 tests",
+          "FAILED (failures=1)"
+        ],
+        "excludes": [
+          "ERROR:",
+          "(skipped=",
+          "...SKIP",
+          "error:",
+          "CalledProcessError",
+          "SyntaxError",
+          "ImportError"
+        ]
+      }
+    },
+    {
+      "name": "python-rail-half-pixel",
+      "patch": "scripts/plants/measurement-row-parity/python-rail-half-pixel.patch",
+      "red": {
+        "exit_code": 1,
+        "contains": [
+          "FAIL: test_derived_helpers_agree",
+          "Ran 2 tests",
+          "FAILED (failures=1)"
+        ],
+        "excludes": [
+          "ERROR:",
+          "(skipped=",
+          "...SKIP",
+          "error:",
+          "CalledProcessError",
+          "SyntaxError",
+          "ImportError"
+        ]
+      }
+    },
+    {
+      "name": "cli-centre-half-pixel",
+      "patch": "scripts/plants/measurement-row-parity/cli-centre-half-pixel.patch",
+      "red": {
+        "exit_code": 1,
+        "contains": [
+          "FAIL: test_cli_uses_helpers",
+          "Ran 2 tests",
+          "FAILED (failures=1)"
+        ],
+        "excludes": [
+          "ERROR:",
+          "(skipped=",
+          "...SKIP",
+          "error:",
+          "CalledProcessError",
+          "SyntaxError",
+          "ImportError"
+        ]
+      }
+    },
+    {
+      "name": "cli-period-counter",
+      "patch": "scripts/plants/measurement-row-parity/cli-period-counter.patch",
+      "red": {
+        "exit_code": 1,
+        "contains": [
+          "FAIL: test_cli_uses_helpers",
+          "Ran 2 tests",
+          "FAILED (failures=1)"
+        ],
+        "excludes": [
+          "ERROR:",
+          "(skipped=",
+          "...SKIP",
+          "error:",
+          "CalledProcessError",
+          "SyntaxError",
+          "ImportError"
+        ]
+      }
+    },
+    {
+      "name": "python-bottom-half-pixel",
+      "patch": "scripts/plants/measurement-row-parity/python-bottom-half-pixel.patch",
+      "red": {
+        "exit_code": 1,
+        "contains": [
+          "FAIL: test_derived_helpers_agree",
+          "Ran 2 tests",
+          "FAILED (failures=1)"
+        ],
+        "excludes": [
+          "ERROR:",
+          "(skipped=",
+          "...SKIP",
+          "error:",
+          "CalledProcessError",
+          "SyntaxError",
+          "ImportError"
+        ]
+      }
+    },
+    {
+      "name": "judge-centre",
+      "patch": "scripts/plants/measurement-row-parity/judge-centre.patch",
+      "red": {
+        "exit_code": 1,
+        "contains": [
+          "FAIL: test_derived_helpers_agree",
+          "TestExpectedError",
+          "Ran 2 tests",
+          "FAILED (failures=1)"
+        ],
+        "excludes": [
+          "ERROR:",
+          "(skipped=",
+          "...SKIP",
+          "error:",
+          "CalledProcessError",
+          "SyntaxError",
+          "ImportError"
+        ]
+      }
+    },
+    {
+      "name": "judge-rail",
+      "patch": "scripts/plants/measurement-row-parity/judge-rail.patch",
+      "red": {
+        "exit_code": 1,
+        "contains": [
+          "FAIL: test_derived_helpers_agree",
+          "TestExpectedError",
+          "Ran 2 tests",
+          "FAILED (failures=1)"
+        ],
+        "excludes": [
+          "ERROR:",
+          "(skipped=",
+          "...SKIP",
+          "error:",
+          "CalledProcessError",
+          "SyntaxError",
+          "ImportError"
+        ]
+      }
+    },
+    {
+      "name": "judge-bottom",
+      "patch": "scripts/plants/measurement-row-parity/judge-bottom.patch",
+      "red": {
+        "exit_code": 1,
+        "contains": [
+          "FAIL: test_derived_helpers_agree",
+          "TestExpectedError",
+          "Ran 2 tests",
+          "FAILED (failures=1)"
+        ],
+        "excludes": [
+          "ERROR:",
+          "(skipped=",
+          "...SKIP",
+          "error:",
+          "CalledProcessError",
+          "SyntaxError",
+          "ImportError"
+        ]
+      }
+    },
+    {
+      "name": "judge-band",
+      "patch": "scripts/plants/measurement-row-parity/judge-band.patch",
+      "red": {
+        "exit_code": 1,
+        "contains": [
+          "FAIL: test_derived_helpers_agree",
+          "TestExpectedError",
+          "Ran 2 tests",
+          "FAILED (failures=1)"
+        ],
+        "excludes": [
+          "ERROR:",
+          "(skipped=",
+          "...SKIP",
+          "error:",
+          "CalledProcessError",
+          "SyntaxError",
+          "ImportError"
+        ]
+      }
+    },
+    {
+      "name": "judge-periods",
+      "patch": "scripts/plants/measurement-row-parity/judge-periods.patch",
+      "red": {
+        "exit_code": 1,
+        "contains": [
+          "FAIL: test_derived_helpers_agree",
+          "TestExpectedError",
+          "Ran 2 tests",
+          "FAILED (failures=1)"
+        ],
+        "excludes": [
+          "ERROR:",
+          "(skipped=",
+          "...SKIP",
+          "error:",
+          "CalledProcessError",
+          "SyntaxError",
+          "ImportError"
+        ]
+      }
+    }
+  ],
+  "controls": [
+    {
+      "name": "comment-control",
+      "patch": "scripts/plants/measurement-row-parity/comment-control.patch"
+    }
+  ]
+}

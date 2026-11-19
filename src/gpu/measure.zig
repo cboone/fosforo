@@ -390,6 +390,11 @@ pub fn centreRow(height: usize) f32 {
     return @as(f32, @floatFromInt(height)) / 2.0 - 0.5;
 }
 
+/// Halfway between zero and the highest lit row, in row-index coordinates.
+pub fn periodBand(height: usize, peak: usize) f32 {
+    return (centreRow(height) + @as(f32, @floatFromInt(peak))) / 2.0;
+}
+
 // ---------------------------------------------------------------------------
 // What one segment deposits
 // ---------------------------------------------------------------------------
@@ -466,8 +471,7 @@ pub fn segmentEnergy(len_px: f32, half_width_px: f32) f32 {
 pub fn periods(image: Image, threshold: f32) usize {
     const peak = (extremes(image, threshold) orelse return 0).top;
 
-    const centre = centreRow(image.height);
-    const band = (centre + @as(f32, @floatFromInt(peak))) / 2.0;
+    const band = periodBand(image.height, peak);
 
     var count: usize = 0;
     var inside = false;

@@ -1,0 +1,10 @@
+--- a/src/measure_parity.zig
++++ b/src/measure_parity.zig
+@@ -11,7 +11,6 @@
+         @as(f32, @floatFromInt(row.height - 1)) - measure.railRow(row.height),
+         0.0005,
+     );
+-    try std.testing.expectEqual(row.band, measure.periodBand(row.height, row.peak));
+ }
+ 
+ fn checkPeriods(image: cases.Image) !void {
