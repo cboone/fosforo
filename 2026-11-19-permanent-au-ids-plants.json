@@ -1,0 +1,110 @@
+{
+  "inputs": [
+    ".github/workflows/ci.yml",
+    "build.zig",
+    "build.zig.zon",
+    "cmake/CMakeLists.txt",
+    "cmake/entry.cpp",
+    "cmake/entry.h",
+    "cmake/narrow-au-resource-usage",
+    "cmake/set-au-display-name",
+    "macos/Info.plist",
+    "scripts/build-audio-unit",
+    "scripts/measure-trace",
+    "scripts/read-provenance",
+    "shaders/scope.metal",
+    "src/build_info.zig",
+    "src/canary.zig",
+    "src/clap/c.zig",
+    "src/clap/clap_all.h",
+    "src/clap/gate.zig",
+    "src/clap/gui.zig",
+    "src/clap/log.zig",
+    "src/clap/plugin.zig",
+    "src/clap/state.zig",
+    "src/dsp/ring.zig",
+    "src/gate_race.zig",
+    "src/gpu/iface.zig",
+    "src/gpu/measure.zig",
+    "src/gpu/metal/reload.zig",
+    "src/gpu/metal/renderer.zig",
+    "src/gpu/metal/shader.zig",
+    "src/gpu/palette.zig",
+    "src/gpu/verdict.zig",
+    "src/main.zig",
+    "src/measure_parity.zig",
+    "src/platform/displaylink.zig",
+    "src/platform/io.zig",
+    "src/platform/objc.zig",
+    "src/platform/view.zig",
+    "src/ring_race.zig",
+    "src/smoke.zig",
+    "docs/reviews/2026-11-19-permanent-au-ids-plants/check.sh",
+    "docs/reviews/2026-11-19-permanent-au-ids-plants/manufacturer.patch",
+    "docs/reviews/2026-11-19-permanent-au-ids-plants/subtype.patch",
+    "docs/reviews/2026-11-19-permanent-au-ids-plants/type.patch"
+  ],
+  "setup": "scripts/build-audio-unit",
+  "check": "docs/reviews/2026-11-19-permanent-au-ids-plants/check.sh",
+  "timeout": 300,
+  "green": {
+    "exit_code": 0,
+    "contains": [
+      "Checking built Audio Unit identifiers\n",
+      "PASS built Audio Unit identifiers\n"
+    ],
+    "excludes": [
+      "Audio Unit type:",
+      "Audio Unit subtype:",
+      "Audio Unit manufacturer:",
+      "command not found"
+    ]
+  },
+  "variants": [
+    {
+      "name": "type",
+      "patch": "docs/reviews/2026-11-19-permanent-au-ids-plants/type.patch",
+      "red": {
+        "exit_code": 1,
+        "contains": [
+          "Checking built Audio Unit identifiers\n",
+          "Audio Unit type: expected aufx, found aufz\n"
+        ],
+        "excludes": [
+          "PASS built Audio Unit identifiers",
+          "command not found"
+        ]
+      }
+    },
+    {
+      "name": "subtype",
+      "patch": "docs/reviews/2026-11-19-permanent-au-ids-plants/subtype.patch",
+      "red": {
+        "exit_code": 1,
+        "contains": [
+          "Checking built Audio Unit identifiers\n",
+          "Audio Unit subtype: expected Fsfr, found Fsfx\n"
+        ],
+        "excludes": [
+          "PASS built Audio Unit identifiers",
+          "command not found"
+        ]
+      }
+    },
+    {
+      "name": "manufacturer",
+      "patch": "docs/reviews/2026-11-19-permanent-au-ids-plants/manufacturer.patch",
+      "red": {
+        "exit_code": 1,
+        "contains": [
+          "Checking built Audio Unit identifiers\n",
+          "Audio Unit manufacturer: expected Ctmn, found Ctmx\n"
+        ],
+        "excludes": [
+          "PASS built Audio Unit identifiers",
+          "command not found"
+        ]
+      }
+    }
+  ]
+}

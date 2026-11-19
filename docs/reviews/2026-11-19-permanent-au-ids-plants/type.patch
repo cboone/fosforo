@@ -1,0 +1,8 @@
+diff --git a/cmake/CMakeLists.txt b/cmake/CMakeLists.txt
+--- a/cmake/CMakeLists.txt
++++ b/cmake/CMakeLists.txt
+@@ -157,3 +157,3 @@
+     AUV2_SUBTYPE_CODE "Fsfr"
+-    AUV2_INSTRUMENT_TYPE "aufx"
++    AUV2_INSTRUMENT_TYPE "aufz"
+ )
