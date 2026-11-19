@@ -1,0 +1,11 @@
+--- a/scripts/measure-trace
++++ b/scripts/measure-trace
+@@ -648,7 +648,7 @@
+ 
+ def period_band(height, peak):
+     """Halfway between zero and the highest lit row, matching measure.periodBand."""
+-    return (centre_row(height) + peak) / 2
++    return (height / 2 + peak) / 2
+ 
+ 
+ def periods(top, any_lit, height):

@@ -1,0 +1,11 @@
+--- a/scripts/measure-trace
++++ b/scripts/measure-trace
+@@ -1013,7 +1013,7 @@
+     if args.periods:
+         # One run per period, thresholded well above centre so a steep crossing
+         # cannot be mistaken for a peak.
+-        print(f"periods          {periods(top, any_lit, height)}")
++        print(f"periods          {0}")
+ 
+     if args.explain:
+         explain_ray(deviation, examined)

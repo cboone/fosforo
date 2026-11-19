@@ -1,0 +1,11 @@
+--- a/scripts/measure-trace
++++ b/scripts/measure-trace
+@@ -637,7 +637,7 @@
+ 
+ def centre_row(height):
+     """The continuous row position of zero, matching measure.centreRow."""
+-    return height / 2 - 0.5
++    return height / 2
+ 
+ 
+ def rail_rows(height):

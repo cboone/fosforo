@@ -1,0 +1,11 @@
+--- a/scripts/measure-trace
++++ b/scripts/measure-trace
+@@ -928,7 +928,7 @@
+ 
+     print(f"image            {width} x {height}")
+     print(f"columns lit      {int(any_lit.sum())} of {width}")
+-    print(f"centre row       {centre_row(height):.1f}")
++    print(f"centre row       {height / 2:.1f}")
+     print(f"rail rows        {rail_row:.1f} / {rail_row_bottom:.1f}")
+     # Kept visible rather than dropped with the guard it used to gate. It is the
+     # number every pre-#55 measurement was taken under, so anyone holding #38's

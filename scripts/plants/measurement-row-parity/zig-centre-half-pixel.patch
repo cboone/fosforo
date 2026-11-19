@@ -1,0 +1,11 @@
+--- a/src/gpu/measure.zig
++++ b/src/gpu/measure.zig
+@@ -387,7 +387,7 @@
+ 
+ /// The row a sample of zero lands on, as a continuous position.
+ pub fn centreRow(height: usize) f32 {
+-    return @as(f32, @floatFromInt(height)) / 2.0 - 0.5;
++    return @as(f32, @floatFromInt(height)) / 2.0;
+ }
+ 
+ /// Halfway between zero and the highest lit row, in row-index coordinates.

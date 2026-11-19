@@ -1,0 +1,11 @@
+--- a/scripts/measure-trace
++++ b/scripts/measure-trace
+@@ -643,7 +643,7 @@
+ def rail_rows(height):
+     """Top and bottom rail positions in row-index coordinates."""
+     inset = (1.0 - RAIL) * height / 2
+-    return inset - 0.5, height - inset - 0.5
++    return inset, height - inset - 0.5
+ 
+ 
+ def period_band(height, peak):

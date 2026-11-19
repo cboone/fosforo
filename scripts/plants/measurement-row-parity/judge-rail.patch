@@ -1,0 +1,10 @@
+--- a/src/measure_parity.zig
++++ b/src/measure_parity.zig
+@@ -5,7 +5,6 @@
+ 
+ fn checkRow(row: cases.Row) !void {
+     try std.testing.expectEqual(row.centre, measure.centreRow(row.height));
+-    try std.testing.expectApproxEqAbs(row.rail, measure.railRow(row.height), 0.0001);
+     try std.testing.expectApproxEqAbs(
+         row.bottom,
+         @as(f32, @floatFromInt(row.height - 1)) - measure.railRow(row.height),

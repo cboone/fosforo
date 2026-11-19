@@ -1,0 +1,11 @@
+--- a/scripts/measure-trace
++++ b/scripts/measure-trace
+@@ -658,7 +658,7 @@
+     band = period_band(height, int(top[any_lit].min()))
+     runs, inside = 0, False
+     for row, lit in zip(top, any_lit, strict=True):
+-        up = lit and row <= band
++        up = lit and row < band
+         if up and not inside:
+             runs += 1
+         inside = up
