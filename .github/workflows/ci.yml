@@ -949,6 +949,28 @@ jobs:
       - name: Build the wrapper artifacts
         run: ./scripts/build-audio-unit
 
+      # Hosts store these codes in projects. Check the built component's plist
+      # against expected values independent of CMake.
+      # Pin the CLAP ID once the rename in cboone/fosforo#137 is settled.
+      - name: Assert the component carries the permanent Audio Unit identifiers
+        shell: bash
+        run: |
+          plist=build/assets/Fosforo.component/Contents/Info.plist
+
+          function assert_code() {
+            local key="${1}" expected="${2}" actual
+            # The suffix preserves any trailing newlines in the plist value.
+            actual="$(/usr/bin/plutil -extract "AudioComponents.0.${key}" raw -expect string -n "${plist}" && printf .)"
+            if [[ "${actual%.}" != "${expected}" ]]; then
+              printf 'Audio Unit %s: expected %s, found %q\n' "${key}" "${expected}" "${actual%.}" >&2
+              return 1
+            fi
+          }
+
+          assert_code type aufx
+          assert_code subtype Fsfr
+          assert_code manufacturer Ctmn
+
       - name: Assert the component claims no sandbox resources
         run: |
           ./cmake/narrow-au-resource-usage --check \

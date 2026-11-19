@@ -601,6 +601,8 @@ Worth stating explicitly, because these look interchangeable and are not. Some a
 | AU manufacturer code | `Ctmn`                  | `cmake/CMakeLists.txt` | Every AU host, including Logic |
 | **CLAP plugin `id`** | `com.catamount.fosforo` | `src/clap/plugin.zig`  | Every CLAP host, e.g. REAPER   |
 
+The `clap-wrapper` CI job compares the three Audio Unit codes in the built component's `Info.plist` against independent literals.
+
 The CLAP `id` is the CLAP-side equivalent of the AU triple and carries exactly the same permanence. It was settled in phase 1 along with the descriptor, and deliberately rather than incidentally.
 
 Convention is reverse-DNS, which leaves the choice of authority. The value tracks the **Catamount vendor identity** rather than `CFBundleIdentifier` (`com.cboone.fosforo`), because the two answer different questions: the bundle identifier is a code-signing and preferences identity, while the CLAP `id` is product identity as a host records it. Keying the latter to the vendor keeps it stable if the signing identity ever moves, at the cost that the two strings no longer match on sight. Anything comparing them is wrong by construction.
