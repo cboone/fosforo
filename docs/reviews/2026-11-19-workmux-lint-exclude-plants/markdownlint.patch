@@ -1,0 +1,9 @@
+diff --git a/.markdownlint-cli2.jsonc b/.markdownlint-cli2.jsonc
+--- a/.markdownlint-cli2.jsonc
++++ b/.markdownlint-cli2.jsonc
+@@ -39,5 +39,4 @@
+   "ignores": [
+     // Local workmux prompts need no heading and would fail MD041.
+-    ".workmux/**",
+ 
+     // Load-bearing since this repository acquired a package.json, and the

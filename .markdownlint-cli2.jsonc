@@ -37,6 +37,9 @@
   },
   "globs": ["**/*.md"],
   "ignores": [
+    // Local workmux prompts need no heading and would fail MD041.
+    ".workmux/**",
+
     // Load-bearing since this repository acquired a package.json, and the
     // failure it prevents is loud but confusing: markdownlint-cli2 walks
     // into node_modules and lints dependency READMEs. Measured rather than

@@ -1,0 +1,9 @@
+diff --git a/.prettierignore b/.prettierignore
+--- a/.prettierignore
++++ b/.prettierignore
+@@ -6,5 +6,4 @@
+ 
+ # Local workmux prompts need no heading (MD041) and must not be reformatted.
+-.workmux/
+ 
+ # Preserved verbatim as the source brainstorm this project came from.

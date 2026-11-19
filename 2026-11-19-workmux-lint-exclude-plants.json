@@ -1,0 +1,10 @@
+{
+  "inputs": [".markdownlint-cli2.jsonc",".prettierignore","docs/reviews/2026-11-19-workmux-lint-exclude-plants/check.sh","docs/reviews/2026-11-19-workmux-lint-exclude-plants/markdownlint.patch","docs/reviews/2026-11-19-workmux-lint-exclude-plants/prettier.patch"],
+  "check": "docs/reviews/2026-11-19-workmux-lint-exclude-plants/check.sh",
+  "timeout": 60,
+  "green": {"exit_code":0,"contains":["Checking workmux exclusions\n","PASS workmux exclusions\n"],"excludes":["FAIL"]},
+  "variants": [
+    {"name":"markdownlint","patch":"docs/reviews/2026-11-19-workmux-lint-exclude-plants/markdownlint.patch","red":{"exit_code":1,"contains":["Checking workmux exclusions\n","FAIL markdownlint exclusion\n","MD041"],"excludes":["PASS workmux exclusions","SyntaxError","command not found"]}},
+    {"name":"prettier","patch":"docs/reviews/2026-11-19-workmux-lint-exclude-plants/prettier.patch","red":{"exit_code":1,"contains":["Checking workmux exclusions\n","FAIL Prettier exclusion\n"],"excludes":["PASS workmux exclusions","SyntaxError","command not found"]}}
+  ]
+}
