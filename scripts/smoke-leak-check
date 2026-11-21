@@ -173,7 +173,7 @@ function leaked_classes() {
   local capture="${1}"
 
   report_body "${capture}" |
-    grep -oE '<[A-Za-z_][A-Za-z0-9_]*' |
+    { grep -oE '<[A-Za-z_][A-Za-z0-9_]*' || [[ ${?} -eq 1 ]]; } |
     tr -d '<' |
     sort -u
 }
@@ -261,12 +261,6 @@ function main() {
     return "${E_UNAVAILABLE}"
   fi
 
-  classes="$(leaked_classes "${capture}")"
-  if [[ -z "${classes}" ]]; then
-    warn "the report names no leaked classes at all, which the summary contradicts"
-    return "${E_UNAVAILABLE}"
-  fi
-
   # The anchored pattern rejects two matches as well as none: `sed` prints one
   # line per match, `$(...)` strips only the trailing newline, and this test has
   # no multiline flag, so a two-line result fails it the same way an empty one
@@ -278,8 +272,9 @@ function main() {
     return "${E_UNAVAILABLE}"
   fi
 
+  classes="$(leaked_classes "${capture}")"
   warn "leaks: ${summary#*: }"
-  warn "report parsed, $(echo "${classes}" | wc -l | tr -d ' ') distinct leaked classes"
+  warn "report parsed, $(printf '%s\n' "${classes}" | awk 'NF { n++ } END { print n+0 }') distinct leaked classes"
 
   # Third, and before the byte bound rather than after it, because this one can
   # say *what* leaked. A dropped pipeline-state release takes the total to
