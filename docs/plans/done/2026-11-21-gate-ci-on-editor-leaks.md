@@ -88,7 +88,7 @@ Hosted verification remains pending. With approval to publish and delete the two
 
 The plant removes `self.history.deinit(self.allocator);` from `destroy` in `src/clap/plugin.zig`. The AppKit smoke creates a plugin through the CLAP factory and calls `destroy` in all 40 cycles. The omitted call leaves a C-allocated history ring of `1 << 18` `f32` samples per cycle, at least 40 MiB across the run against the judge's 1 MiB ceiling. The plant still destroys the editor and instance so the AppKit smoke can finish and the leak step can judge the native report. [Leak instruments](../../notes/leak-instruments.md)
 
-The push preview prints the proposed updates and stops the procedure unless their destinations are exactly the two temporary branch refs.
+The dry run previews updates to the two temporary branches in `cboone/fosforo`.
 
 ```bash
 set -euo pipefail
@@ -124,18 +124,10 @@ delta="$(git --no-pager diff --no-ext-diff --no-color --numstat "${control_sha}"
 git --no-pager diff --no-ext-diff --no-color "${control_sha}" "${plant_sha}" |
   rg -Fx -- '-    self.history.deinit(self.allocator);'
 
-push_preview="$(git push --dry-run --porcelain --no-follow-tags origin \
-  "${control_ref}:${control_ref}" "${plant_ref}:${plant_ref}")"
-printf '%s\n' "${push_preview}"
-preview_refs="$(awk -F '\t' 'NF > 1 { sub(/^[^:]*:/, "", $2); print $2 }' <<< "${push_preview}" |
-  LC_ALL=C sort)"
-expected_refs="$(printf '%s\n' "${control_ref}" "${plant_ref}" | LC_ALL=C sort)"
-if [[ "${preview_refs}" != "${expected_refs}" ]]; then
-  printf '%s\n' 'Push preview must list exactly the control and plant branch refs.' >&2
-  exit 1
-fi
-
-git push --no-follow-tags origin "${control_ref}:${control_ref}" "${plant_ref}:${plant_ref}"
+git push --dry-run --porcelain --no-follow-tags https://github.com/cboone/fosforo.git \
+  "${control_ref}:${control_ref}" "${plant_ref}:${plant_ref}"
+git push --no-follow-tags https://github.com/cboone/fosforo.git \
+  "${control_ref}:${control_ref}" "${plant_ref}:${plant_ref}"
 gh workflow run ci.yml --repo "${repo}" --ref "${control_branch}"
 gh workflow run ci.yml --repo "${repo}" --ref "${plant_branch}"
 ```
@@ -196,7 +188,7 @@ After recording both outcomes, delete both remote branches and both local refs w
 ```bash
 set -euo pipefail
 [[ "$(git branch --show-current)" == "${fix_branch}" ]]
-git push --no-follow-tags origin ":${control_ref}" ":${plant_ref}"
+git push --no-follow-tags https://github.com/cboone/fosforo.git ":${control_ref}" ":${plant_ref}"
 git update-ref -d "${control_ref}" "${control_sha}"
 git update-ref -d "${plant_ref}" "${plant_sha}"
 ```
