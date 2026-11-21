@@ -76,90 +76,112 @@ control exact-over-bound: green control verified; control exit 0; restored; gree
 
 Evidence: `verification/leak-summary-plants.rKytzX/run/results.json`.
 
-## CI plant, after push
+## Round 3 byte-bound guard plant
 
-Hosted verification remains pending. First check the unplanted PR's own `CI` run on the exact local head. The `smoke` job and its `Cycle the editor under leaks` step must succeed. Begin once the PR's smoke check has completed. Record the PR URL, head SHA, run URL and smoke job ID with the plant result. Run the blocks in the same Bash shell so the verified head and plant branch carry forward.
+In a worktree-local copy, remove only `${#bytes} -gt ${#MAXIMUM_LEAKED_BYTES} ||` from the byte comparison. Run `/bin/bash scripts/test-smoke-leak-check.sh exa` before the change, with the guard removed, and after restoring the judge byte for byte. The parser stays intact in all three runs.
 
-In `src/clap/plugin.zig`, remove `self.history.deinit(self.allocator);` from `destroy`. The AppKit smoke creates a plugin through the CLAP factory and calls `destroy` in all 40 cycles. The factory allocates each history ring with `std.heap.c_allocator`. The omitted call leaves `1 << 18` `f32` samples allocated per cycle, at least 40 MiB across the run against the judge's 1 MiB ceiling. The plant still destroys the editor and instance, so the AppKit smoke can finish normally and the leak step can judge the native report. The same omission was previously measured at 40 cycles. [Leak instruments](../../notes/leak-instruments.md)
+The `8E` fixture went red with test exit 1. The judge parsed `9223372036854775808` bytes and wrongly accepted the total with exit 0. After restoration, the fixture passed with test exit 0 and the judge rejected the same total with exit 65, matching the baseline. See `guard.diff`, `baseline.log`, `red.log`, and `restored.log` in `verification/leak-byte-guard.7nnMNs/`.
 
-Keep the green check and plant creation in one block. The branch name includes the verified SHA, and the signed plant commit starts at that SHA.
+## Hosted control and plant
+
+Hosted verification remains pending. With approval to publish and delete the two temporary branches, cut both from the open PR's head. Dispatch `CI` on each branch so both smoke jobs use the same event and the same source apart from the planted deletion. Record the PR URL, both run URLs, checkout SHAs, smoke job IDs, leak step results, and the plant's byte-bound diagnostic. Run the blocks in the same Bash shell. Branch preparation and dispatch should take seconds apart from commit signing and network delays. Each smoke job has an eight-minute execution limit plus queue time, and the watch commands show progress. [GitHub workflow dispatch](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch)
+
+The plant removes `self.history.deinit(self.allocator);` from `destroy` in `src/clap/plugin.zig`. The AppKit smoke creates a plugin through the CLAP factory and calls `destroy` in all 40 cycles. The omitted call leaves a C-allocated history ring of `1 << 18` `f32` samples per cycle, at least 40 MiB across the run against the judge's 1 MiB ceiling. The plant still destroys the editor and instance so the AppKit smoke can finish and the leak step can judge the native report. [Leak instruments](../../notes/leak-instruments.md)
 
 ```bash
 set -euo pipefail
 repo=cboone/fosforo
 fix_branch=fix/editor-leak-gate
-test "$(git branch --show-current)" = "${fix_branch}"
-tree_status=$(git status --porcelain)
-test -z "${tree_status}"
-control_sha=$(git rev-parse HEAD)
-pr=$(gh pr view "${fix_branch}" --repo "${repo}" \
-  --json url,state,isCrossRepository,headRefOid,statusCheckRollup)
-check_url=$(jq -er --arg sha "${control_sha}" '
-  select(.state == "OPEN" and (.isCrossRepository | not) and .headRefOid == $sha)
-  | [.statusCheckRollup[] | select(.workflowName == "CI" and .name == "smoke")]
-  | select(length == 1)
-  | .[0] | select(.status == "COMPLETED" and .conclusion == "SUCCESS") | .detailsUrl
-' <<< "${pr}")
-[[ "${check_url}" =~ ^https://github\.com/cboone/fosforo/actions/runs/([0-9]+)/job/([0-9]+)$ ]]
-control_run_id=${BASH_REMATCH[1]}
-control_job_id=${BASH_REMATCH[2]}
-control_run=$(gh run view "${control_run_id}" --repo "${repo}" --json event,headSha,jobs,name,status,url)
-jq -e --arg sha "${control_sha}" --argjson job_id "${control_job_id}" '
-  .name == "CI" and .event == "pull_request" and .status == "completed" and .headSha == $sha
-  and any(.jobs[]; .databaseId == $job_id and .name == "smoke" and .conclusion == "success"
-    and any(.steps[]; .name == "Cycle the editor under leaks" and .conclusion == "success"))
-' <<< "${control_run}"
-printf 'Green control for %s at %s\n' "$(jq -r .url <<< "${pr}")" "${control_sha}"
-printf 'Run %s, smoke job %s\n' "$(jq -r .url <<< "${control_run}")" "${control_job_id}"
+[[ "$(git branch --show-current)" == "${fix_branch}" ]]
+tree_status="$(git status --porcelain)"
+[[ -z "${tree_status}" ]]
+control_sha="$(git rev-parse HEAD)"
+pr="$(gh pr view "${fix_branch}" --repo "${repo}" --json url,state,isCrossRepository,headRefOid)"
+jq -e --arg sha "${control_sha}" '
+  .state == "OPEN" and (.isCrossRepository | not) and .headRefOid == $sha
+' <<< "${pr}"
+jq -r .url <<< "${pr}"
 
-plant_branch="plant/156-native-editor-leak-${control_sha:0:12}"
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+control_branch="plant/156-control-${control_sha:0:12}-${stamp}"
+plant_branch="plant/156-native-editor-leak-${control_sha:0:12}-${stamp}"
+git branch "${control_branch}" "${control_sha}"
 git switch -c "${plant_branch}" "${control_sha}"
 perl -pi -e 's/^    self\.history\.deinit\(self\.allocator\);\n$//' src/clap/plugin.zig
 git add -- src/clap/plugin.zig
 git commit -S -m 'test: plant an editor history-ring leak'
+plant_sha="$(git rev-parse HEAD)"
 git switch "${fix_branch}"
+
+[[ "$(git rev-parse "${control_branch}")" == "${control_sha}" ]]
+[[ "$(git rev-parse "${plant_sha}^")" == "${control_sha}" ]]
+delta="$(git --no-pager diff --no-ext-diff --no-color --numstat "${control_sha}" "${plant_sha}")"
+[[ "${delta}" == $'0\t1\tsrc/clap/plugin.zig' ]]
+git --no-pager diff --no-ext-diff --no-color "${control_sha}" "${plant_sha}" |
+  rg -Fx -- '-    self.history.deinit(self.allocator);'
+
+git push origin "${control_branch}" "${plant_branch}"
+gh workflow run ci.yml --repo "${repo}" --ref "${control_branch}"
+gh workflow run ci.yml --repo "${repo}" --ref "${plant_branch}"
 ```
 
-After approval to publish and delete the throwaway branch, dispatch `CI` on its exact commit. Branch pushes trigger CI only on `main`, so use `workflow_dispatch`. Use the returned run ID, or look it up by branch, event, and SHA once the run appears.
+Use the run IDs returned by the dispatches. If the IDs are absent, look them up by branch, event and SHA after the runs appear.
 
 ```bash
-set -euo pipefail
-plant_sha=$(git rev-parse "${plant_branch}")
-test "$(git rev-parse HEAD)" = "${control_sha}"
-test "$(git rev-parse "${plant_sha}^")" = "${control_sha}"
-git push origin "${plant_branch}"
-gh workflow run ci.yml --repo cboone/fosforo --ref "${plant_branch}"
-gh run list --repo cboone/fosforo --workflow ci.yml --event workflow_dispatch \
+gh run list --repo "${repo}" --workflow ci.yml --event workflow_dispatch \
+  --branch "${control_branch}" --commit "${control_sha}" --json databaseId,url
+gh run list --repo "${repo}" --workflow ci.yml --event workflow_dispatch \
   --branch "${plant_branch}" --commit "${plant_sha}" --json databaseId,url
 ```
 
-The smoke job has an eight-minute execution limit plus queue time. The watch command displays progress. Record the run URL, smoke job ID, and byte-bound verdict from `Cycle the editor under leaks`. The job and that step must both fail, and the failed step must contain the byte-bound diagnostic.
+The control's smoke job and leak step must succeed. Both must fail in the plant, with the byte-bound diagnostic in the smoke log. Check dispatch metadata and the SHA emitted immediately after `git log -1 --format=%H` in each smoke checkout log.
 
 ```bash
 set -euo pipefail
-printf 'Workflow run ID: '
-read -r run_id
-gh run view "${run_id}" --repo "${repo}" --json event,headSha,headBranch |
-  jq -e --arg sha "${plant_sha}" --arg branch "${plant_branch}" '
-    .event == "workflow_dispatch" and .headSha == $sha and .headBranch == $branch
-  '
-gh run watch "${run_id}" --repo cboone/fosforo --compact
-smoke_job_id=$(gh run view "${run_id}" --repo cboone/fosforo --json jobs | jq -er '
-  .jobs[] | select(.name == "smoke" and .conclusion == "failure")
-  | select(any(.steps[]; .name == "Cycle the editor under leaks" and .conclusion == "failure"))
-  | .databaseId
-')
-gh run view "${run_id}" --repo cboone/fosforo --job "${smoke_job_id}" --log-failed |
-  rg 'smoke-leak-check: [0-9]+ bytes leaked, above the 1048576-byte bound'
-gh run view "${run_id}" --repo cboone/fosforo --json url --jq .url
-printf 'Smoke job ID: %s\n' "${smoke_job_id}"
+
+function verify_dispatch() {
+  local run_id="${1}" branch="${2}" sha="${3}" verdict="${4}"
+  local run job_id smoke_log
+
+  gh run watch "${run_id}" --repo "${repo}" --compact
+  run="$(gh run view "${run_id}" --repo "${repo}" \
+    --json event,headBranch,headSha,jobs,status,url,workflowName)"
+  job_id="$(jq -er --arg branch "${branch}" --arg sha "${sha}" --arg verdict "${verdict}" '
+    select(.workflowName == "CI" and .event == "workflow_dispatch" and .status == "completed"
+      and .headBranch == $branch and .headSha == $sha)
+    | [.jobs[] | select(.name == "smoke" and .conclusion == $verdict
+      and any(.steps[]; .name == "Cycle the editor under leaks" and .conclusion == $verdict))]
+    | select(length == 1) | .[0].databaseId
+  ' <<< "${run}")"
+
+  smoke_log="$(gh run view "${run_id}" --repo "${repo}" --job "${job_id}" --log)"
+  awk -v expected="${sha}" '
+    /git log -1 --format=%H$/ {
+      if (getline > 0 && $NF == expected) {
+        print "Checked out " $NF
+        found = 1
+      }
+    }
+    END { exit !found }
+  ' <<< "${smoke_log}"
+  if [[ "${verdict}" == failure ]]; then
+    rg 'smoke-leak-check: [0-9]+ bytes leaked, above the 1048576-byte bound' <<< "${smoke_log}"
+  fi
+  printf 'Run %s, smoke job %s, leak step %s\n' "$(jq -r .url <<< "${run}")" "${job_id}" "${verdict}"
+}
+
+read -r -p 'Control run ID: ' control_run_id
+read -r -p 'Plant run ID: ' plant_run_id
+verify_dispatch "${control_run_id}" "${control_branch}" "${control_sha}" success
+verify_dispatch "${plant_run_id}" "${plant_branch}" "${plant_sha}" failure
 ```
 
-After recording the result, delete the throwaway branch from the remote and remove the local ref while on `fix/editor-leak-gate`.
+After recording both outcomes, delete both remote branches and both local refs while on `fix/editor-leak-gate`. Cleanup should take seconds plus network delay.
 
 ```bash
 set -euo pipefail
-test "$(git branch --show-current)" = fix/editor-leak-gate
-git push origin --delete "${plant_branch}"
+[[ "$(git branch --show-current)" == "${fix_branch}" ]]
+git push origin --delete "${control_branch}" "${plant_branch}"
+git update-ref -d "refs/heads/${control_branch}" "${control_sha}"
 git update-ref -d "refs/heads/${plant_branch}" "${plant_sha}"
 ```
