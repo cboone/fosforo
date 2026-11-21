@@ -264,27 +264,9 @@ jobs:
   #           answered whether a hosted runner grants one to an unbundled
   #           process, and this half carries the only assertion anywhere on
   #           `liveTextures`.
-  #   leaks   the same window server, plus `leaks`. Still `continue-on-error`,
-  #           and that asymmetry is the argument rather than a leftover.
-  #
-  # **The two halves are not exposed to the same thing, which is why only one of
-  # them moved.** `smoke-appkit` fails on its own assertions and on the
-  # window-server connection those 65 runs settled, and both of those are facts
-  # about this repository. `smoke-leaks` additionally judges the runner's own
-  # AppKit chatter, against the class prefixes in `scripts/smoke-leak-check`,
-  # several of which name classes the frameworks allocate on their own account.
-  # An `IOSurface` or an `NSView` leaked for reasons that have nothing to do
-  # with this project fails that step, and nothing here would be wrong.
-  #
-  # "Several" rather than a count, deliberately. Which of those seven prefixes
-  # the frameworks allocate under on their own account was never measured, so a
-  # number here would be the one unmeasured figure in a comment block whose
-  # every other figure is quoted from the Actions API. ADR 0013 says "several"
-  # for the same list and this now matches it.
-  #
-  # So this is still the one check in the project that can go red for reasons
-  # unrelated to the code, which is the cost of being the only one that runs
-  # anything. What #72 settled is which step carries that cost.
+  #   leaks   needs the same window server plus `leaks`. Required.
+  #           The judge checks leaked classes and total bytes, including
+  #           allocations made by the runner's AppKit frameworks.
   #
   # **The leak step runs 40 cycles here and 400 by hand, and that is measured
   # rather than a concession.** `scripts/smoke-leak-check` judges leaked classes
@@ -445,28 +427,14 @@ jobs:
         timeout-minutes: 2
         run: zig build smoke-appkit
 
-      # Still a label, and now on the Metal download's precedent rather than on
-      # the step above's, which #72 turned into a budget. This step keeps
-      # `continue-on-error`, so the job's ceiling is the bound either way and
-      # three minutes only makes a wedge read as itself. Sized the same way
-      # regardless: far above the 13 s this takes locally at the same cycle
-      # count. 28s max over 9 runs on 2026-08-29 (23, 23, 24, 24, 25, 25, 25, 28,
-      # 28).
-      #
-      # **An AppKit failure now skips this step rather than running it**, since
-      # nothing here carries an `if:` and the step above can fail the job. That
-      # is what `scripts/smoke-leak-check`'s own first assertion already says: a
-      # leak report over a run that fell over partway through describes a process
-      # that never reached the teardown being measured. The notice below will
-      # read `leaks: skipped` on exactly those runs.
-      #
+      # A failed AppKit half skips this step. The summary reports the outcome
+      # and runner image on both successful and failed runs.
       # `tee` because the figures are wanted whether this passes or fails, and the
       # script writes all of them to stderr. `pipefail` because a pipeline's status
       # is its last command's otherwise, and `tee` always succeeds, which would
       # make this step green whatever the check concluded.
       - name: Cycle the editor under leaks
         id: leaks
-        continue-on-error: true
         timeout-minutes: 3
         run: |
           set -o pipefail

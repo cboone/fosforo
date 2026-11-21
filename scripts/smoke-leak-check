@@ -56,12 +56,7 @@
 #  66  - The harness binary does not exist or is not executable
 #  69  - The harness failed or the report did not parse, so nothing was measured
 #
-# The last two are separate for a reason that arrived with CI. This runs under
-# `continue-on-error`, where nobody opens the log of a step that cannot block a
-# merge, so the exit code is the whole message. "This project leaked something"
-# and "the instrument did not run" are the two conclusions ADR 0013's assertion
-# order exists to keep apart, and returning one code for both put them back
-# together at exactly the moment it started to matter.
+# The exit codes distinguish a leak from a run without a usable measurement.
 
 set -euo pipefail
 
@@ -118,13 +113,7 @@ readonly REPORT_MARKER='leaks Report Version'
 # **Quote that as a ratio, not a percentage.** This comment used to say "a 25%
 # spread" over the first three runs, which is (max-min)/max; the naive
 # (max-min)/min gives 93% for the same nine runs and is not the same measure.
-# As a ratio the first three were 1.34x and nine are 1.93x, against the 2% seen
-# across six runs here. The figure widened as the sample grew, which is the
-# argument for the looseness rather than against it, and it is why `smoke-leaks`
-# keeps `continue-on-error` where `smoke-appkit` no longer does (#72). Anything
-# tight enough to be called calibrated would have to be re-measured against
-# that, and again whenever the image refreshed; this has 107x of room at the low
-# end and 56x at the high end, so it does not.
+# The observed 1.93x spread still leaves 56x of headroom at the high end.
 readonly MAXIMUM_LEAKED_BYTES=1048576
 
 # Class-name prefixes this project is responsible for, as `leaks` spells them.

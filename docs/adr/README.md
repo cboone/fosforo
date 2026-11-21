@@ -27,3 +27,4 @@ Background for all of these lives in [the design brainstorm](../design/scope-plu
 | [0017](./0017-absolute-vertical-axis.md)                        | The vertical axis is absolute and never rescales itself          | Accepted |
 | [0018](./0018-stamp-provenance-without-namespacing-identity.md) | Stamp build provenance, and leave plugin identity alone          | Accepted |
 | [0019](./0019-brightness-is-a-fixed-transfer-function.md)       | Brightness is a fixed transfer function, white is its rail       | Accepted |
+| [0020](./0020-gate-ci-on-editor-leaks.md)                       | Fail CI when the editor leak check fails                         | Accepted |
