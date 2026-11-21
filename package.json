@@ -5,8 +5,8 @@
   "description": "Pins the two Node tools that format and verify this repository's Markdown. Not a package, not published, and not part of any build: `zig build` never reads this file.",
   "license": "MIT",
   "devDependencies": {
-    "markdownlint-cli2": "0.23.3",
-    "prettier": "3.9.9"
+    "markdownlint-cli2": "0.24.0",
+    "prettier": "3.9.10"
   },
   "scripts": {
     "format": "prettier --write \"**/*.md\"",
