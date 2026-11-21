@@ -21,3 +21,69 @@ plant tolerated-step-failure: named assertion reached; red exit 78; restored; gr
 Evidence: `verification/leak-gate.8p2CJg/run/results.json`.
 
 <!-- checked-plants:end -->
+
+## Zero-leak judge regression
+
+plant zero-leak-report-without-classes: named assertion reached; red exit 1; restored; green exit 0.
+
+Evidence: `verification/zero-leak-plant.8kYNWw/run/results.json`.
+
+## CI plant, after push
+
+Hosted verification is pending approval to push the throwaway branch to `cboone/fosforo`, dispatch CI, and delete the remote branch after recording the result. CI on branch pushes is limited to `main`, so this plant uses `workflow_dispatch`.
+
+In `src/clap/plugin.zig`, remove `self.history.deinit(self.allocator);` from `destroy`. The AppKit smoke creates a plugin through the CLAP factory and calls `destroy` in all 40 cycles. The factory allocates each history ring with `std.heap.c_allocator`. The omitted call leaves `1 << 18` `f32` samples allocated per cycle, at least 40 MiB across the run against the judge's 1 MiB ceiling. The plant still destroys the editor and instance, so the AppKit smoke can finish normally and the leak step can judge the native report. The same omission was previously measured at 40 cycles. [Leak instruments](../../notes/leak-instruments.md)
+
+Prepare the signed plant commit from the fix branch's head. If the plant branch has already been prepared, use it for the hosted commands below.
+
+```bash
+set -euo pipefail
+git switch -c plant/156-native-editor-leak fix/editor-leak-gate
+perl -pi -e 's/^    self\.history\.deinit\(self\.allocator\);\n$//' src/clap/plugin.zig
+git add -- src/clap/plugin.zig
+git commit -S -m 'test: plant an editor history-ring leak'
+git switch fix/editor-leak-gate
+```
+
+After approval, publish the branch and dispatch `CI` on its exact commit. Use the returned run ID, or look it up by branch, event, and SHA once the run appears.
+
+```bash
+set -euo pipefail
+plant_branch=plant/156-native-editor-leak
+plant_sha=$(git rev-parse "${plant_branch}")
+git push origin "${plant_branch}"
+gh workflow run ci.yml --repo cboone/fosforo --ref "${plant_branch}"
+gh run list --repo cboone/fosforo --workflow ci.yml --event workflow_dispatch \
+  --branch "${plant_branch}" --commit "${plant_sha}" --json databaseId,url
+```
+
+The smoke job has an eight-minute execution limit plus queue time. The watch command displays progress. Record the run URL, smoke job ID, and byte-bound verdict from `Cycle the editor under leaks`. The job and that step must both fail, and the failed step must contain the byte-bound diagnostic.
+
+```bash
+set -euo pipefail
+printf 'Workflow run ID: '
+read -r run_id
+test "$(gh run view "${run_id}" --repo cboone/fosforo --json headSha --jq .headSha)" = \
+  "$(git rev-parse plant/156-native-editor-leak)"
+gh run watch "${run_id}" --repo cboone/fosforo --compact
+smoke_job_id=$(gh run view "${run_id}" --repo cboone/fosforo --json jobs | jq -er '
+  .jobs[] | select(.name == "smoke" and .conclusion == "failure")
+  | select(any(.steps[]; .name == "Cycle the editor under leaks" and .conclusion == "failure"))
+  | .databaseId
+')
+gh run view "${run_id}" --repo cboone/fosforo --job "${smoke_job_id}" --log-failed |
+  rg 'smoke-leak-check: [0-9]+ bytes leaked, above the 1048576-byte bound'
+gh run view "${run_id}" --repo cboone/fosforo --json url --jq .url
+printf 'Smoke job ID: %s\n' "${smoke_job_id}"
+```
+
+After recording the result, delete the throwaway branch from the remote and remove the local ref while on `fix/editor-leak-gate`.
+
+```bash
+set -euo pipefail
+plant_branch=plant/156-native-editor-leak
+plant_sha=$(git rev-parse "${plant_branch}")
+test "$(git branch --show-current)" = fix/editor-leak-gate
+git push origin --delete "${plant_branch}"
+git update-ref -d "refs/heads/${plant_branch}" "${plant_sha}"
+```
