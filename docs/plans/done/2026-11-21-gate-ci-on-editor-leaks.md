@@ -87,3 +87,12 @@ The `8E` fixture went red with test exit 1. The judge parsed `922337203685477580
 The local gate check runs the workflow step's exact shell against the real judge. The editor leak and tolerated-failure policy plants went red, as did the zero-leak, singular and scaled report fixtures in the judge tests. All checks returned to green after restoration.
 
 The PR's own CI run serves as the green control for the hosted leak step.
+
+## Workflow wiring check
+
+A static check of `.github/workflows/ci.yml` confirms that the hosted leak step is wired to fail the merge path:
+
+1. **No `continue-on-error`.** Neither the `smoke` job nor the "Cycle the editor under leaks" step carries `continue-on-error`. The remaining mentions are in comments.
+2. **No skipping condition.** Neither the step nor the job has an `if:`. The step is skipped only after an earlier smoke step fails, and the job is already red in that case. The trigger's `paths-ignore` skips documentation-only changes (`*.md`, `docs/**`, `LICENSE` and agent instructions). That's a known, separate gap.
+3. **The exit code reaches the job.** The step sets `pipefail` before piping `zig build smoke-leaks` through `tee`, so the judge's nonzero exit fails the step and the job.
+4. **A red check stops a merge.** The `main` rulesets ("Main" and "PRs") enforce only the deletion, non-fast-forward and pull request rules, with no required status checks. The merge procedure for this repository supplies the gate instead: every merge waits on `gh pr checks` passing, so a red leak check blocks it.
