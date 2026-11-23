@@ -176,7 +176,7 @@ comptime {
 fn assertLayout(comptime T: type, comptime want_fields: usize, comptime probe: anytype) void {
     const info = @typeInfo(T).@"struct";
     if (info.layout != .@"extern") @compileError(@typeName(T) ++ " must be extern");
-    if (info.fields.len != want_fields) @compileError(
+    if (info.field_names.len != want_fields) @compileError(
         @typeName(T) ++ " field count changed: the vendored CLAP headers moved under us",
     );
     for (probe) |name| {

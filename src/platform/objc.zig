@@ -59,7 +59,7 @@ pub fn utf8(string: objc.Object) []const u8 {
 /// Debug builds only. It is a message send, and a release build should not pay
 /// for one on every editor callback.
 pub fn assertMainThread() void {
-    if (builtin.mode != .Debug) return;
+    if (builtin.mode != .debug) return;
     std.debug.assert(isMainThread());
 }
 
@@ -75,7 +75,7 @@ pub fn assertMainThread() void {
 /// path. Anything that wants to draw from the main thread has to go through the
 /// mailbox instead, which is the point.
 pub fn assertNotMainThread() void {
-    if (builtin.mode != .Debug) return;
+    if (builtin.mode != .debug) return;
     std.debug.assert(!isMainThread());
 }
 

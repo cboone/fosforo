@@ -10,7 +10,7 @@ The [build plan](docs/plans/todo/2026-07-25-repo-foundation-and-phased-build-pla
 
 Read the relevant [ADRs](docs/adr/) before changing architecture. Supersede settled decisions with a new ADR rather than relitigating them in review.
 
-- macOS on Apple Silicon only. Zig 0.16.0 is pinned in `build.zig.zon`, which CI reads. Author CLAP once; clap-wrapper supplies other formats.
+- macOS on Apple Silicon only. Zig 0.17.1 is pinned in `build.zig.zon`, which CI reads. Author CLAP once; clap-wrapper supplies other formats.
 - No Metal type above `src/gpu/iface.zig`, and no WebView UI.
 - Nothing reachable from the audio thread may allocate, lock or make a syscall.
 - Use the one `std.Io` instance in `src/platform/io.zig`, constructed with `init_single_threaded`, never `Threaded.init` (ADR 0015).

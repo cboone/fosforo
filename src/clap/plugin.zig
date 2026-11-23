@@ -1430,8 +1430,8 @@ test "every gui callback is filled in" {
     // A host may call any of these without checking, so a null one is a crash
     // rather than a refusal. Checked by walking the struct so a callback added
     // by a CLAP bump cannot be left null by being overlooked.
-    inline for (@typeInfo(c.clap_plugin_gui_t).@"struct".fields) |field| {
-        try testing.expect(@field(plugin_gui, field.name) != null);
+    inline for (@typeInfo(c.clap_plugin_gui_t).@"struct".field_names) |name| {
+        try testing.expect(@field(plugin_gui, name) != null);
     }
 }
 
@@ -1666,7 +1666,8 @@ test "audio_ports.get refuses a null out-parameter rather than writing through i
 
 test "a port name longer than the field is truncated with room for the terminator" {
     var name: [c.CLAP_NAME_SIZE]u8 = undefined;
-    setPortName(&name, "x" ** (c.CLAP_NAME_SIZE * 2));
+    const long_name: [c.CLAP_NAME_SIZE * 2]u8 = @splat('x');
+    setPortName(&name, &long_name);
 
     try testing.expectEqual(@as(usize, c.CLAP_NAME_SIZE - 1), std.mem.sliceTo(&name, 0).len);
     try testing.expectEqual(@as(u8, 0), name[name.len - 1]);

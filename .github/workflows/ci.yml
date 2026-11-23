@@ -123,6 +123,9 @@ env:
   ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
 
 jobs:
+  # Both the reusable workflow and the direct setup-zig steps below select the
+  # toolchain from minimum_zig_version in build.zig.zon (ADR 0021).
+  #
   # Must run on macOS: the plugin links Cocoa, Metal, QuartzCore and CoreVideo,
   # so it cannot build or test on the default ubuntu-latest runner.
   # Cross-compilation is off for the same reason (see ADR 0001).
@@ -234,7 +237,7 @@ jobs:
       # ignored, and every run said so in a warning nothing tracked. Leaving
       # `version` at its empty default is what makes the action read
       # `minimum_zig_version` from build.zig.zon, which is the behaviour that
-      # file's own comment claims and ADR 0002 rests on. Deleting the input
+      # file's own comment claims and ADR 0021 rests on. Deleting the input
       # therefore changed nothing about which compiler CI installs. Do not
       # restore it; see the AGENTS.md gotcha before adding any input here.
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1

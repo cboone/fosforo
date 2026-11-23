@@ -127,7 +127,7 @@ pub const Palette = enum(u32) {
     }
 };
 
-pub const palette_count: usize = @typeInfo(Palette).@"enum".fields.len;
+pub const palette_count: usize = std.meta.fieldNames(Palette).len;
 
 /// Entries per gradient.
 ///
@@ -267,7 +267,7 @@ pub fn buildPalette(out: []f32) void {
 /// reason: `bindingIndexIn` scans to end of file, so a sampler anywhere below
 /// the accumulation's uniforms fails a test whose message names those uniforms.
 pub fn paletteAt(table: []const f32, palette: Palette, t: f32) [3]f32 {
-    const row = @intFromEnum(palette);
+    const row = @backingInt(palette);
     const clamped = std.math.clamp(t, 0.0, 1.0);
 
     const x = clamped * @as(f32, @floatFromInt(palette_entries - 1));
@@ -709,9 +709,9 @@ test "each gradient's dominant channel is an exact readout of the tonemapped val
 
         // And it really is the largest, which is what makes it the best-conditioned
         // estimator rather than merely an exact one.
-        for (tints_srgb[@intFromEnum(palette)], 0..) |component, other| {
+        for (tints_srgb[@backingInt(palette)], 0..) |component, other| {
             if (other == c) continue;
-            try testing.expect(component <= tints_srgb[@intFromEnum(palette)][c]);
+            try testing.expect(component <= tints_srgb[@backingInt(palette)][c]);
         }
     }
 }
@@ -741,10 +741,10 @@ test "the green gradient is phase 2's colour, decoded rather than reused" {
     // (149, 255, 179), a visibly paler green, while calling it unchanged.
     // Phase 2's literal is `tints_srgb[0]`, unchanged, so the check is that
     // decoding it reproduces the bytes that shader showed.
-    try testing.expectEqualSlices(f32, &.{ 0.30, 1.00, 0.45 }, &tints_srgb[@intFromEnum(Palette.green)]);
+    try testing.expectEqualSlices(f32, &.{ 0.30, 1.00, 0.45 }, &tints_srgb[@backingInt(Palette.green)]);
 
     const shown = [3]u8{ 76, 255, 115 };
-    for (tints_srgb[@intFromEnum(Palette.green)], shown) |component, byte| {
+    for (tints_srgb[@backingInt(Palette.green)], shown) |component, byte| {
         try testing.expectEqual(byte, srgbByte(srgbDecode(component)));
 
         // The failure this replaces, from the other side: reusing the encoded
@@ -773,7 +773,7 @@ test "interpolating the table tracks the closed form to a fraction of a byte" {
         var i: usize = 0;
         while (i <= 20000) : (i += 1) {
             const t = @as(f32, @floatFromInt(i)) / 20000.0;
-            const exact = paletteEntry(tints_srgb[@intFromEnum(palette)], t);
+            const exact = paletteEntry(tints_srgb[@backingInt(palette)], t);
             const looked_up = paletteAt(table, palette, t);
             for (exact, looked_up) |a, b| {
                 worst = @max(worst, @abs(srgbEncode(a) - srgbEncode(b)) * 255.0);
@@ -1155,7 +1155,7 @@ test "the dominant channel inverts exactly, which is what measure-trace does to 
     defer testing.allocator.free(table);
 
     for (std.enums.values(Palette)) |p| {
-        const row = @intFromEnum(p);
+        const row = @backingInt(p);
         const c = p.dominant();
 
         // **The structural gap, and it is the sharpest thing here.** This side

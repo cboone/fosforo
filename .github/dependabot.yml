@@ -11,9 +11,9 @@
 #    widening them to a caret range, which is what keeps #122's guard
 #    meaningful: a linter pin should only ever move in a diff that says so.
 #
-# Dependabot does NOT track anything Zig. `build.zig.zon` pins Zig 0.16.0, CLAP
-# and zig-objc by content hash, and there is no Dependabot ecosystem for it, so
-# those stay deliberate scheduled work under ADR 0002. It also cannot see the
+# Dependabot does NOT track anything Zig. `build.zig.zon` pins the toolchain
+# version and the CLAP and zig-objc commits and hashes. Upgrades are scheduled
+# under ADR 0021. Dependabot also cannot see the
 # pinned tool versions inside workflow `env:` blocks, or the SHA-256 checksums
 # the shell scripts carry; `upgrade-everything` is what sweeps those.
 #

@@ -912,7 +912,7 @@ threadlocal var on_render_thread: bool = false;
 /// points rather than folded into it, because the two say different things and
 /// hiding either inside the other would cost a reader the reason for it.
 fn markRenderThread() void {
-    if (builtin.mode != .Debug) return;
+    if (builtin.mode != .debug) return;
     on_render_thread = true;
 }
 
@@ -930,7 +930,7 @@ fn markRenderThread() void {
 /// Debug builds only, on `assertMainThread`'s reasoning. It costs a release build
 /// nothing and it fires on the machine of whoever introduced the problem.
 fn assertNotRenderThread() void {
-    if (builtin.mode != .Debug) return;
+    if (builtin.mode != .debug) return;
     std.debug.assert(!on_render_thread);
 }
 
@@ -3744,7 +3744,7 @@ test "the shader's look constants and the model's are the same numbers" {
 
     const row = scalarAfter(shader_source, "palette_row = ") orelse return error.NotFound;
     try testing.expectEqual(
-        @as(f64, @floatFromInt(@intFromEnum(palette.shipped_palette))),
+        @as(f64, @floatFromInt(@backingInt(palette.shipped_palette))),
         row,
     );
 
@@ -3850,10 +3850,10 @@ test "the decay uniform has no default to fall back on" {
     // `frame` is the only constructor, and the type system is what refuses any
     // other. This asserts the refusal rather than the construction, because the
     // construction is checked by the compiler already.
-    const field = @typeInfo(AccumUniforms).@"struct".fields[0];
+    const accum_info = @typeInfo(AccumUniforms).@"struct";
 
-    try testing.expectEqualStrings("decay", field.name);
-    try testing.expectEqual(@as(?*const anyopaque, null), field.default_value_ptr);
+    try testing.expectEqualStrings("decay", accum_info.field_names[0]);
+    try testing.expectEqual(@as(?*const anyopaque, null), accum_info.field_attrs[0].default_value_ptr);
 
     // The counterpart, so this test cannot pass by reading a struct that has no
     // fields at all: `TraceUniforms` still carries two defaults, and they are
@@ -3867,15 +3867,16 @@ test "the decay uniform has no default to fall back on" {
     // supplied.
     const from_the_seam = [_][]const u8{ "full_scale", "rail" };
 
-    inline for (@typeInfo(TraceUniforms).@"struct".fields) |trace_field| {
+    const trace_info = @typeInfo(TraceUniforms).@"struct";
+    inline for (trace_info.field_names, trace_info.field_attrs) |field_name, attrs| {
         const inherited = comptime for (from_the_seam) |name| {
-            if (std.mem.eql(u8, trace_field.name, name)) break true;
+            if (std.mem.eql(u8, field_name, name)) break true;
         } else false;
 
         if (inherited) {
-            try testing.expect(trace_field.default_value_ptr != null);
+            try testing.expect(attrs.default_value_ptr != null);
         } else {
-            try testing.expect(trace_field.default_value_ptr == null);
+            try testing.expect(attrs.default_value_ptr == null);
         }
     }
 }

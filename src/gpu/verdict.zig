@@ -1024,7 +1024,7 @@ pub fn resolve(image: measure.Image, picture: Picture, contour: f32) Fault!Resol
 /// the same way as the shader could not satisfy.
 pub fn movingCore(image: measure.Image, picture: Picture) Fault!void {
     try requireComplete(image, picture);
-    const tint = palette.tints_srgb[@intFromEnum(palette.shipped_palette)];
+    const tint = palette.tints_srgb[@backingInt(palette.shipped_palette)];
     const lead = palette.shipped_palette.dominant();
 
     const at = measure.peakPixel(image, 1) orelse return Fault.TraceNotDrawn;

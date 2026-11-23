@@ -128,15 +128,15 @@ pub fn build(b: *std.Build) void {
         .step = "test",
         .description = "Run unit tests",
     });
-    addTestStep(coreAt(b, target, provenance, .ReleaseSafe), .{
+    addTestStep(coreAt(b, target, provenance, .safe), .{
         .step = "test-safe",
         .description = "Run unit tests at ReleaseSafe: optimized, with asserts and safety checks live",
-        .pinned_optimize = "ReleaseSafe",
+        .pinned_optimize = "safe",
     });
-    addTestStep(coreAt(b, target, provenance, .ReleaseFast), .{
+    addTestStep(coreAt(b, target, provenance, .fast), .{
         .step = "test-release",
         .description = "Run unit tests in the optimize mode that ships (ReleaseFast)",
-        .pinned_optimize = "ReleaseFast",
+        .pinned_optimize = "fast",
     });
 
     addShaderValidationStep(b);
@@ -171,7 +171,7 @@ fn coreAt(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     provenance: Provenance,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
 ) Core {
     return .{
         .b = b,
@@ -218,7 +218,9 @@ const Provenance = struct {
 /// requirement. `git` is strictly weaker than that: it needs no network, and where
 /// `xcrun` failing is fatal, `git` failing lands on `Provenance.unknown`.
 fn gitProvenance(b: *std.Build) Provenance {
-    const root = b.build_root.path orelse return .unknown;
+    // Git metadata and the working tree can change between invocations.
+    b.graph.poisonCache();
+    const root = absoluteBuildRoot(b) orelse return .unknown;
 
     // Two calls rather than one, and that is measured rather than stylistic.
     // `git rev-parse --abbrev-ref HEAD --short HEAD` prints the branch name
@@ -261,23 +263,17 @@ fn gitProvenance(b: *std.Build) Provenance {
 /// a claim rather than a proof, which is the standard `src/build_info.zig` already
 /// refuses for `marker`.
 ///
-/// **Absolute or nothing**, which is the half that is easy to get wrong two ways.
-/// `Cache.Directory.path` is null for "the build root *is* the working directory"
-/// rather than for "there is no build root", so the `orelse` below is not the tarball
-/// case that `gitProvenance`'s looks like; that one is handled by `runAllowFail`
-/// failing. And `std.fs.path.resolve` does not prepend the working directory to a
-/// relative input, so `b.pathResolve` yields an absolute path only if the root is one.
-/// A relative path handed to a plugin would resolve against whatever the *host's*
-/// working directory happens to be, which is right only when REAPER was launched from
-/// a worktree and meaningless everywhere else. `b.pathFromRoot` hides both facts
-/// behind an `orelse "."` and its own docstring calls calling it a code smell.
-fn debugShaderPath(b: *std.Build, optimize: std.builtin.OptimizeMode) []const u8 {
-    if (optimize != .Debug) return "";
+/// A relative path would resolve against the host's working directory.
+fn debugShaderPath(b: *std.Build, optimize: std.lang.Optimize) []const u8 {
+    if (optimize != .debug) return "";
 
-    const root = b.build_root.path orelse return "";
-    if (!std.fs.path.isAbsolute(root)) return "";
-
+    const root = absoluteBuildRoot(b) orelse return "";
     return b.pathResolve(&.{ root, shader_source_path });
+}
+
+fn absoluteBuildRoot(b: *std.Build) ?[]const u8 {
+    const root = b.root.joinString(b.allocator, ".") catch @panic("OOM");
+    return std.Io.Dir.cwd().realPathFileAlloc(b.graph.io, root, b.allocator) catch null;
 }
 
 /// One `git` invocation, trimmed, or null if git could not answer.
@@ -299,7 +295,7 @@ fn gitOutput(b: *std.Build, root: []const u8, args: []const []const u8) ?[:0]con
     var code: u8 = undefined;
     const raw = b.runAllowFail(argv, &code, .ignore) catch return null;
 
-    return b.allocator.dupeZ(u8, std.mem.trim(u8, raw, " \t\r\n")) catch @panic("OOM");
+    return b.allocator.dupeSentinel(u8, std.mem.trim(u8, raw, " \t\r\n"), 0) catch @panic("OOM");
 }
 
 /// Build the Audio Unit, which is a CMake artifact this build system knows nothing
@@ -336,7 +332,7 @@ fn addAudioUnitStep(b: *std.Build) *std.Build.Step.Run {
 fn translateClap(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
 ) *std.Build.Module {
     const clap_dep = b.dependency("clap", .{});
 
@@ -359,7 +355,7 @@ fn translateClap(
 const Core = struct {
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     clap_c: *std.Build.Module,
     objc: *std.Build.Module,
 
@@ -565,7 +561,7 @@ fn signClapBundle(
         sign.addArgs(&.{ "--timestamp", "--options", "runtime" });
     }
 
-    sign.addDirectoryArg(.{ .cwd_relative = b.getInstallPath(.{ .custom = "Fosforo.clap" }, "") });
+    sign.addDirectoryArg2(b.graph.path(.install_prefix, "Fosforo.clap"), .{});
     sign.step.dependOn(&binary.step);
     sign.step.dependOn(&plist.step);
     b.getInstallStep().dependOn(&sign.step);
@@ -613,7 +609,7 @@ fn signClapBundle(
 /// **The Debug run cannot be dropped in favour of the release ones**, and that is a
 /// measured fact rather than caution. `gpu/metal/shader.zig`'s "nothing is read from
 /// disk in a test build" asserts `!shader.live`, and `live` is
-/// `builtin.mode == .Debug and !builtin.is_test`: outside Debug the first clause
+/// `builtin.mode == .debug and !builtin.is_test`: outside Debug the first clause
 /// already decides it, so the `!builtin.is_test` plant that test exists for passes
 /// vacuously in both release steps. Planted, `zig build test` fails and
 /// `zig build test-release` does not. `gpu/iface.zig` records that nothing else
@@ -794,7 +790,7 @@ fn addRaceStep(b: *std.Build, harness: RaceHarness) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path(harness.root),
             .target = target,
-            .optimize = .Debug,
+            .optimize = .debug,
             .link_libc = true,
             .sanitize_thread = true,
         }),

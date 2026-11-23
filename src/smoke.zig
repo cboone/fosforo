@@ -291,14 +291,14 @@ const Fixture = struct {
     path: [:0]const u8 = "",
 
     fn create(self: *Fixture, tag: []const u8) !void {
-        self.path = std.fmt.bufPrintZ(&self.path_buf, "{s}/fosforo-smoke-{d}-{s}.metal", .{
+        self.path = std.mem.printSentinel(&self.path_buf, "{s}/fosforo-smoke-{d}-{s}.metal", .{
             tempDir(),
             // The process, matching what the paragraph above promises. A thread
             // id is unique within a process and says nothing across two, which is
             // the collision this name is for.
             std.c.getpid(),
             tag,
-        }) catch return error.FixturePathTooLong;
+        }, 0) catch return error.FixturePathTooLong;
 
         try self.write(shader.embedded);
     }
