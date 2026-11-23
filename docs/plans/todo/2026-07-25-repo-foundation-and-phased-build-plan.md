@@ -52,7 +52,7 @@ Each becomes an ADR under `docs/adr/`.
 | ADR  | Decision                                                                                                                     |
 | ---- | ---------------------------------------------------------------------------------------------------------------------------- |
 | 0001 | Mac-first, Apple Silicon primary. One audio-thread contract, one SIMD target, unified memory                                 |
-| 0021 | Zig, pinned to 0.17.1 via `minimum_zig_version`. Compiler upgrades are scheduled work.                                       |
+| 0002 | Zig, pinned to 0.16.0 via `minimum_zig_version`. Compiler upgrades are scheduled work. Superseded by ADR 0021.               |
 | 0003 | Author CLAP once; project outward with `clap-wrapper`. Never author AU or VST3 directly                                      |
 | 0004 | CLAP bindings via `translate-c` over vendored, normalized headers. Reject `clap-zig-bindings` as copyleft, stale, and broken |
 | 0005 | Metal directly, behind a small internal renderer interface. Build one backend; forbid Metal types leaking above the seam     |

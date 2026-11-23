@@ -44,7 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The build and CI select Zig 0.17.1 from `build.zig.zon`. The Zig dependencies are pinned by commit and package hash ([ADR 0021](docs/adr/0021-pin-zig-to-0-17-1.md), [#159](https://github.com/cboone/fosforo/issues/159)).
+- Local builds require Zig 0.17.1. CI selects that version from `minimum_zig_version` in `build.zig.zon`. The Zig dependencies are pinned by commit and package hash ([ADR 0021](docs/adr/0021-pin-zig-to-0-17-1.md), [#159](https://github.com/cboone/fosforo/issues/159)).
 
 - Editor leak check failures now fail CI. The smoke summary still reports the outcome and runner image ([#156](https://github.com/cboone/fosforo/issues/156)).
 
