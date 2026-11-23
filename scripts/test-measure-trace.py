@@ -1,7 +1,7 @@
 """Compare executed Python measurement helpers with their Zig counterparts.
 
 Run with: uv run --with pillow --with numpy python scripts/test-measure-trace.py
-Zig 0.16.0 must be on PATH. No GPU, host or capture is needed.
+The Zig version pinned in build.zig.zon must be on PATH. No GPU, host or capture is needed.
 """
 
 import contextlib

@@ -110,7 +110,7 @@ const truncation_marker = "...";
 /// asserted directly now (#97), which leaves the formatting uncovered and not
 /// the strings.
 fn mirror(severity: c.clap_log_severity, msg: []const u8) void {
-    if (builtin.mode != .Debug or builtin.is_test) return;
+    if (builtin.mode != .debug or builtin.is_test) return;
     std.debug.print("[fosforo] {s}: {s}\n", .{ severityName(severity), msg });
 }
 
@@ -239,7 +239,8 @@ test "an over-long message is truncated rather than dropped" {
     const log = Log.init(&host);
 
     captured_len = 0;
-    log.print(c.CLAP_LOG_DEBUG, "{s}", .{"x" ** (message_size * 2)});
+    const message: [message_size * 2]u8 = @splat('x');
+    log.print(c.CLAP_LOG_DEBUG, "{s}", .{&message});
 
     try testing.expect(captured_len > 0);
     try testing.expect(captured_len < message_size);

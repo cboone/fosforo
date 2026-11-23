@@ -825,7 +825,7 @@ pub const Editor = struct {
     /// argument one level up: `tick` reads the clock once for the decay and this
     /// is the second reader of that reading, not a second reading.
     fn report(self: *Editor, now_ns: u64) void {
-        if (builtin.mode != .Debug) return;
+        if (builtin.mode != .debug) return;
 
         // Every write to `meter` happens here, on this thread. That is what
         // makes it safe to hold no lock around it.

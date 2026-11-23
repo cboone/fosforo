@@ -42,7 +42,7 @@ pub const embedded = @embedFile("scope.metal");
 /// The two gates this sits beside guarantee different things and neither
 /// substitutes for the other: `build.zig` decides whether the path exists in the
 /// binary at all, and this decides whether anything reads it.
-pub const live = builtin.mode == .Debug and !builtin.is_test;
+pub const live = builtin.mode == .debug and !builtin.is_test;
 
 /// The override, which is the only reason any of this is testable.
 ///
@@ -282,7 +282,7 @@ test "nothing is read from disk in a test build" {
     // siblings.** The Debug artifact is where this earns its place: a test binary
     // is a Debug build, so dropping `!builtin.is_test` from `live` fails this,
     // which is the exact regression that would put filesystem I/O inside the
-    // hermetic path ADR 0009 protects. Outside Debug, `builtin.mode == .Debug`
+    // hermetic path ADR 0009 protects. Outside Debug, `builtin.mode == .debug`
     // has already decided `live` and the second term is unreachable, so the same
     // plant passes. Measured rather than reasoned about (#94): planted, the Debug
     // step fails 1 of 285 while `test-safe` and `test-release` both report 285 of
@@ -314,8 +314,8 @@ test "a path too long for the buffer is refused rather than truncated" {
     // Half a path is a different file, and opening it would be worse than the
     // fallback. Same reasoning as `read`'s exactly-fills-the-buffer refusal.
     var buf: PathBuffer = undefined;
-    const long = "/" ** (@sizeOf(PathBuffer) + 1);
+    const long: [@sizeOf(PathBuffer) + 1]u8 = @splat('/');
 
-    try testing.expectEqual(@as(?[]const u8, null), copyInto(&buf, long));
+    try testing.expectEqual(@as(?[]const u8, null), copyInto(&buf, &long));
     try testing.expectEqual(@as(?[]const u8, null), copyInto(&buf, null));
 }

@@ -621,8 +621,8 @@ test "every outcome is either a draw or a skip" {
     // Walks the enum rather than listing it, so a value added later has to be
     // classified here instead of silently defaulting to one side.
     var drew: usize = 0;
-    inline for (@typeInfo(Outcome).@"enum".fields) |field| {
-        if (@field(Outcome, field.name).drew()) drew += 1;
+    for (std.meta.tags(Outcome)) |outcome| {
+        if (outcome.drew()) drew += 1;
     }
     try testing.expectEqual(@as(usize, 1), drew);
 }
@@ -636,7 +636,8 @@ test "a diagnostic longer than the buffer is truncated rather than overflowing" 
     const capacity = @typeInfo(@FieldType(Diagnostics, "buffer")).array.len;
 
     var diags: Diagnostics = .{};
-    diags.set("x" ** (capacity * 2));
+    const message: [capacity * 2]u8 = @splat('x');
+    diags.set(&message);
 
     try testing.expectEqual(capacity, diags.message().len);
 }

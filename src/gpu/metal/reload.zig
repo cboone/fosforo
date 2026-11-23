@@ -14,7 +14,7 @@
 //!
 //! **The split is forced rather than tidy, and the gate that forces it is not the
 //! usual one.** `renderer.zig`'s `Watcher` is `if (shader.live) struct { ... } else
-//! struct { ... }`, and `shader.live` is `builtin.mode == .Debug and
+//! struct { ... }`, and `shader.live` is `builtin.mode == .debug and
 //! !builtin.is_test`. A test binary is a Debug build with `is_test` set, so it
 //! always takes the stub: the real `poll` is not merely untested, it is *not
 //! compiled*, and no test written in `zig build test` could reach it however it was
@@ -433,8 +433,7 @@ test "the outcome table, cell by cell" {
     // The shape, asserted rather than left to be read off the rows above: the two
     // opening-path failures move `fallbacks` and the four other rows do not, which
     // is #118's whole claim about what that counter means.
-    inline for (std.meta.fields(Outcome)) |field| {
-        const outcome = @field(Outcome, field.name);
+    for (std.meta.tags(Outcome)) |outcome| {
         const d = deltas(outcome);
         const fell_back = outcome == .open_unreadable or outcome == .open_rejected;
         try testing.expectEqual(@as(u64, if (fell_back) 1 else 0), d.fallbacks);
@@ -484,8 +483,7 @@ test "an unreadable file falls back only where there is something to fall back t
 }
 
 test "noting an outcome moves what its row says and nothing else" {
-    inline for (std.meta.fields(Outcome)) |field| {
-        const outcome = @field(Outcome, field.name);
+    for (std.meta.tags(Outcome)) |outcome| {
         const d = deltas(outcome);
 
         var counters: Counters = .{};

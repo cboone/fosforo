@@ -231,10 +231,11 @@ fn viewClass() ?objc.Class {
     // the second copy created would call into the first, and all of them would
     // dangle the moment it unloaded.
     var name_buffer: [64]u8 = undefined;
-    const name = std.fmt.bufPrintZ(
+    const name = std.mem.printSentinel(
         &name_buffer,
         "FosforoScopeView_{x}",
         .{@intFromPtr(&class_seed)},
+        0,
     ) catch return null;
 
     const class = objc.allocateClassPair(superclass, name) orelse return null;

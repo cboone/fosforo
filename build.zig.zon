@@ -4,17 +4,18 @@
     .fingerprint = 0xaf18c24e5d25ad8e, // Changing this has security and trust implications.
 
     // CI reads this as the single source of truth for the toolchain version.
-    // See docs/adr/0002-zig-pinned-to-0-16-0.md before changing it.
-    .minimum_zig_version = "0.16.0",
+    // See docs/adr/0021-pin-zig-to-0-17-1.md before changing it.
+    .minimum_zig_version = "0.17.1",
 
     .dependencies = .{
         .clap = .{
-            .url = "https://github.com/free-audio/clap/archive/refs/tags/1.2.10.tar.gz",
+            // CLAP 1.2.10.
+            .url = "https://github.com/free-audio/clap/archive/195b42a004144fab0b3cf95e9c067187d15365b7.tar.gz",
             .hash = "N-V-__8AAB-JOwBFtOGup87WSc2jjAlPh8eIMTZnpkjysvO1",
         },
         .objc = .{
-            .url = "https://github.com/mitchellh/zig-objc/archive/c8de82ff80281215ad92900866dab7103a8efa8b.tar.gz",
-            .hash = "zig_objc-0.0.0-Ir_Sp9gsAQCPAJc0oF5xoWePHWP6Y6tCphDeyNUThJoi",
+            .url = "https://github.com/mitchellh/zig-objc/archive/bee663fdfaa0c554235dc36b1dce88d136a190ec.tar.gz",
+            .hash = "zig_objc-0.0.0-Ir_Sp_4tAQDXtPi51nW_jD9LOEzBvU9lofwO9Pzi6IB4",
         },
     },
 
