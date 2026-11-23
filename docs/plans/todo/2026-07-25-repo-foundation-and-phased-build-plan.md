@@ -34,6 +34,8 @@ The full chain is proven working: `translate-c` over normalized CLAP 1.2.10 head
 
 ### Environment status
 
+This table records the Phase 0 environment. The current Zig pin is 0.17.1 under [ADR 0021](../../adr/0021-pin-zig-to-0-17-1.md).
+
 | Tool             | Status                                                                            |
 | ---------------- | --------------------------------------------------------------------------------- |
 | Zig 0.16.0       | Installed. Current stable, released 2026-04-13                                    |
@@ -50,7 +52,7 @@ Each becomes an ADR under `docs/adr/`.
 | ADR  | Decision                                                                                                                     |
 | ---- | ---------------------------------------------------------------------------------------------------------------------------- |
 | 0001 | Mac-first, Apple Silicon primary. One audio-thread contract, one SIMD target, unified memory                                 |
-| 0002 | Zig, pinned to 0.16.0 via `minimum_zig_version`. Compiler bumps are scheduled work, never incidental                         |
+| 0021 | Zig, pinned to 0.17.1 via `minimum_zig_version`. Compiler upgrades are scheduled work.                                       |
 | 0003 | Author CLAP once; project outward with `clap-wrapper`. Never author AU or VST3 directly                                      |
 | 0004 | CLAP bindings via `translate-c` over vendored, normalized headers. Reject `clap-zig-bindings` as copyleft, stale, and broken |
 | 0005 | Metal directly, behind a small internal renderer interface. Build one backend; forbid Metal types leaking above the seam     |
@@ -82,7 +84,7 @@ The key structural insight follows from `make_clapfirst_plugins` wanting a stati
 
 ```text
 build.zig
-├─ build.zig.zon          pinned: Zig 0.16.0, CLAP 1.2.10, zig-objc
+├─ build.zig.zon          pinned: Zig 0.17.1, CLAP 1.2.10, zig-objc
 ├─ zig cc -E over src/clap/clap_all.h -> translate-c -> module "clap.c"
 ├─ src/                               core implementation
 ├─ libfosforo_impl.a                  exports fosforo_clap_{init,deinit,get_factory}

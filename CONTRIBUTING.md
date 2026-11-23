@@ -19,7 +19,7 @@ Two things are worth knowing before you start. First, the project is deliberatel
 ### Requirements
 
 - macOS on Apple Silicon
-- Zig **0.16.0** exactly. The version is pinned in `build.zig.zon` and CI reads it from there
+- Zig **0.17.1** exactly. The version is pinned in `build.zig.zon` and CI reads it from there
 - Xcode, for the Apple frameworks and SDK
 - CMake 3.21 or newer, only if you are building the Audio Unit
 - The Metal toolchain, only if you are type-checking shaders: `xcodebuild -downloadComponent MetalToolchain`
@@ -47,8 +47,8 @@ zig build
 # follows `-Doptimize` and is Debug by default, and CI's `test-modes` job runs the
 # two pinned ones. The Debug run cannot be retired -- see docs/notes/the-test-suite.md.
 zig build test
-zig build test-safe     # the same suite pinned to ReleaseSafe
-zig build test-release  # the same suite pinned to ReleaseFast, which is what ships
+zig build test-safe     # the same suite pinned to the safe optimization mode
+zig build test-release  # the same suite pinned to the fast optimization mode used for shipping
 
 # Format check
 zig fmt --check build.zig src/

@@ -1,6 +1,6 @@
 # 0002. Zig, pinned to 0.16.0
 
-**Status:** Accepted
+**Status:** Superseded by [ADR 0021](./0021-pin-zig-to-0-17-1.md)
 
 ## Context
 

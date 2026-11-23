@@ -31,7 +31,7 @@ Deferred past v0.1.0 by [ADR 0012](./docs/adr/0012-phosphor-oscilloscope-first.m
 ## Requirements
 
 - macOS on Apple Silicon
-- [Zig](https://ziglang.org/) 0.16.0 (pinned; see `build.zig.zon`)
+- [Zig](https://ziglang.org/) 0.17.1 (pinned in `build.zig.zon`)
 - Xcode, for the Apple frameworks and SDK
 - CMake 3.21 or newer, only if building the Audio Unit for Logic
 - The Metal toolchain, only for `zig build validate-shaders`. Shaders compile at runtime from embedded source, so the build itself never needs it ([ADR 0009](./docs/adr/0009-runtime-shader-compilation.md))
